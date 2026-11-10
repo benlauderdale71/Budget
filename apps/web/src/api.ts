@@ -48,24 +48,27 @@ export function queuedCount(): number {
   return readQueue().filter((item) => ownerId && item.ownerId === ownerId).length;
 }
 
-export async function flushQueue(): Promise<number> {
+export async function flushQueue(): Promise<{ sent: number; rejected: string }> {
   const token = localStorage.getItem("budgetcents.token");
   const ownerId = currentOwner();
   const queue = readQueue();
-  if (!token || !ownerId) return 0;
+  if (!token || !ownerId) return { sent: 0, rejected: "" };
   const { send, keep } = partitionQueue(queue, ownerId);
   const left: QueuedOp[] = [...keep];
   let sent = 0;
+  let rejected = "";
   for (const item of send) {
     try {
       await api(item.path, { method: item.method, body: item.body }, { queue: false });
       sent += 1;
     } catch (error) {
       if (error instanceof ApiError && (error.status === 0 || error.status === 401 || error.status >= 500)) left.push(item);
+      else if (error instanceof ApiError) rejected = error.message;
+      else left.push(item);
     }
   }
   writeQueue(left);
-  return sent;
+  return { sent, rejected };
 }
 
 export async function api<T>(path: string, init: RequestInit = {}, options: { queue?: boolean } = {}): Promise<T> {
@@ -83,7 +86,13 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
     if (options.queue !== false) remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
     throw new ApiError(0, "You are offline. A transaction entry was kept on this device and will send when the connection returns.");
   }
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    if (options.queue !== false) remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
+    throw new ApiError(0, "The server did not finish answering. The entry stays on this device and will be sent again.");
+  }
   let data: { error?: string } | null = null;
   try {
     data = text ? JSON.parse(text) : null;

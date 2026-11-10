@@ -1,9 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
+import { planRestore } from "./restore.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, totp, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
@@ -34,6 +35,15 @@ import { textPdf } from "./pdf.js";
 import { DEMO_EMAIL, DEMO_PASSWORD, ensureDemo } from "./seed.js";
 
 const money = z.number().int();
+
+function targetJson(target: Record<string, unknown> | null | undefined): string | null {
+  if (target == null) return null;
+  if (target.percentBps != null) {
+    const bps = Number(target.percentBps);
+    if (!Number.isInteger(bps) || bps < 0 || bps > 10_000) throw new ApiError(400, "A percent target has to be between 0 and 100.");
+  }
+  return JSON.stringify(target);
+}
 const uploadDir = () => process.env.BUDGETCENTS_UPLOADS ?? "./data/uploads";
 
 export function demoLoginAllowed(): boolean {
@@ -444,9 +454,19 @@ export function createApp(db: Database) {
       return true;
     });
     rows = rows.sort((a, b) => (a.date === b.date ? b.id.localeCompare(a.id) : a.date < b.date ? 1 : -1));
-    const offset = Number(c.req.query("offset") ?? 0);
-    const limitN = Math.min(200, Number(c.req.query("limit") ?? 50));
-    return c.json({ total: rows.length, transactions: rows.slice(offset, offset + limitN) });
+    const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
+    const limitN = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50) || 50));
+    const page = rows.slice(offset, offset + limitN);
+    const links = await db.query(`SELECT keeper_id, archived_id FROM transaction_matches WHERE household_id = $1`, [loaded.member.householdId]);
+    const matched = new Map(links.map((link) => [String(link.keeper_id), String(link.archived_id)]));
+    const nextOffset = offset + page.length < rows.length ? offset + page.length : null;
+    return c.json({
+      total: rows.length,
+      offset,
+      limit: limitN,
+      nextOffset,
+      transactions: page.map((txn) => ({ ...txn, matchedArchivedId: matched.get(txn.id) ?? null })),
+    });
   });
 
   app.post("/api/households/:hid/transactions", async (c) => {
@@ -465,10 +485,25 @@ export function createApp(db: Database) {
     if (num(existing.reconciled) === 1 && (body.amountMinor != null || body.accountId != null) && !body.reason) {
       throw new ApiError(409, "This transaction is reconciled. Give a reason to change the amount or account.");
     }
+    if (body.refundOfId) {
+      if (body.refundOfId === String(existing.id)) throw new ApiError(400, "A transaction cannot refund itself.");
+      const original = await mustTxn(me.id, member.householdId, body.refundOfId);
+      if (str(original.refund_of_id) === String(existing.id)) throw new ApiError(400, "Those two transactions already point at each other.");
+      const nextType = body.type ?? String(existing.type);
+      if (nextType !== "refund" && nextType !== "reimbursement") throw new ApiError(400, "Only a refund or reimbursement can point at another transaction.");
+    }
     const accountId = body.accountId ?? String(existing.account_id);
     const counterAccountId = body.counterAccountId ?? str(existing.counter_account_id);
     const account = await mustAccount(me.id, member.householdId, accountId);
     if (counterAccountId) await mustAccount(me.id, member.householdId, counterAccountId);
+    if (body.splits) {
+      for (const split of body.splits) {
+        if (!split.bucketId) continue;
+        const bucket = await db.query(`SELECT space_id FROM buckets WHERE id = $1 AND household_id = $2`, [split.bucketId, member.householdId]);
+        if (!bucket.length) throw new ApiError(404, "Not found");
+        await assertSpace(me.id, member.householdId, String(bucket[0].space_id));
+      }
+    }
     const splits = body.splits ? body.splits.map(splitFromInput) : await splitsOf(String(existing.id));
     const resulting = transactionFromRow(existing, splits, {
       date: body.date,
@@ -490,12 +525,13 @@ export function createApp(db: Database) {
         `UPDATE transactions SET date = COALESCE($1, date), payee = COALESCE($2, payee), notes = COALESCE($3, notes), amount_minor = COALESCE($4, amount_minor),
          review_status = COALESCE($5, review_status), bank_status = COALESCE($6, bank_status), flag = COALESCE($7, flag), category_locked = COALESCE($8, category_locked),
          account_id = $9, counter_account_id = $10, type = COALESCE($11, type), currency = $12, space_id = $13,
-         version = version + 1, updated_at = $14
-         WHERE id = $15 AND household_id = $16 AND version = $17 AND deleted = 0 RETURNING id`,
+         check_number = COALESCE($14, check_number), refund_of_id = COALESCE($15, refund_of_id),
+         version = version + 1, updated_at = $16
+         WHERE id = $17 AND household_id = $18 AND version = $19 AND deleted = 0 RETURNING id`,
         [
           body.date ?? null, body.payee ?? null, body.notes ?? null, body.amountMinor ?? null, body.reviewStatus ?? null, body.bankStatus ?? null, body.flag ?? null,
           body.categoryLocked == null ? null : body.categoryLocked ? 1 : 0, accountId, counterAccountId ?? null, body.type ?? null, account.currency, account.space_id,
-          nowIso(), existing.id, member.householdId, body.version,
+          body.checkNumber ?? null, body.refundOfId ?? null, nowIso(), existing.id, member.householdId, body.version,
         ],
       );
       if (!updated.length) throw new ApiError(409, "Someone else changed this transaction. Reload it and try again.");
@@ -559,6 +595,143 @@ export function createApp(db: Database) {
     return c.json({ ok: true });
   });
 
+  app.post("/api/households/:hid/transactions/:id/match", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const body = z.object({ otherId: z.string() }).parse(await c.req.json());
+    const keeper = await mustTxn(me.id, member.householdId, c.req.param("id"));
+    const incoming = await mustTxn(me.id, member.householdId, body.otherId);
+    const problem = matchProblem(
+      { id: String(keeper.id), accountId: String(keeper.account_id), amountMinor: num(keeper.amount_minor), currency: String(keeper.currency), providerTransactionId: str(keeper.provider_transaction_id), reconciled: num(keeper.reconciled) === 1 },
+      { id: String(incoming.id), accountId: String(incoming.account_id), amountMinor: num(incoming.amount_minor), currency: String(incoming.currency), providerTransactionId: str(incoming.provider_transaction_id), reconciled: num(incoming.reconciled) === 1 },
+    );
+    if (problem) throw new ApiError(400, problem);
+    const existing = await db.query(
+      `SELECT id FROM transaction_matches WHERE household_id = $1 AND (keeper_id IN ($2,$3) OR archived_id IN ($2,$3))`,
+      [member.householdId, keeper.id, incoming.id],
+    );
+    if (existing.length) throw new ApiError(409, "One of these transactions is already matched. Unmatch it first.");
+    await db.tx(async () => {
+      const attachments = await db.query(`SELECT id FROM attachments WHERE household_id = $1 AND transaction_id = $2`, [member.householdId, incoming.id]);
+      const moved = attachments.map((row) => String(row.id));
+      await db.query(`UPDATE transactions SET deleted = 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0`, [nowIso(), incoming.id, member.householdId]);
+      const copyProvider = !str(keeper.provider_transaction_id) && !!str(incoming.provider_transaction_id);
+      if (copyProvider) {
+        await db.query(
+          `UPDATE transactions SET provider_transaction_id = $1, original_description = COALESCE(original_description, $2), import_batch_id = COALESCE(import_batch_id, $3), bank_status = $4, version = version + 1, updated_at = $5
+           WHERE id = $6 AND household_id = $7`,
+          [incoming.provider_transaction_id, incoming.original_description, incoming.import_batch_id, incoming.bank_status, nowIso(), keeper.id, member.householdId],
+        );
+      }
+      if (moved.length) await db.query(`UPDATE attachments SET transaction_id = $1 WHERE household_id = $2 AND transaction_id = $3`, [keeper.id, member.householdId, incoming.id]);
+      await db.query(
+        `INSERT INTO transaction_matches (id, household_id, keeper_id, archived_id, provider_copied, moved_attachment_ids, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id(), member.householdId, keeper.id, incoming.id, copyProvider ? 1 : 0, JSON.stringify(moved), nowIso()],
+      );
+      await audit(db, member.householdId, me.id, "transaction.match", "Matched two records of the same money", "transaction", String(keeper.id));
+    });
+    return c.json({ ok: true, keeperId: keeper.id, archivedId: incoming.id, note: "Notes, tags, review, and the keeper amount stayed. The other record is hidden so it is not counted twice." });
+  });
+
+  app.post("/api/households/:hid/transactions/:id/unmatch", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const txnId = c.req.param("id");
+    const links = await db.query(
+      `SELECT * FROM transaction_matches WHERE household_id = $1 AND (keeper_id = $2 OR archived_id = $2)`,
+      [member.householdId, txnId],
+    );
+    if (!links.length) throw new ApiError(404, "That transaction is not matched.");
+    const link = links[0];
+    await mustTxn(me.id, member.householdId, String(link.keeper_id));
+    const archived = await db.query(`SELECT * FROM transactions WHERE id = $1 AND household_id = $2`, [link.archived_id, member.householdId]);
+    if (!archived.length) throw new ApiError(404, "Not found");
+    const archivedAccount = await db.query(`SELECT * FROM accounts WHERE id = $1 AND household_id = $2`, [archived[0].account_id, member.householdId]);
+    if (!archivedAccount.length || !canSeeAccount(me.id, { visibility: String(archivedAccount[0].visibility), owner_user_id: str(archivedAccount[0].owner_user_id) ?? null })) throw new ApiError(404, "Not found");
+    await db.tx(async () => {
+      if (num(link.provider_copied) === 1) {
+        await db.query(
+          `UPDATE transactions SET provider_transaction_id = NULL, version = version + 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND provider_transaction_id = $4`,
+          [nowIso(), link.keeper_id, member.householdId, archived[0].provider_transaction_id],
+        );
+      }
+      await db.query(`UPDATE transactions SET deleted = 0, updated_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), link.archived_id, member.householdId]);
+      const moved = JSON.parse(String(link.moved_attachment_ids || "[]")) as string[];
+      for (const attachmentId of moved) {
+        await db.query(`UPDATE attachments SET transaction_id = $1 WHERE id = $2 AND household_id = $3`, [link.archived_id, attachmentId, member.householdId]);
+      }
+      await db.query(`DELETE FROM transaction_matches WHERE id = $1 AND household_id = $2`, [link.id, member.householdId]);
+      await audit(db, member.householdId, me.id, "transaction.unmatch", "Restored the separate records", "transaction", String(link.keeper_id));
+    });
+    return c.json({ ok: true, restoredId: link.archived_id, note: "The hidden record is back in the register with its original amount." });
+  });
+
+  app.post("/api/households/:hid/transactions/:id/duplicate", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const existing = await mustTxn(me.id, member.householdId, c.req.param("id"));
+    const splits = await splitsOf(String(existing.id));
+    const tags = await db.query(`SELECT tag FROM transaction_tags WHERE transaction_id = $1`, [existing.id]);
+    const created = await insertTransaction(me, member.householdId, {
+      date: String(existing.date),
+      accountId: String(existing.account_id),
+      counterAccountId: str(existing.counter_account_id),
+      amountMinor: num(existing.amount_minor),
+      type: String(existing.type),
+      payee: String(existing.payee),
+      originalDescription: str(existing.original_description),
+      splits,
+      bankStatus: String(existing.bank_status) === "pending" ? "pending" : "posted",
+      reviewStatus: "needs_review",
+      notes: str(existing.notes),
+      tags: tags.map((row) => String(row.tag)),
+      flag: str(existing.flag),
+      checkNumber: str(existing.check_number),
+      categoryLocked: true,
+      refundOfId: str(existing.refund_of_id),
+      opId: `dup-${id()}`,
+    });
+    return c.json({ ...created, note: "This is a new transaction. The original was not changed, and the provider id was not copied." }, 201);
+  });
+
+  app.get("/api/households/:hid/views", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const rows = await db.query(`SELECT id, name, query_json, created_at FROM saved_views WHERE household_id = $1 AND user_id = $2 ORDER BY created_at`, [member.householdId, me.id]);
+    return c.json({ views: rows.map((row) => ({ id: row.id, name: row.name, query: JSON.parse(String(row.query_json)), createdAt: row.created_at })) });
+  });
+
+  app.post("/api/households/:hid/views", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const body = z.object({
+      name: z.string().min(1).max(80),
+      query: z.object({
+        q: z.string().optional(),
+        accountId: z.string().optional(),
+        bucketId: z.string().optional(),
+        review: z.string().optional(),
+        tag: z.string().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+      }),
+    }).parse(await c.req.json());
+    const viewId = id();
+    await db.query(`INSERT INTO saved_views (id, household_id, user_id, name, query_json, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [viewId, member.householdId, me.id, body.name, JSON.stringify(body.query), nowIso()]);
+    return c.json({ id: viewId }, 201);
+  });
+
+  app.delete("/api/households/:hid/views/:id", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const removed = await db.query(`DELETE FROM saved_views WHERE id = $1 AND household_id = $2 AND user_id = $3 RETURNING id`, [c.req.param("id"), member.householdId, me.id]);
+    if (!removed.length) throw new ApiError(404, "Not found");
+    return c.json({ ok: true });
+  });
+
   app.post("/api/households/:hid/assignments", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
@@ -595,7 +768,7 @@ export function createApp(db: Database) {
     assertBudget(member);
     const body = z.object({ spaceId: z.string(), strategy: z.enum(["underfunded", "previous", "spending", "average"]), apply: z.boolean().default(false) }).parse(await c.req.json());
     const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
-    const preview = previewAutoAssign({ result: loaded.budget, buckets: loaded.input.buckets, strategy: body.strategy });
+    const preview = previewAutoAssign({ result: loaded.budget, buckets: loaded.input.buckets, strategy: body.strategy, postedIncomeMinor: loaded.budget.incomeMinor });
     if (body.apply) {
       for (const line of preview.lines) {
         const current = loaded.budget.buckets.find((row) => row.bucketId === line.bucketId)?.assignedMinor ?? 0;
@@ -681,7 +854,7 @@ export function createApp(db: Database) {
     await db.query(
       `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [bucketId, member.householdId, body.spaceId, body.name, body.group, body.kind, body.flexRole, body.envelopeStyle, body.rollover, body.rolloverCapMinor ?? null, body.icon ?? null, body.purpose ?? null, body.target ? JSON.stringify(body.target) : null, nowIso()],
+      [bucketId, member.householdId, body.spaceId, body.name, body.group, body.kind, body.flexRole, body.envelopeStyle, body.rollover, body.rolloverCapMinor ?? null, body.icon ?? null, body.purpose ?? null, targetJson(body.target), nowIso()],
     );
     return c.json({ id: bucketId }, 201);
   });
@@ -699,7 +872,7 @@ export function createApp(db: Database) {
       `UPDATE buckets SET name = COALESCE($1, name), group_name = COALESCE($2, group_name), rollover = COALESCE($3, rollover),
        archived = COALESCE($4, archived), hidden = COALESCE($5, hidden), flex_role = COALESCE($6, flex_role), purpose = COALESCE($7, purpose),
        target_json = COALESCE($8, target_json) WHERE id = $9 AND household_id = $10`,
-      [body.name ?? null, body.group ?? null, body.rollover ?? null, flag(body.archived), flag(body.hidden), body.flexRole ?? null, body.purpose ?? null, body.target === undefined ? null : JSON.stringify(body.target), c.req.param("id"), member.householdId],
+      [body.name ?? null, body.group ?? null, body.rollover ?? null, flag(body.archived), flag(body.hidden), body.flexRole ?? null, body.purpose ?? null, body.target === undefined ? null : targetJson(body.target), c.req.param("id"), member.householdId],
     );
     return c.json({ ok: true });
   });
@@ -843,8 +1016,8 @@ export function createApp(db: Database) {
       const total = rows.reduce((sum, row) => sum + row.amountMinor, 0);
       return c.json({ rows, totalMinor: total, currency: loaded.member.currency, from, to, formula: "Transfers and card payments are excluded. Refunds reduce the total." });
     }
-    if (kind === "income") return c.json({ rows: incomeRows(loaded.input, from, to), from, to });
-    if (kind === "sankey") return c.json(cashFlowSankey(loaded.input, from, to));
+    if (kind === "income") return c.json({ rows: incomeRows(loaded.input, from, to), from, to, currency: loaded.member.currency, formula: "This is income that posted. Expected pay is not included. Transfers and refunds are not income." });
+    if (kind === "sankey") return c.json({ ...cashFlowSankey(loaded.input, from, to), from, to, currency: loaded.member.currency, formula: "Transfers and card payments are not spending. Refunds reduce the spending flow." });
     if (kind === "savings-rate") {
       const income = incomeRows(loaded.input, from, to).reduce((sum, row) => sum + row.amountMinor, 0);
       const spending = spendingRows(loaded.input, from, to, () => "all").reduce((sum, row) => sum + row.amountMinor, 0);
@@ -879,8 +1052,63 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     const accounts = (await db.query(`SELECT * FROM accounts WHERE household_id = $1`, [member.householdId])).filter((account) => canSeeAccount(me.id, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null }));
     const ids = new Set(accounts.map((account) => String(account.id)));
+    const spaces = await visibleSpaces(me.id, member.householdId);
+    const spaceIds = new Set(spaces.map((space) => String(space.id)));
     const transactions = (await db.query(`SELECT * FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId])).filter((txn) => ids.has(String(txn.account_id)) && (!txn.counter_account_id || ids.has(String(txn.counter_account_id))));
-    return c.json({ version: 1, exportedAt: nowIso(), currency: member.currency, accounts, transactions, note: "Private accounts you cannot see are omitted." });
+    const txnIds = transactions.map((txn) => String(txn.id));
+    const splits = txnIds.length ? await db.query(`SELECT * FROM splits WHERE transaction_id IN (${txnIds.map((_, index) => `$${index + 1}`).join(",")})`, txnIds) : [];
+    const tags = txnIds.length ? await db.query(`SELECT * FROM transaction_tags WHERE transaction_id IN (${txnIds.map((_, index) => `$${index + 1}`).join(",")})`, txnIds) : [];
+    const buckets = (await db.query(`SELECT * FROM buckets WHERE household_id = $1`, [member.householdId])).filter((bucket) => spaceIds.has(String(bucket.space_id)));
+    const bucketIds = new Set(buckets.map((bucket) => String(bucket.id)));
+    const assignments = (await db.query(`SELECT * FROM assignments WHERE household_id = $1`, [member.householdId])).filter((row) => bucketIds.has(String(row.bucket_id)));
+    const goals = (await db.query(`SELECT * FROM goals WHERE household_id = $1`, [member.householdId])).filter((goal) => spaceIds.has(String(goal.space_id)));
+    const schedules = (await db.query(`SELECT * FROM schedules WHERE household_id = $1`, [member.householdId])).filter((row) => spaceIds.has(String(row.space_id)) && (!row.account_id || ids.has(String(row.account_id))));
+    return c.json({
+      version: 2, exportedAt: nowIso(), currency: member.currency, householdId: member.householdId,
+      spaces, accounts, buckets, transactions, splits, tags, assignments, goals, schedules,
+      note: "Private accounts you cannot see are omitted. Restoring this file adds missing rows into the household you choose. It does not copy them into a different household's existing ids.",
+    });
+  });
+
+  app.post("/api/households/:hid/restore", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertAdmin(member);
+    const body = z.object({ mode: z.enum(["preview", "add-missing"]), backup: z.unknown() }).parse(await c.req.json());
+    const owners = await ownerMaps(db);
+    let plan;
+    try {
+      plan = planRestore(body.backup, member.householdId, owners);
+    } catch (error) {
+      throw new ApiError(400, error instanceof Error ? error.message : "That backup could not be read.");
+    }
+    if (body.mode === "preview") {
+      return c.json({
+        mode: "preview",
+        adds: Object.fromEntries(Object.entries(plan.inserts).map(([name, rows]) => [name, rows.length])),
+        skipped: plan.skipped.length,
+        warnings: plan.warnings,
+        note: "Nothing was written. Add missing rows only inserts records this household does not already have.",
+      });
+    }
+    try {
+    await db.tx(async () => {
+      for (const space of plan.inserts.spaces) await insertRow(db, "spaces", space, ["id", "household_id", "name", "kind", "owner_user_id", "business_type", "currency", "created_at"]);
+      for (const bucket of plan.inserts.buckets) await insertRow(db, "buckets", bucket, ["id", "household_id", "space_id", "name", "group_name", "kind", "flex_role", "envelope_style", "rollover", "rollover_cap_minor", "icon", "archived", "hidden", "display_order", "target_json", "system_role", "linked_account_id", "purpose", "due_day", "created_at"]);
+      for (const account of plan.inserts.accounts) await insertRow(db, "accounts", account, ["id", "household_id", "space_id", "name", "kind", "currency", "on_budget", "visibility", "owner_user_id", "hidden", "archived", "exclude_from_net_worth", "institution", "mask", "credit_limit_minor", "apr_bps", "minimum_payment_minor", "linked_account_id", "display_order", "created_at"]);
+      for (const txn of plan.inserts.transactions) await insertRow(db, "transactions", txn, ["id", "household_id", "space_id", "date", "account_id", "counter_account_id", "amount_minor", "currency", "type", "payee", "original_description", "bank_status", "review_status", "cleared", "reconciled", "locked", "category_locked", "flag", "notes", "check_number", "owner_user_id", "business_space_id", "project", "tax_code", "schedule_id", "refund_of_id", "import_batch_id", "provider_transaction_id", "client_op_id", "fx_json", "exclude_from_reports", "version", "deleted", "created_at", "updated_at"]);
+      for (const split of plan.inserts.splits) await insertRow(db, "splits", split, ["id", "transaction_id", "bucket_id", "amount_minor", "role", "memo", "owner_user_id", "business_space_id", "project", "tax_code"]);
+      for (const tag of plan.inserts.tags) await insertRow(db, "transaction_tags", tag, ["transaction_id", "tag"]);
+      for (const assignment of plan.inserts.assignments) await insertRow(db, "assignments", assignment, ["id", "household_id", "space_id", "bucket_id", "period_key", "amount_minor"]);
+      for (const goal of plan.inserts.goals) await insertRow(db, "goals", goal, ["id", "household_id", "space_id", "bucket_id", "name", "target_minor", "target_date", "priority", "purpose", "archived", "notes"]);
+      for (const schedule of plan.inserts.schedules) await insertRow(db, "schedules", schedule, ["id", "household_id", "space_id", "name", "cadence", "custom_days", "next_date", "amount_minor", "amount_max_minor", "direction", "account_id", "bucket_id", "type", "payee", "owner_user_id", "paused", "confirmed", "skipped_dates"]);
+      await audit(db, member.householdId, me.id, "restore", `Added missing rows from a backup`);
+    });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(400, "The backup could not be applied. Nothing was changed.");
+    }
+    return c.json({ ok: true, added: Object.fromEntries(Object.entries(plan.inserts).map(([name, rows]) => [name, rows.length])), skipped: plan.skipped.length, warnings: plan.warnings });
   });
 
   app.post("/api/households/:hid/import/preview", async (c) => {
@@ -1125,9 +1353,12 @@ export function createApp(db: Database) {
     const body = z.object({ accountId: z.string(), statementDate: z.string(), statementBalanceMinor: money, clearedIds: z.array(z.string()), lock: z.boolean().default(false) }).parse(await c.req.json());
     const account = await mustAccount(me.id, member.householdId, body.accountId);
     const loaded = await loadSpace(db, me, member.householdId, String(account.space_id), body.statementDate);
+    const onAccount = new Map(loaded.input.transactions.filter((txn) => txn.accountId === account.id || txn.counterAccountId === account.id).map((txn) => [txn.id, txn]));
+    const unknown = body.clearedIds.filter((txnId) => !onAccount.has(txnId));
+    if (unknown.length) throw new ApiError(404, "One of those transactions is not on this account.");
     const cleared = new Set(body.clearedIds);
     let signed = 0;
-    for (const txn of loaded.input.transactions) {
+    for (const txn of onAccount.values()) {
       if (txn.date > body.statementDate) continue;
       if (!cleared.has(txn.id) && !txn.reconciled) continue;
       if (txn.accountId === account.id) signed += txn.amountMinor;
@@ -1136,13 +1367,16 @@ export function createApp(db: Database) {
     const liability = ["credit", "loan", "student_loan", "mortgage", "other_liability"].includes(String(account.kind));
     const display = liability ? -signed : signed;
     const difference = body.statementBalanceMinor - display;
-    if (body.lock && difference === 0) {
+    await db.tx(async () => {
       for (const txnId of body.clearedIds) {
-        await db.query(`UPDATE transactions SET cleared = 1, reconciled = 1, locked = 1 WHERE id = $1 AND household_id = $2`, [txnId, member.householdId]);
+        if (body.lock && difference === 0) {
+          await db.query(`UPDATE transactions SET cleared = 1, reconciled = 1, locked = 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0`, [nowIso(), txnId, member.householdId]);
+        } else {
+          await db.query(`UPDATE transactions SET cleared = 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0`, [nowIso(), txnId, member.householdId]);
+        }
       }
-    } else {
-      for (const txnId of body.clearedIds) await db.query(`UPDATE transactions SET cleared = 1 WHERE id = $1 AND household_id = $2`, [txnId, member.householdId]);
-    }
+      if (body.lock && difference === 0) await audit(db, member.householdId, me.id, "reconcile.lock", `Locked ${account.name} at the statement balance`, "account", String(account.id));
+    });
     return c.json({
       clearedBalanceMinor: display,
       statementBalanceMinor: body.statementBalanceMinor,
@@ -1150,6 +1384,39 @@ export function createApp(db: Database) {
       locked: body.lock && difference === 0,
       formula: "Cleared balance uses the transactions you marked, through the statement date. A difference of zero can be locked. Otherwise add an adjustment you can see in the register.",
     });
+  });
+
+  app.post("/api/households/:hid/reconcile/unlock", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const body = z.object({ accountId: z.string(), transactionIds: z.array(z.string()).min(1) }).parse(await c.req.json());
+    const account = await mustAccount(me.id, member.householdId, body.accountId);
+    await db.tx(async () => {
+      for (const txnId of body.transactionIds) {
+        const updated = await db.query(
+          `UPDATE transactions SET reconciled = 0, locked = 0, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0 AND (account_id = $4 OR counter_account_id = $4) RETURNING id`,
+          [nowIso(), txnId, member.householdId, account.id],
+        );
+        if (!updated.length) throw new ApiError(404, "Not found");
+      }
+      await audit(db, member.householdId, me.id, "reconcile.unlock", `Unlocked transactions on ${account.name}`, "account", String(account.id));
+    });
+    return c.json({ ok: true, note: "Those transactions can be edited again. Clearing them did not change their amounts." });
+  });
+
+  app.post("/api/households/:hid/reconcile/adjustment", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const body = z.object({ accountId: z.string(), date: z.string(), amountMinor: money, payee: z.string().default("Reconciliation adjustment") }).parse(await c.req.json());
+    await mustAccount(me.id, member.householdId, body.accountId);
+    if (body.amountMinor === 0) throw new ApiError(400, "An adjustment of zero does not change the balance.");
+    const created = await insertTransaction(me, member.householdId, {
+      date: body.date, accountId: body.accountId, amountMinor: body.amountMinor, type: "reconciliation", payee: body.payee,
+      splits: [], bankStatus: "posted", reviewStatus: "reviewed", notes: "Entered so the cleared balance can match the statement.", categoryLocked: true, opId: `recon-${id()}`,
+    });
+    return c.json({ ...created, note: "This adjustment is a real register entry. It is not hidden inside the reconciliation." }, 201);
   });
 
   app.post("/api/households/:hid/attachments", async (c) => {
@@ -1437,6 +1704,16 @@ export function createApp(db: Database) {
     const account = await mustAccount(me.id, householdId, body.accountId);
     if (body.counterAccountId) await mustAccount(me.id, householdId, body.counterAccountId);
     if (body.spaceId) await assertSpace(me.id, householdId, body.spaceId);
+    if (body.refundOfId) {
+      if (body.type !== "refund" && body.type !== "reimbursement") throw new ApiError(400, "Only a refund or reimbursement can point at another transaction.");
+      await mustTxn(me.id, householdId, body.refundOfId);
+    }
+    for (const split of body.splits) {
+      if (!split.bucketId) continue;
+      const bucket = await db.query(`SELECT space_id FROM buckets WHERE id = $1 AND household_id = $2`, [split.bucketId, householdId]);
+      if (!bucket.length) throw new ApiError(404, "Not found");
+      await assertSpace(me.id, householdId, String(bucket[0].space_id));
+    }
     const rules = await db.query(`SELECT * FROM rules WHERE household_id = $1 AND enabled = 1`, [householdId]);
     let draft: Transaction = {
       id: id(), date: body.date, accountId: body.accountId, counterAccountId: body.counterAccountId, amountMinor: body.amountMinor,
@@ -1620,6 +1897,26 @@ function mapHolding(row: Record<string, unknown>) {
 
 function mapQuote(row: Record<string, unknown>) {
   return { symbol: String(row.symbol), priceMinor: num(row.price_minor), asOf: String(row.as_of), source: String(row.source) as "manual" | "provider", delayed: num(row.delayed) === 1, currency: String(row.currency) };
+}
+
+async function ownerMaps(db: Database): Promise<Record<string, Record<string, string>>> {
+  const maps: Record<string, Record<string, string>> = {};
+  for (const table of ["spaces", "buckets", "accounts", "transactions", "assignments", "goals", "schedules"]) {
+    const rows = await db.query(`SELECT id, household_id FROM ${table}`);
+    maps[table] = Object.fromEntries(rows.map((row) => [String(row.id), String(row.household_id)]));
+  }
+  const splits = await db.query(`SELECT s.id, t.household_id FROM splits s JOIN transactions t ON t.id = s.transaction_id`);
+  maps.splits = Object.fromEntries(splits.map((row) => [String(row.id), String(row.household_id)]));
+  const tags = await db.query(`SELECT g.transaction_id, g.tag, t.household_id FROM transaction_tags g JOIN transactions t ON t.id = g.transaction_id`);
+  maps.tags = Object.fromEntries(tags.map((row) => [`${row.transaction_id}:${row.tag}`, String(row.household_id)]));
+  return maps;
+}
+
+async function insertRow(db: Database, table: string, row: Record<string, unknown>, columns: string[]) {
+  const present = columns.filter((column) => row[column] !== undefined);
+  const values = present.map((column) => row[column]);
+  const placeholders = present.map((_, index) => `$${index + 1}`).join(",");
+  await db.query(`INSERT INTO ${table} (${present.join(",")}) VALUES (${placeholders})`, values);
 }
 
 const splitSchema = z.object({

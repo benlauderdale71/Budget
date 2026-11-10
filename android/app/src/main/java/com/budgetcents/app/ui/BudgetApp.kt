@@ -90,7 +90,7 @@ fun BudgetApp(activity: MainActivity, start: String) {
             error = ""
             status = ""
             try {
-                flushQueue(api, store)
+                val flush = flushQueue(api, store)
                 val loaded = withContext(Dispatchers.IO) { api.dashboard(hid) }
                 val activityRows = withContext(Dispatchers.IO) { api.transactions(hid) }
                 dash = loaded
@@ -102,6 +102,8 @@ fun BudgetApp(activity: MainActivity, start: String) {
                 store.summary = "$label ${money(amount, store.privacy)}"
                 refreshWidgets(context)
                 notifyAlerts(context, loaded)
+                if (flush.rejected.isNotBlank()) error = flush.rejected
+                else if (flush.sent > 0) status = "Synced ${flush.sent}. Balances were refreshed."
             } catch (caught: Exception) {
                 error = caught.message ?: "Could not reach BudgetCents."
             }
@@ -173,13 +175,26 @@ fun BudgetApp(activity: MainActivity, start: String) {
                         }
                     } else when (tab) {
                         0 -> HomeTab(dash, store.privacy)
-                        1 -> PlanTab(dash, store.privacy) { bucketId, amount ->
+                        1 -> PlanTab(dash, store.privacy, { bucketId, amount ->
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
                                         api.assign(store.householdId!!, JSONObject().put("spaceId", dash?.optString("spaceId")).put("bucketId", bucketId).put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey")).put("amountMinor", amount))
                                     }
                                 }.onSuccess { reload() }.onFailure { error = it.message ?: "Could not assign." }
+                            }
+                        }) { fromId, toId, amount ->
+                            scope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        api.request("POST", "/api/households/${store.householdId}/move", JSONObject()
+                                            .put("spaceId", dash?.optString("spaceId"))
+                                            .put("fromBucketId", fromId)
+                                            .put("toBucketId", toId)
+                                            .put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey"))
+                                            .put("amountMinor", amount))
+                                    }
+                                }.onSuccess { status = "Moved. No bank transaction was created."; reload() }.onFailure { error = it.message ?: "Could not move money." }
                             }
                         }
                         2 -> ActivityTab(txns, dash, store.privacy, activity, { message -> error = message }, { body, receipt ->
@@ -201,7 +216,7 @@ fun BudgetApp(activity: MainActivity, start: String) {
                                     } else error = caught.message ?: "Could not save."
                                 }
                             }
-                        }) { id, patch ->
+                        }, { id, patch ->
                             scope.launch {
                                 try {
                                     withContext(Dispatchers.IO) { api.request("PATCH", "/api/households/${store.householdId}/transactions/$id", patch) }
@@ -210,6 +225,22 @@ fun BudgetApp(activity: MainActivity, start: String) {
                                 } catch (caught: Exception) {
                                     error = caught.message ?: "Could not update that transaction."
                                 }
+                            }
+                        }, { id ->
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) { api.request("POST", "/api/households/${store.householdId}/transactions/$id/duplicate", JSONObject()) }
+                                    status = "A copy was added and marked for review. The original was not changed."
+                                    reload()
+                                } catch (caught: Exception) { error = caught.message ?: "Could not duplicate." }
+                            }
+                        }) { keeper, other ->
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) { api.request("POST", "/api/households/${store.householdId}/transactions/$keeper/match", JSONObject().put("otherId", other)) }
+                                    status = "Matched. One copy left the totals."
+                                    reload()
+                                } catch (caught: Exception) { error = caught.message ?: "Could not match those transactions." }
                             }
                         }
                         3 -> WealthTab(dash, store.privacy) { page = it }
@@ -301,23 +332,43 @@ private fun HomeTab(dash: JSONObject?, privacy: Boolean) {
 }
 
 @Composable
-private fun PlanTab(dash: JSONObject?, privacy: Boolean, onAssign: (String, Long) -> Unit) {
+private fun PlanTab(dash: JSONObject?, privacy: Boolean, onAssign: (String, Long) -> Unit, onMove: (String, String, Long) -> Unit) {
     if (dash == null) { Text("Loading the plan…"); return }
     val buckets = dash.getJSONArray("buckets")
     val rows = dash.getJSONObject("budget").getJSONArray("buckets")
-    Text("Assign cash that has already arrived. Expected pay is not included.")
+    Text("Available is cash already assigned. Expected pay is not included, and a move does not create a bank transaction.")
+    var fromId by remember { mutableStateOf("") }
+    var toId by remember { mutableStateOf("") }
+    var moveText by remember { mutableStateOf("") }
+    var moveError by remember { mutableStateOf("") }
+    Text("Move between categories", style = MaterialTheme.typography.titleMedium)
     if (rows.length() == 0) Text("No categories yet.")
     for (index in 0 until rows.length()) {
         val row = rows.getJSONObject(index)
         val meta = (0 until buckets.length()).map { buckets.getJSONObject(it) }.find { it.optString("id") == row.optString("bucketId") }
         if (meta?.optString("systemRole").isNullOrBlank().not()) continue
-        var text by remember(row.optString("bucketId")) { mutableStateOf((row.optLong("assignedMinor") / 100.0).let { if (it == 0.0) "" else money(row.optLong("assignedMinor"), false).removePrefix("$") }) }
+        val bucketId = row.optString("bucketId")
+        var text by remember(bucketId) { mutableStateOf((row.optLong("assignedMinor") / 100.0).let { if (it == 0.0) "" else money(row.optLong("assignedMinor"), false).removePrefix("$") }) }
         Text("${row.optString("name")} available ${money(row.optLong("availableMinor"), privacy)} · ${meta?.optString("flexRole") ?: "category"}")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(text, { text = it }, label = { Text("Assigned") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
-            Button(onClick = { onAssign(row.optString("bucketId"), parseDollars(text)) }) { Text("Save") }
+            Button(onClick = { onAssign(bucketId, parseDollars(text)) }) { Text("Save") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { fromId = bucketId }) { Text(if (fromId == bucketId) "From this" else "From") }
+            TextButton(onClick = { toId = bucketId }) { Text(if (toId == bucketId) "To this" else "To") }
         }
     }
+    OutlinedTextField(moveText, { moveText = it }, label = { Text("Amount to move") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    Button(onClick = {
+        val amount = runCatching { parseDollars(moveText) }.getOrDefault(0)
+        if (fromId.isBlank() || toId.isBlank() || fromId == toId) { moveError = "Choose two different categories."; return@Button }
+        if (amount <= 0) { moveError = "Enter an amount to move."; return@Button }
+        moveError = ""
+        onMove(fromId, toId, amount)
+        moveText = ""
+    }) { Text("Move") }
+    if (moveError.isNotBlank()) Text(moveError)
 }
 
 @Composable
@@ -329,6 +380,8 @@ private fun ActivityTab(
     onMessage: (String) -> Unit,
     onSave: (JSONObject, ByteArray?) -> Unit,
     onUpdate: (String, JSONObject) -> Unit,
+    onDuplicate: (String) -> Unit,
+    onMatch: (String, String) -> Unit,
 ) {
     var payee by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
@@ -336,6 +389,7 @@ private fun ActivityTab(
     var counterId by remember { mutableStateOf("") }
     var bucketId by remember { mutableStateOf("") }
     var type by remember { mutableStateOf("expense") }
+    var notes by remember { mutableStateOf("") }
     var receipt by remember { mutableStateOf<ByteArray?>(null) }
     activity.onReceipt = { receipt = it }
     activity.onFile = { receipt = it }
@@ -380,6 +434,7 @@ private fun ActivityTab(
     }
     OutlinedTextField(payee, { payee = it }, label = { Text("Payee") }, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(notes, { notes = it }, label = { Text("Note") }, modifier = Modifier.fillMaxWidth())
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = { activity.captureReceipt() }) { Text(if (receipt == null) "Receipt photo" else "Photo ready") }
         TextButton(onClick = { activity.pickReceipt() }) { Text("Choose file") }
@@ -403,16 +458,19 @@ private fun ActivityTab(
                 .put("bankStatus", "posted")
                 .put("categoryLocked", bucketId.isNotBlank())
                 .put("splits", splits)
+                .put("notes", notes)
                 .put("opId", UUID.randomUUID().toString())
             if (counterId.isNotBlank()) body.put("counterAccountId", counterId)
             onSave(body, receipt)
-            payee = ""; amount = ""; receipt = null
+            payee = ""; amount = ""; notes = ""; receipt = null
         }) { Text("Save") }
     }
     Text("Receipt text is not read automatically.")
     val rows = txns?.optJSONArray("transactions")
     var selected by remember { mutableStateOf("") }
+    var matchId by remember { mutableStateOf("") }
     Text("Activity", style = MaterialTheme.typography.titleMedium)
+    if (txns != null) Text("Showing ${rows?.length() ?: 0} of ${txns.optInt("total")}.")
     if (rows == null) Text("Loading activity…")
     else if (rows.length() == 0) Text("No transactions yet.")
     else for (index in 0 until rows.length()) {
@@ -421,23 +479,98 @@ private fun ActivityTab(
         TextButton(onClick = { selected = if (selected == id) "" else id }, modifier = Modifier.fillMaxWidth()) {
             Text("${row.optString("date")}  ${row.optString("payee")}  ${money(row.optLong("amountMinor"), privacy)}  ${row.optString("reviewStatus").replace('_', ' ')}")
         }
-        if (selected == id) TransactionEditor(row, onMessage) { patch -> onUpdate(id, patch) }
+        if (selected == id) {
+            TransactionEditor(row, accounts, buckets, onMessage) { patch -> onUpdate(id, patch) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { onDuplicate(id) }) { Text("Duplicate") }
+                TextButton(onClick = { matchId = if (matchId == id) "" else id }) { Text(if (matchId == id) "Selected to match" else "Match") }
+                if (matchId.isNotBlank() && matchId != id) TextButton(onClick = { onMatch(matchId, id); matchId = "" }) { Text("Match with selected") }
+            }
+        }
     }
 }
 
 @Composable
-private fun TransactionEditor(row: JSONObject, onMessage: (String) -> Unit, onSave: (JSONObject) -> Unit) {
+private fun TransactionEditor(row: JSONObject, accounts: JSONArray, buckets: JSONArray, onMessage: (String) -> Unit, onSave: (JSONObject) -> Unit) {
     val original = row.optLong("amountMinor")
     var payee by remember(row.optString("id")) { mutableStateOf(row.optString("payee")) }
     var amount by remember(row.optString("id")) { mutableStateOf(money(kotlin.math.abs(original), false).removePrefix("$")) }
-    Text("Editing keeps the same direction. A reconciled amount change needs a reason on the web if this phone is refused.")
+    var type by remember(row.optString("id")) { mutableStateOf(row.optString("type", "expense")) }
+    var accountId by remember(row.optString("id")) { mutableStateOf(row.optString("accountId")) }
+    var notes by remember(row.optString("id")) { mutableStateOf(row.optString("notes")) }
+    var tags by remember(row.optString("id")) { mutableStateOf(row.optJSONArray("tags")?.let { array -> (0 until array.length()).joinToString(", ") { array.optString(it) } } ?: "") }
+    val initialSplits = row.optJSONArray("splits")
+    var drafts by remember(row.optString("id")) {
+        mutableStateOf(
+            if (initialSplits == null || initialSplits.length() == 0) listOf(SplitDraft("", ""))
+            else (0 until initialSplits.length()).map { splitIndex ->
+                val split = initialSplits.getJSONObject(splitIndex)
+                SplitDraft(split.optString("bucketId"), money(kotlin.math.abs(split.optLong("amountMinor")), false).removePrefix("$"))
+            },
+        )
+    }
+    var activeSplit by remember(row.optString("id")) { mutableIntStateOf(0) }
+    Text("A version conflict asks you to reload. Matching notes, tags, and receipts stay on the record you keep.")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf("expense", "income", "refund", "transfer", "cc_payment").forEach { choice ->
+            TextButton(onClick = { type = choice }) { Text(if (type == choice) choice.replace('_', ' ').replaceFirstChar { it.titlecase() } else choice.replace('_', ' ')) }
+        }
+    }
+    for (index in 0 until accounts.length()) {
+        val account = accounts.getJSONObject(index)
+        TextButton(onClick = { accountId = account.optString("id") }) {
+            Text(if (account.optString("id") == accountId) "Account · ${account.optString("name")}" else account.optString("name"))
+        }
+    }
+    if (type != "transfer" && type != "cc_payment") {
+        Text("Splits")
+        drafts.forEachIndexed { splitIndex, draft ->
+            TextButton(onClick = { activeSplit = splitIndex }) { Text(if (activeSplit == splitIndex) "Editing split ${splitIndex + 1}" else "Split ${splitIndex + 1}") }
+            OutlinedTextField(draft.amount, { value -> drafts = drafts.mapIndexed { index, item -> if (index == splitIndex) item.copy(amount = value) else item } }, label = { Text("Split ${splitIndex + 1} amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+            if (activeSplit == splitIndex) {
+                TextButton(onClick = { drafts = drafts.mapIndexed { index, item -> if (index == splitIndex) item.copy(bucketId = "") else item } }) { Text(if (draft.bucketId.isBlank()) "Category · Uncategorized" else "Uncategorized") }
+                for (index in 0 until buckets.length()) {
+                    val bucket = buckets.getJSONObject(index)
+                    if (bucket.optString("systemRole").isNotBlank()) continue
+                    TextButton(onClick = { drafts = drafts.mapIndexed { itemIndex, item -> if (itemIndex == splitIndex) item.copy(bucketId = bucket.optString("id")) else item } }) {
+                        Text(if (bucket.optString("id") == draft.bucketId) "Category · ${bucket.optString("name")}" else bucket.optString("name"))
+                    }
+                }
+            }
+        }
+        TextButton(onClick = { drafts = drafts + SplitDraft("", ""); activeSplit = drafts.lastIndex }) { Text("Add split") }
+    }
     OutlinedTextField(payee, { payee = it }, label = { Text("Payee") }, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(notes, { notes = it }, label = { Text("Note") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(tags, { tags = it }, label = { Text("Tags") }, modifier = Modifier.fillMaxWidth())
     Button(onClick = {
-        if (payee.isBlank()) { onMessage("Enter a payee."); return@Button }
+        if (payee.isBlank() || accountId.isBlank()) { onMessage("Enter a payee and choose an account."); return@Button }
         val magnitude = runCatching { parseDollars(amount) }.getOrElse { onMessage("Enter an amount like 12.50."); return@Button }
-        val signed = if (original < 0) -kotlin.math.abs(magnitude) else kotlin.math.abs(magnitude)
-        onSave(JSONObject().put("payee", payee).put("amountMinor", signed).put("version", if (row.has("version")) row.optInt("version") else 1))
+        if (magnitude == 0L && type != "reconciliation") { onMessage("Enter an amount other than zero."); return@Button }
+        val signed = if (type == "income" || type == "refund") kotlin.math.abs(magnitude) else if (type == "expense") -kotlin.math.abs(magnitude) else if (original < 0) -kotlin.math.abs(magnitude) else kotlin.math.abs(magnitude)
+        val splits = JSONArray()
+        if (type != "transfer" && type != "cc_payment") {
+            for (draft in drafts) {
+                if (draft.amount.isBlank() && draft.bucketId.isBlank()) continue
+                val splitMagnitude = runCatching { parseDollars(if (draft.amount.isBlank()) money(kotlin.math.abs(signed), false).removePrefix("$") else draft.amount) }.getOrElse { onMessage("Enter a split amount like 12.50."); return@Button }
+                if (splitMagnitude == 0L) continue
+                val item = JSONObject().put("amountMinor", kotlin.math.abs(splitMagnitude)).put("role", if (type == "income") "income" else if (type == "refund") "refund" else "expense")
+                if (draft.bucketId.isNotBlank()) item.put("bucketId", draft.bucketId)
+                splits.put(item)
+            }
+        }
+        val patch = JSONObject()
+            .put("payee", payee)
+            .put("amountMinor", signed)
+            .put("type", type)
+            .put("accountId", accountId)
+            .put("notes", notes)
+            .put("tags", JSONArray(tags.split(",").map { it.trim() }.filter { it.isNotEmpty() }))
+            .put("splits", splits)
+            .put("categoryLocked", drafts.any { it.bucketId.isNotBlank() })
+            .put("version", if (row.has("version")) row.optInt("version") else 1)
+        onSave(patch)
     }) { Text("Update") }
 }
 
@@ -515,12 +648,17 @@ private fun notifyAlerts(context: Context, dash: JSONObject) {
     context.getSystemService(NotificationManager::class.java).notify(42, notification)
 }
 
-private suspend fun flushQueue(api: BudgetApi, store: Store): Int = withContext(Dispatchers.IO) {
-    val owner = store.userId ?: return@withContext 0
-    if (store.token.isNullOrBlank()) return@withContext 0
+private data class SplitDraft(val bucketId: String, val amount: String)
+
+private data class FlushResult(val sent: Int, val rejected: String)
+
+private suspend fun flushQueue(api: BudgetApi, store: Store): FlushResult = withContext(Dispatchers.IO) {
+    val owner = store.userId ?: return@withContext FlushResult(0, "")
+    if (store.token.isNullOrBlank()) return@withContext FlushResult(0, "")
     val queue = store.queued()
     val left = JSONArray()
     var sent = 0
+    var rejected = ""
     for (index in 0 until queue.length()) {
         val item = queue.getJSONObject(index)
         if (item.optString("ownerId") != owner) {
@@ -534,12 +672,13 @@ private suspend fun flushQueue(api: BudgetApi, store: Store): Int = withContext(
             left.put(item)
         } catch (error: ApiException) {
             if (error.status == 401 || error.status >= 500) left.put(item)
+            else rejected = error.message ?: "A saved transaction was rejected and was not sent again."
         } catch (_: Exception) {
             left.put(item)
         }
     }
     store.replaceQueue(left)
-    sent
+    FlushResult(sent, rejected)
 }
 
 private fun tabIndex(host: String) = when (host) {

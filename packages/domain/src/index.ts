@@ -11,3 +11,4 @@ export * from "./rules.js";
 export * from "./importers.js";
 export * from "./assistant.js";
 export * from "./sync.js";
+export * from "./match.js";

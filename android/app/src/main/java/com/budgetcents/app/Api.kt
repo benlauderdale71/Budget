@@ -14,7 +14,7 @@ class BudgetApi(private val store: Store) {
     fun demo() = request("POST", "/api/auth/demo", JSONObject(), auth = false)
     fun households() = request("GET", "/api/households")
     fun dashboard(householdId: String) = request("GET", "/api/households/$householdId/dashboard")
-    fun transactions(householdId: String) = request("GET", "/api/households/$householdId/transactions?limit=40")
+    fun transactions(householdId: String) = request("GET", "/api/households/$householdId/transactions?limit=100")
     fun createTransaction(householdId: String, body: JSONObject) = request("POST", "/api/households/$householdId/transactions", body)
 
     fun uploadReceipt(householdId: String, transactionId: String, jpeg: ByteArray) {

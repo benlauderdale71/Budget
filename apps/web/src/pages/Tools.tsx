@@ -326,6 +326,16 @@ export function Settings() {
         <h2>Your data</h2>
         <div className="row">
           <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/backup"), "budgetcents-backup.json")}>Download backup</button>
+          <label className="btn-secondary">Restore a file<input type="file" accept="application/json" hidden onChange={async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const backup = JSON.parse(await file.text()) as unknown;
+            const preview = await api<{ adds: Record<string, number>; skipped: number; warnings: string[]; note: string }>(scoped(session.householdId, "/restore"), { method: "POST", body: JSON.stringify({ mode: "preview", backup }) });
+            const adds = Object.entries(preview.adds).map(([name, count]) => `${name} ${count}`).join(", ");
+            if (!window.confirm(`${preview.note} Would add ${adds || "nothing"}. Skipped ${preview.skipped}. ${preview.warnings.join(" ")} Add the missing rows?`)) return;
+            await api(scoped(session.householdId, "/restore"), { method: "POST", body: JSON.stringify({ mode: "add-missing", backup }) });
+            session.bump();
+          }} /></label>
           <button className="btn-secondary" onClick={async () => {
             if (!window.confirm("Archive assignments and keep transactions?")) return;
             const dash = await api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId));

@@ -12,6 +12,7 @@ interface SessionValue {
   tick: number;
   offline: boolean;
   queued: number;
+  syncError: string;
   refresh: () => Promise<void>;
   bump: () => void;
   chooseHousehold: (id: string) => void;
@@ -37,6 +38,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [tick, setTick] = useState(0);
   const [offline, setOffline] = useState(!navigator.onLine);
   const [queued, setQueued] = useState(queuedCount());
+  const [syncError, setSyncError] = useState("");
 
   async function refresh() {
     const data = await api<{ user: User; households: HouseholdRow[] }>("/api/me");
@@ -44,9 +46,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setHouseholds(data.households);
     setQueueOwner(data.user.id);
     applyTheme(data.user.theme);
-    const sent = await flushQueue();
+    const flushed = await flushQueue();
     setQueued(queuedCount());
-    if (sent) setTick((item) => item + 1);
+    setSyncError(flushed.rejected);
+    if (flushed.sent) setTick((item) => item + 1);
     const stored = localStorage.getItem("budgetcents.household");
     const next = data.households.find((item) => item.id === stored)?.id ?? data.households[0]?.id ?? "";
     setHouseholdId(next);
@@ -68,9 +71,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const onOff = () => setOffline(true);
     const onOn = () => {
       setOffline(false);
-      flushQueue().then((sent) => {
+      flushQueue().then((flushed) => {
         setQueued(queuedCount());
-        if (sent) setTick((item) => item + 1);
+        setSyncError(flushed.rejected);
+        if (flushed.sent) setTick((item) => item + 1);
       });
     };
     const onQueue = () => setQueued(queuedCount());
@@ -88,7 +92,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const currency = households.find((item) => item.id === householdId)?.currency ?? "USD";
   const value = useMemo<SessionValue>(() => ({
-    ready, user, households, householdId, spaceId, currency, tick, offline, queued,
+    ready, user, households, householdId, spaceId, currency, tick, offline, queued, syncError,
     refresh, bump: () => setTick((item) => item + 1),
     chooseHousehold: (id) => {
       localStorage.setItem("budgetcents.household", id);
@@ -113,7 +117,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setHouseholdId("");
     },
-  }), [ready, user, households, householdId, spaceId, currency, tick, offline, queued]);
+  }), [ready, user, households, householdId, spaceId, currency, tick, offline, queued, syncError]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

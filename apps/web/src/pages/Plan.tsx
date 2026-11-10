@@ -123,9 +123,17 @@ function NewBucket({ spaceId }: { spaceId: string }) {
     <Modal title="New category" onClose={() => setOpen(false)}>
       <form onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
+        const percent = String(data.get("percent") || "").trim();
+        let target: { type: string; amountMinor: number; cadence: string; percentBps: number } | undefined;
+        if (percent) {
+          const percentBps = Math.round(Number(percent) * 100);
+          if (!Number.isInteger(percentBps) || percentBps < 0 || percentBps > 10000) throw new Error("Enter a percent from 0 to 100.");
+          target = { type: "set_aside", amountMinor: 0, cadence: "monthly", percentBps };
+        }
         await api(scoped(session.householdId, "/buckets"), { method: "POST", body: JSON.stringify({
           spaceId, name: data.get("name"), group: data.get("group"), flexRole: data.get("flexRole"),
-          envelopeStyle: data.get("style"), purpose: data.get("purpose") || undefined, rollover: "both",
+          envelopeStyle: data.get("style"), purpose: data.get("purpose") || undefined, rollover: data.get("rollover") || "both",
+          target,
         }) });
         setOpen(false);
         session.bump();
@@ -135,6 +143,9 @@ function NewBucket({ spaceId }: { spaceId: string }) {
         <Field label="Flex role"><select name="flexRole"><option value="flexible">Flexible</option><option value="fixed">Fixed</option><option value="non_monthly">Non-monthly</option></select></Field>
         <Field label="Envelope style"><select name="style"><option value="regular">Regular</option><option value="annual">Annual</option><option value="goal">Goal</option><option value="debt">Debt</option></select></Field>
         <Field label="Purpose"><select name="purpose"><option value="">General</option><option value="emergency">Emergency</option><option value="sinking">Sinking fund</option><option value="giving">Giving</option><option value="goal">Goal</option><option value="debt">Debt</option></select></Field>
+        <Field label="Rollover"><select name="rollover"><option value="both">Keep leftovers and cover shortfalls</option><option value="positive">Keep leftovers only</option><option value="none">Reset each month</option></select></Field>
+        <Field label="Percent of posted income"><input name="percent" inputMode="decimal" placeholder="Optional, such as 10" /></Field>
+        <p className="muted">A percent uses income that has already arrived. It does not assign the money and it ignores expected pay.</p>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
         <button className="btn" type="submit">Save</button>
       </form>

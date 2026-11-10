@@ -559,6 +559,13 @@ describe("reports, investments, retirement, rules, import, sync", () => {
     expect(monthPeriod(2024, 2).end).toBe("2024-02-29");
   });
 
+  it("sizes a percent target from posted income only", () => {
+    const groceries = bucket({ id: "g", name: "Groceries", target: { type: "set_aside", amountMinor: 0, cadence: "monthly", percentBps: 1000 } });
+    expect(neededForTarget(groceries, 0, 0, 1, 200_000)).toBe(20_000);
+    expect(neededForTarget(groceries, 0, 5_000, 1, 200_000)).toBe(15_000);
+    expect(neededForTarget(groceries, 0, 0, 1, 0)).toBe(0);
+  });
+
   it("evaluates a watchlist from real rows only", () => {
     const input = base({
       transactions: [

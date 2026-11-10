@@ -53,6 +53,8 @@ export interface Target {
   cadence: Cadence;
   dueDate?: string;
   pausedUntil?: string;
+  /** Share of income that has already posted, in basis points. 1000 is 10 percent. Expected income is not used. */
+  percentBps?: number;
 }
 
 export interface Bucket {

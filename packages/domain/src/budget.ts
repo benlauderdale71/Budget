@@ -659,15 +659,16 @@ export function spendGuidance(input: {
 }
 
 /** How much more cash to assign. `availableIncludingAssigned` already includes this period's assignments. */
-export function neededForTarget(bucket: Bucket, availableIncludingAssigned: number, assignedThisPeriod: number, monthsRemaining = 1): number {
+export function neededForTarget(bucket: Bucket, availableIncludingAssigned: number, assignedThisPeriod: number, monthsRemaining = 1, postedIncomeMinor = 0): number {
   const target = bucket.target;
   if (!target || target.pausedUntil) return 0;
   const months = Math.max(1, monthsRemaining);
-  if (target.type === "set_aside") return Math.max(0, target.amountMinor - assignedThisPeriod);
+  const amount = target.percentBps == null ? target.amountMinor : Math.round((postedIncomeMinor * target.percentBps) / 10_000);
+  if (target.type === "set_aside") return Math.max(0, amount - assignedThisPeriod);
   if (target.type === "refill" || target.type === "maintain_balance") {
-    return Math.max(0, target.amountMinor - availableIncludingAssigned);
+    return Math.max(0, amount - availableIncludingAssigned);
   }
-  const gap = Math.max(0, target.amountMinor - availableIncludingAssigned);
+  const gap = Math.max(0, amount - availableIncludingAssigned);
   return Math.max(0, Math.ceil(gap / months));
 }
 
@@ -684,6 +685,7 @@ export function previewAutoAssign(input: {
   previousAssigned?: { bucketId: string; amountMinor: number }[];
   averageSpending?: { bucketId: string; amountMinor: number }[];
   monthsRemainingByBucket?: Record<string, number>;
+  postedIncomeMinor?: number;
 }): { lines: AutoAssignLine[]; unfundedMinor: number; explanation: string } {
   const rta = input.result.readyToAssignMinor;
   const lines: AutoAssignLine[] = [];
@@ -698,7 +700,7 @@ export function previewAutoAssign(input: {
     let need = 0;
     let reason = "";
     if (input.strategy === "underfunded") {
-      need = neededForTarget(bucket, available, assigned, input.monthsRemainingByBucket?.[bucket.id] ?? 1);
+      need = neededForTarget(bucket, available, assigned, input.monthsRemainingByBucket?.[bucket.id] ?? 1, input.postedIncomeMinor ?? 0);
       reason = bucket.target ? `Target ${bucket.target.type}` : "";
     } else if (input.strategy === "previous") {
       const prev = input.previousAssigned?.find((p) => p.bucketId === bucket.id)?.amountMinor ?? 0;
@@ -732,7 +734,7 @@ export function previewAutoAssign(input: {
 export function overfundingSuggestions(result: BudgetResult, buckets: Bucket[]): AutoAssignLine[] {
   const lines: AutoAssignLine[] = [];
   for (const bucket of buckets) {
-    if (!bucket.target || bucket.target.type === "set_aside") continue;
+    if (!bucket.target || bucket.target.type === "set_aside" || bucket.target.percentBps != null) continue;
     const row = result.buckets.find((b) => b.bucketId === bucket.id);
     if (!row) continue;
     const extra = row.availableMinor - bucket.target.amountMinor;

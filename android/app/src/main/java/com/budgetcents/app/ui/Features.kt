@@ -108,17 +108,23 @@ fun FeatureScreen(
             }
         }
         "debts" -> DebtScreen(api, hid, privacy)
-        "categories" -> CategoryScreen(dash, onError) { name, kind, role ->
+        "categories" -> CategoryScreen(dash, onError) { name, kind, role, style, percent ->
             scope.launch {
                 runIo(onError) {
-                    api.request("POST", "/api/households/$hid/buckets", JSONObject()
+                    val body = JSONObject()
                         .put("spaceId", dash?.optString("spaceId"))
                         .put("name", name)
                         .put("kind", kind)
                         .put("flexRole", role)
-                        .put("envelopeStyle", "regular")
-                        .put("rollover", "both"))
-                    onStatus("Category saved. Assign money on the Plan tab. Expected income does not fund it.")
+                        .put("envelopeStyle", style)
+                        .put("rollover", "both")
+                    if (percent.isNotBlank()) {
+                        val bps = percent.toDoubleOrNull()?.times(100)?.toInt()
+                        if (bps == null || bps !in 0..10000) { onError("Enter a percent from 0 to 100."); return@runIo }
+                        body.put("target", JSONObject().put("type", "set_aside").put("amountMinor", 0).put("cadence", "monthly").put("percentBps", bps))
+                    }
+                    api.request("POST", "/api/households/$hid/buckets", body)
+                    onStatus("Category saved. Assign money on the Plan tab. A percent uses posted income only.")
                     onChanged()
                 }
             }
@@ -213,15 +219,23 @@ fun FeatureScreen(
                 }
             }
         }
-        "reports" -> RemoteScreen("reports", { api.request("GET", "/api/households/$hid/reports/spending?by=bucket") }) { data ->
+        "reports" -> RemoteScreen("reports", { api.request("GET", "/api/households/$hid/reports/sankey") }) { data ->
+            Text("${data.optString("from")} to ${data.optString("to")} · ${data.optString("currency")}")
             Text(data.optString("formula"))
-            Text("Total ${money(data.optLong("totalMinor"), privacy)}")
-            val rows = data.optJSONArray("rows") ?: JSONArray()
-            if (rows.length() == 0) Text("No spending in this period.")
-            for (index in 0 until rows.length()) {
-                val row = rows.getJSONObject(index)
-                Text("${row.optString("label")} ${money(row.optLong("amountMinor"), privacy)}")
+            val links = data.optJSONArray("links") ?: JSONArray()
+            if (links.length() == 0) Text("No cash flow in this period.")
+            for (index in 0 until links.length()) {
+                val link = links.getJSONObject(index)
+                Text("${link.optString("source")} → ${link.optString("target")} ${money(link.optLong("amountMinor"), privacy)}")
             }
+            TextButton(onClick = {
+                scope.launch {
+                    runIo(onError) {
+                        val spending = api.request("GET", "/api/households/$hid/reports/spending?by=bucket")
+                        onStatus("${spending.optString("from")} to ${spending.optString("to")} · ${spending.optString("currency")}. ${spending.optString("formula")} Total ${money(spending.optLong("totalMinor"), privacy)}.")
+                    }
+                }
+            }) { Text("Spending total") }
         }
         "rules" -> RemoteScreen("rules", { api.request("GET", "/api/households/$hid/rules") }) { data ->
             val rules = data.optJSONArray("rules") ?: JSONArray()
@@ -357,17 +371,20 @@ private fun AccountsScreen(dash: JSONObject?, privacy: Boolean, onError: (String
 }
 
 @Composable
-private fun CategoryScreen(dash: JSONObject?, onError: (String) -> Unit, onSave: (String, String, String) -> Unit) {
+private fun CategoryScreen(dash: JSONObject?, onError: (String) -> Unit, onSave: (String, String, String, String, String) -> Unit) {
     val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
     if (buckets.length() == 0) Text("No categories yet.")
     for (index in 0 until buckets.length()) {
         val bucket = buckets.getJSONObject(index)
         if (bucket.optString("systemRole").isNotBlank()) continue
-        Text("${bucket.optString("name")} · ${bucket.optString("kind")} · ${bucket.optString("flexRole").ifBlank { "flexible" }}")
+        val style = bucket.optString("envelopeStyle").ifBlank { "regular" }
+        Text("${bucket.optString("name")} · ${bucket.optString("kind")} · ${bucket.optString("flexRole").ifBlank { "flexible" }} · $style")
     }
     var name by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf("expense") }
     var role by remember { mutableStateOf("flexible") }
+    var style by remember { mutableStateOf("regular") }
+    var percent by remember { mutableStateOf("") }
     OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
     Row {
         listOf("expense", "income").forEach { choice ->
@@ -379,8 +396,14 @@ private fun CategoryScreen(dash: JSONObject?, onError: (String) -> Unit, onSave:
             TextButton(onClick = { role = choice }) { Text(if (role == choice) choice.replace('_', ' ') else choice.replace('_', ' ')) }
         }
     }
-    Button(onClick = { if (name.isBlank()) onError("Name the category.") else onSave(name, kind, role) }) { Text("Add category") }
-    Text("A category, an envelope, and a flexible plan are views of the same money.")
+    Row {
+        listOf("regular", "annual", "goal", "debt").forEach { choice ->
+            TextButton(onClick = { style = choice }) { Text(if (style == choice) choice.replaceFirstChar { it.titlecase() } else choice) }
+        }
+    }
+    OutlinedTextField(percent, { percent = it }, label = { Text("Percent of posted income") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    Button(onClick = { if (name.isBlank()) onError("Name the category.") else onSave(name, kind, role, style, percent) }) { Text("Add category") }
+    Text("A category, an envelope, and a flexible plan are views of the same money. A percent does not assign cash, and expected pay is not included.")
 }
 
 @Composable

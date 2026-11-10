@@ -488,6 +488,28 @@ CREATE TABLE IF NOT EXISTS education_progress (
   PRIMARY KEY (user_id, lesson_id)
 );
 
+CREATE TABLE IF NOT EXISTS transaction_matches (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  keeper_id text NOT NULL,
+  archived_id text NOT NULL,
+  provider_copied integer NOT NULL DEFAULT 0,
+  moved_attachment_ids text NOT NULL DEFAULT '[]',
+  created_at text NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS transaction_matches_archived_idx ON transaction_matches (archived_id);
+CREATE UNIQUE INDEX IF NOT EXISTS transaction_matches_keeper_idx ON transaction_matches (keeper_id);
+
+CREATE TABLE IF NOT EXISTS saved_views (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  query_json text NOT NULL,
+  created_at text NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS plan_archives (
   id text PRIMARY KEY,
   household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,

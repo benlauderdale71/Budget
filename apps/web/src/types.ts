@@ -14,6 +14,7 @@ export interface User {
   budgetApproach: string;
   labelMode: string;
   onboardingStep: string | null;
+  dashboardLayout?: { id: string; hidden?: boolean }[];
 }
 
 export interface HouseholdRow {
@@ -128,6 +129,8 @@ export interface Txn {
   reconciled: boolean;
   tags?: string[];
   version?: number;
+  matchedArchivedId?: string | null;
+  refundOfId?: string;
 }
 
 export interface Dashboard {

@@ -69,6 +69,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         <main id="main" className="content">
           {household && Number(household.is_demo) === 1 ? <div className="banner demo">Sample household. The people, balances, and prices are fictional and stay separate from a household you create.</div> : null}
           {session.offline ? <div className="banner bad" role="status">This browser is offline. You can still draft a transaction; it stays on the device until the connection returns.{session.queued ? ` ${session.queued} waiting.` : ""}</div> : null}
+          {session.syncError ? <div className="banner bad" role="alert">{session.syncError}</div> : null}
           {children}
         </main>
       </div>

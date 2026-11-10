@@ -16,6 +16,8 @@ The original mapping is attached unchanged in `docs/source/LedgerOne_Complete_Bu
 
 The web reports page draws the cash-flow links the API already returned. Essential monthly spending on the roadmap is the monthly equivalent of confirmed bills, subscriptions, and debt payments, plus loan minimums that are not already scheduled. It is zero when none of those are selected.
 
-Android now has its own screens for accounts, categories, bills, paycheck planning, goals, debts, forecasts and saved scenarios, investments, retirement, spending reports, rules, household invites, provider status, security and deletion, lessons, the assistant, and CSV import. A screen existing in the release binary is not the same as an emulator pass. This environment had no emulator.
+Android now has its own screens for accounts, categories, bills, paycheck planning, goals, debts, forecasts and saved scenarios, investments, retirement, cash-flow and spending reports, rules, household invites, provider status, security and deletion, lessons, the assistant, and CSV import. The activity screen can edit splits, account, type, notes, and tags, and can duplicate or match two rows. Plan can move money between categories. A screen existing in the release binary is not the same as an emulator pass. This environment had no emulator.
+
+Matching hides one of two equal transactions and keeps the keeper’s notes, tags, review state, and receipt. Restore adds missing rows into the household that is signed in and refuses an id that belongs to another household. A percent target is a share of income that has already posted. Dashboard card visibility is stored on the user. None of those replace the unfinished parts of the original specification.
 
 Before anyone says the product matches one of those apps, re-read that app’s current public pages and this table. Provider rows in `docs/PROVIDERS.md` are still `not configured` unless the deployment has added credentials.

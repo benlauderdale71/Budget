@@ -7,9 +7,10 @@ A row is **Complete and verified** only when the applicable interface, API, pers
 Verification recorded with this ledger, on November 10, 2026:
 
 - `npm run typecheck` passed for domain, API, and web.
-- `npm test` passed: 23 domain tests, 12 API tests, and the web typecheck.
+- Domain tests: 26 passed. API tests: 23 passed, including match, restore, and a dropped transaction response. Web typecheck passed.
 - `npm run build` passed, then `npm start` served `/workspace/apps/web/dist` on port 8791. `BUDGETCENTS_WEB=./apps/web/dist` served the same directory on port 8792 even though npm’s working directory is `apps/api`. `/api/health` returned 200. `/` and `/plan` returned the built HTML. A path that escapes the web root returned 404.
 - Headless Chrome, desktop 1280×900 and phone 390×844, signed into the sample household on that production server. The home page showed safe to spend, money already given a job, the next bill, needs review, and goals. Hiding the Goals card removed it. Reports drew a cash-flow diagram whose labels included Inflow and Spending. The roadmap showed essential monthly spending of $2,120 from Rent and the car-loan minimum, not a fixed $2,000. A $10 transaction with a $1 split stayed on the form with “Nothing was saved.” The phone width used the bottom tab bar. `/privacy` and `/delete-account` loaded without a session.
+- A later headless Chrome pass on port 8794 signed into the sample household. Reset layout was in the card chooser. Hiding Goals removed “Open goals” and left Safe to spend on `/`. Activity showed Duplicate and Match. The new-category form showed Annual and “Percent of posted income.” A match was not completed in the browser; the API test covers that write.
 - `./gradlew assembleRelease bundleRelease` in `android/` passed with Android Gradle Plugin 8.13.0 and Gradle 8.13. Artifacts: `android/app/build/outputs/apk/release/app-release.apk` and `android/app/build/outputs/bundle/release/app-release.aab`. They are gitignored. No emulator or `adb` binary was available, so the Android UI was not clicked through.
 
 ## Defect fixes from the open review
@@ -19,7 +20,7 @@ Verification recorded with this ledger, on November 10, 2026:
 | A | `POST /api/households/:hid/fresh-start` authorizes the target space, then archives and clears assignments for that household and space in one transaction. Transactions and accounts stay. Related assignment, move, bucket, schedule, goal, rule, and import writes also check the space. | API test: another household returns 404, a private space returns 404 to a non-owner, an editor receives 403, an owner reset keeps the expense and writes `plan.reset`. | Complete and verified |
 | B | Create, edit, bulk edit, import, rules, and provider updates build the resulting transaction and call `validateTransaction` before any write. | API test: a bad split returns 400, and the dashboard, register, and spending report still load. A bad edit and a bad provider amount leave the stored row unchanged. | Complete and verified |
 | C | The web root is the repository `apps/web/dist`, including when the process working directory is `apps/api`. Relative `BUDGETCENTS_WEB` is resolved from the repository root. Static paths cannot escape that directory. | Path tests plus the two `npm start` runs above. | Complete and verified |
-| D | The browser assigns one operation id before the first transaction post and keeps it through retries and the offline queue. The queue is stored for the signed-in user. Sign-out does not send another user’s items. The server claims `applied_ops` inside the same transaction as the insert. | Queue unit test and a concurrent API retry that stored one Bus transaction. The lost-response case is the same retry path; it was not separately run in a browser with the network cut. | Implemented, verification pending |
+| D | The browser assigns one operation id before the first transaction post and keeps it through retries and the offline queue. The queue is stored for the signed-in user. Sign-out does not send another user’s items. The server claims `applied_ops` inside the same transaction as the insert. A dropped response is queued again, and a validation failure is reported instead of discarded. | Queue unit test, a concurrent API retry, and `lost-response.test.ts`: the server commits, the client fetch throws, the normal queue retries, and one transaction remains. Spending changes once. Sign-out sends nothing. A household switch does not retarget the stored path. A non-integer amount is explained and not stored. | Complete and verified |
 | E | Android replays the queue on `Dispatchers.IO`, keeps the operation id, leaves failed items in the queue, and reloads after a successful send. Items are tied to the signed-in user. | Present in the release binary. Not run on a device or emulator. | Implemented, verification pending |
 
 ## Specification
@@ -34,11 +35,11 @@ Web is a responsive Vite app. Android is native Compose with system back from a 
 
 ### 03. Interface
 
-Web and Android share a teal and ink palette, plain formulas, and loading or empty copy on the screens that were built. The web dashboard cards can be hidden in this browser. Android does not yet rearrange dashboard cards. Remaining: per-user card layout stored on the server, resize, undo, WCAG 2.2 AA verification, and a full keyboard pass. Dependency: none. Status: **Partial**.
+Web and Android share a teal and ink palette, plain formulas, and loading or empty copy on the screens that were built. The web dashboard stores each user’s card visibility with `PATCH /api/me`, and Up and Down store an order. The summary cards follow that order. Lower sections stay in place. Reset clears the saved layout. Android does not yet rearrange dashboard cards. Remaining: resize, undo, WCAG 2.2 AA verification, and a full keyboard pass. Dependency: none. Status: **Partial**.
 
 ### 04. Onboarding, accounts, and preferences
 
-Web: register, sign-in, password reset, email verification token, MFA, sessions, sample household, currency, theme, and fresh start. Android: sign-in, sample household, manual account create, theme saved to the account, sessions, and account deletion. API: scrypt passwords, sessions, `users.theme`. Verification: sample household opened in the browser; registration and MFA were not re-clicked in this pass. Remaining: federated sign-in, guided setup for couple/family/freelancer, and resumable setup steps. Mail stays in the outbox until `SMTP_URL` is set. Dependency: mail host for real delivery. Status: **Partial**.
+Web: register, sign-in, password reset, email verification token, MFA, sessions, sample household, currency, theme, and fresh start. The home page can save an onboarding choice for an individual, couple, family, or freelancer and can mark setup finished. Android: sign-in, sample household, manual account create, theme saved to the account, sessions, and account deletion. API: scrypt passwords, sessions, `users.theme`, `users.onboarding_step`. Verification: the layout and onboarding fields round-trip in an API test. The setup buttons were not clicked in the browser in this pass. Remaining: federated sign-in and a multi-step wizard that resumes after each account and category. Mail stays in the outbox until `SMTP_URL` is set. Dependency: mail host for real delivery. Status: **Partial**.
 
 ### 05. Account aggregation
 
@@ -46,11 +47,11 @@ Manual checking, savings, cash, credit, loan, and other account kinds can be cre
 
 ### 06. Transaction register
 
-Web: search, filters, review queue, splits, tags, notes, transfers, refunds, card payments, receipts, reconcile. Android: account is required, category is chosen, types include expense, income, refund, transfer, and card payment, and an existing row can update payee and amount with its version. API: validation before save, version conflicts, audit. Verification: the browser blocked a split mismatch; API tests cover the rejected write. Remaining: match and unmatch, duplicate-and-edit, saved filters, pagination, and Android split editing. Dependency: none. Status: **Partial**.
+Web activity can search, filter by account, save a named view, load further pages, edit account, type, splits, tags, notes, and a refund link, duplicate a row, and match or unmatch two equal amounts. Android can edit those same fields, add more than one split, duplicate, and match. API: validation before save, version conflicts, audit, and pagination with `nextOffset`. Matching keeps the keeper’s notes, tags, and review state, moves the receipt, copies a missing provider id, and removes one copy from spending. Unmatch puts that copy and the receipt back. A different household’s account, category, or transaction is rejected. Verification: `workflow.test.ts`. The new web buttons were not clicked in the browser in this pass, and Android was not run on a device. Remaining: a statement-lock screen on Android and a browser click-through of match and restore. Dependency: none. Status: **Partial**.
 
 ### 07. Import, export, migration, receipts
 
-CSV, OFX, and QIF preview and commit exist. CSV and PDF export and household backup exist. Android can preview and commit a pasted CSV. Receipt upload stores JPEG, PNG, or PDF and does not read the text. Verification: API import tests exist from earlier coverage; this pass did not upload a file in the browser. Remaining: a migration wizard from another app and OCR. Dependency: OCR vendor for reading receipts. Status: **Partial**.
+CSV, OFX, and QIF preview and commit exist. CSV and PDF export and a version-2 household backup exist. Restore previews first, then adds only missing rows into the signed-in household. An id owned by another household rejects the file and writes nothing. Android can preview and commit a pasted CSV. Receipt upload stores JPEG, PNG, or PDF and does not read the text. Verification: `workflow.test.ts` for preview, add-missing, and the cross-household rejection. The file picker was not used in the browser. Remaining: a migration wizard from another app and OCR. Dependency: OCR vendor for reading receipts. Status: **Partial**.
 
 ### 08. Categories, tags, rules
 
@@ -58,11 +59,11 @@ Web and Android can add categories and rules. Rules do not override a locked cat
 
 ### 09. Category budgeting
 
-The plan page shows category activity on the same balances. Android lists categories and their flex role. Remaining: percentage-of-income targets as a first-class editor on Android. Dependency: none. Status: **Partial**.
+The plan page shows category activity on the same balances. A new category can be a regular, annual, goal, or debt envelope, with a rollover choice and an optional percent of posted income. Underfunded auto-assign uses that percent against `incomeMinor` and treats a missing paycheck as zero. Android can set the same style and percent. Verification: domain test for 10 percent of 200000 minor units. Remaining: editing a percent on an existing category, scheduled fills, and target dates. Dependency: none. Status: **Partial**.
 
 ### 10. Zero-based assignment
 
-Web assign, move, and auto-assign refuse to fund from expected income. Android can assign on Plan. Verification: domain tests cover the identity; this pass did not click assign in the browser. Remaining: Android move-money. Dependency: none. Status: **Partial**.
+Web assign, move, and auto-assign refuse to fund from expected income. Android Plan can assign and move between categories. A move changes assignments only. Verification: domain tests cover the identity. The Android move control was compiled, not tapped on a device. Dependency: none. Status: **Partial**.
 
 ### 11. Envelope budgeting
 
@@ -114,7 +115,7 @@ Separate spaces exist, including a business space in the model. Tax and estate s
 
 ### 23. Reports, watchlists, reviews
 
-Spending, savings rate, and watchlists use stored transactions. The web watchlist now reads `actualMinor`. The cash-flow diagram was drawn in the browser for the sample household. Android shows spending by category and not the diagram. Dependency: none. Status: **Partial**.
+Spending, savings rate, and watchlists use stored transactions. The web watchlist reads `actualMinor`. The cash-flow diagram was drawn in the browser for the sample household. Android reports now list the same Sankey links and can request the spending total, including the date range, currency, and the transfer and refund note. Spending and income responses include that note. Verification: the earlier browser diagram, plus the API spending total in the workflow tests. Drill-down from a report total to its transactions is still not a screen. Dependency: none. Status: **Partial**.
 
 ### 24. Assistant
 
@@ -150,7 +151,7 @@ Categories, envelopes, and flexible spending share transactions. Amounts are int
 
 ### 32. Acceptance coverage
 
-Domain tests: 23 passed. API tests: 12 passed, including card treatment, private accounts, plan reset, split rejection, and idempotent retry. The browser checks listed at the top passed. Android instrumented tests were not run. Dependency: none. Status: **Partial**.
+Domain tests cover identity, essential spending, percent targets, and matching totals. API tests cover card treatment, private accounts, plan reset, split rejection, idempotent retry, match and unmatch, restore, and a dropped transaction response. The browser checks listed at the top passed for the earlier build. Android instrumented tests were not run. Dependency: none. Status: **Partial**.
 
 ### 33. Deployment and Play
 
@@ -164,5 +165,6 @@ The source prompt is unchanged. This ledger and `docs/SOURCE_RECONCILIATION.md` 
 
 - Live bank aggregation, bill data, market quotes, property and vehicle estimates, credit monitoring, cancellation, negotiation, automated transfers, SMS, coaching sessions, tax filing, and estate documents.
 - Android device or emulator pass, including offline replay, biometrics, widgets, and deep links.
-- Web workflows not exercised in the browser this pass: reconciliation, backup restore, account deletion, MFA, and a network-loss retry.
-- Server-saved dashboard layout, Android split editing, and match/unmatch of imported transactions.
+- Web workflows not clicked in the browser this pass: reconciliation, backup restore, account deletion, MFA, match, and the new activity buttons. The lost-response path was exercised through the web queue module against the API, not by cutting Chrome’s network.
+- Android device or emulator pass. Split editing, category moves, and the cash-flow list are in the release binary and were not tapped.
+- Scheduled envelope fills, irregular paycheck editing, loan refinance forms, report drill-down, and the rest of the original specification after section 23.

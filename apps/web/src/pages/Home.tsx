@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { api } from "../api.js";
 import { monthLabel } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -22,22 +22,31 @@ const HOME_CARDS = [
 ] as const;
 
 function useHomeCards() {
-  const [hidden, setHidden] = useState<string[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("budgetcents.homeCards") ?? "[]");
-      return Array.isArray(saved) ? saved.filter((item) => typeof item === "string") : [];
-    } catch {
-      return [];
-    }
-  });
-  function toggle(id: string) {
-    setHidden((current) => {
-      const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
-      localStorage.setItem("budgetcents.homeCards", JSON.stringify(next));
-      return next;
-    });
+  const session = useSession();
+  const layout = Array.isArray(session.user?.dashboardLayout) ? session.user.dashboardLayout : [];
+  const hidden = new Set(layout.filter((item) => item && item.hidden && typeof item.id === "string").map((item) => item.id));
+  const order = new Map(layout.map((item, index) => [item?.id, index]));
+  async function save(next: { id: string; hidden?: boolean }[]) {
+    await session.patchMe({ dashboardLayout: next });
   }
-  return { show: (id: string) => !hidden.includes(id), toggle };
+  function current() {
+    return HOME_CARDS.map(([id]) => ({ id, hidden: hidden.has(id) }));
+  }
+  return {
+    show: (id: string) => !hidden.has(id),
+    ordered: [...HOME_CARDS].sort((a, b) => (order.get(a[0]) ?? 99) - (order.get(b[0]) ?? 99)),
+    toggle: (id: string) => save(current().map((item) => item.id === id ? { ...item, hidden: !item.hidden } : item)),
+    move: (id: string, direction: -1 | 1) => {
+      const items = current().sort((a, b) => (order.get(a.id) ?? 99) - (order.get(b.id) ?? 99));
+      const index = items.findIndex((item) => item.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= items.length) return;
+      const [item] = items.splice(index, 1);
+      items.splice(target, 0, item);
+      return save(items);
+    },
+    reset: () => save([]),
+  };
 }
 
 export function Home() {
@@ -72,64 +81,42 @@ export function Home() {
       <details className="card">
         <summary>Choose dashboard cards</summary>
         <div className="chips" style={{ marginTop: 12 }}>
-          {HOME_CARDS.map(([id, label]) => (
-            <button key={id} type="button" className="chip" aria-pressed={cards.show(id)} onClick={() => cards.toggle(id)}>{label}</button>
+          {cards.ordered.map(([id, label]) => (
+            <span key={id} className="row">
+              <button type="button" className="chip" aria-pressed={cards.show(id)} onClick={() => void cards.toggle(id)}>{label}</button>
+              <button type="button" className="btn-quiet" aria-label={`Move ${label} up`} onClick={() => void cards.move(id, -1)}>Up</button>
+              <button type="button" className="btn-quiet" aria-label={`Move ${label} down`} onClick={() => void cards.move(id, 1)}>Down</button>
+            </span>
           ))}
         </div>
-        <p className="muted">Hidden cards stay on this browser. The figures are unchanged.</p>
+        <button type="button" className="btn-quiet" onClick={() => void cards.reset()}>Reset layout</button>
+        <p className="muted">This layout is saved to your account and follows you to another browser. The figures are unchanged.</p>
       </details>
       {dash.budget.identityDifferenceMinor !== 0 ? <div className="banner bad" role="alert">The plan does not match on-budget cash by <Money minor={dash.budget.identityDifferenceMinor} />. Review recent edits before relying on Ready to Assign.</div> : null}
       {dash.budget.warnings.filter((warning) => !warning.includes("identity")).map((warning) => <div key={warning} className="banner bad">{warning}</div>)}
+      {session.user?.onboardingStep !== "done" ? <article className="card">
+        <h2>Setup</h2>
+        <p className="muted">Start with accounts you type in. A bank connection is not required.</p>
+        <div className="chips">
+          {[["individual", "Just me"], ["couple", "Couple"], ["family", "Family"], ["freelancer", "Freelance"]].map(([id, label]) => (
+            <button key={id} type="button" className="chip" onClick={() => void session.patchMe({ onboardingStep: id })}>{label}</button>
+          ))}
+        </div>
+        <p>{session.user?.onboardingStep ? `Saved: ${session.user.onboardingStep}. ` : "Choose who this plan is for. "}<Link to="/accounts">Add an account</Link> · <button type="button" className="btn-quiet" onClick={() => void session.patchMe({ onboardingStep: "done" })}>Finish setup</button></p>
+      </article> : null}
       <div className="grid stats">
-        {cards.show("safe") ? <article className="card">
-          <p className="kicker">{short ? "Short before upcoming bills" : "Safe to spend"}</p>
-          <p className={`figure ${short ? "shortage" : ""}`}><Money minor={short ? dash.guidance.shortageMinor : dash.guidance.cashSafeMinor} tone={!short} /></p>
-          <p className="formula">{dash.guidance.formula}</p>
-          {dash.guidance.projectedUsesExpectedIncome ? <p className="muted">Projected allowance, including expected income that is not cash: <Money minor={dash.guidance.projectedAllowanceMinor} />. Daily cash figure: <Money minor={dash.guidance.dailyCashMinor} />.</p> : null}
-        </article> : null}
-        {cards.show("ready") ? <article className="card">
-          <p className="kicker">Ready to Assign</p>
-          <p className="figure"><Money minor={dash.budget.readyToAssignMinor} /></p>
-          <p className="formula">{dash.explain.formula}</p>
-        </article> : null}
-        {cards.show("worth") ? <article className="card">
-          <p className="kicker">Net worth</p>
-          <p className="figure"><Money minor={dash.netWorth.netMinor} /></p>
-          <p className="muted">Liquid <Money minor={dash.netWorth.liquidMinor} /></p>
-        </article> : null}
-        {cards.show("age") ? <article className="card">
-          <p className="kicker">Age of money</p>
-          <p className="figure">{dash.ageOfMoney.days == null ? "—" : `${dash.ageOfMoney.days}d`}</p>
-          <p className="formula">{dash.ageOfMoney.formula}</p>
-        </article> : null}
-      </div>
-      <div className="grid stats" style={{ marginTop: 16 }}>
-        {cards.show("committed") ? <article className="card">
-          <p className="kicker">Already given a job</p>
-          <p className="figure"><Money minor={committed} /></p>
-          <p className="muted">Cash sitting in categories, envelopes, and reserves. It is not also free to spend.</p>
-        </article> : null}
-        {cards.show("bill") ? <article className="card">
-          <p className="kicker">Next bill</p>
-          {nextBill ? <p className="figure"><Money minor={nextBill.amountMinor} /></p> : <p className="figure">None</p>}
-          <p className="muted">{nextBill ? `${nextBill.date} · ${nextBill.label}` : "No outflow is scheduled in the next month."}</p>
-        </article> : null}
-        {cards.show("review") ? <article className="card">
-          <p className="kicker">Needs review</p>
-          <p className="figure">{dash.reviewCount}</p>
-          <p>{dash.reviewCount ? <Link to="/activity?review=needs_review">Open the queue</Link> : "Nothing is waiting for a category check."}</p>
-        </article> : null}
-        {cards.show("goals") ? <article className="card">
-          <p className="kicker">Goals</p>
-          {dash.goals.length === 0 ? <p className="muted">No goal is using an envelope yet.</p> : (
-            <ul className="list">
-              {dash.goals.slice(0, 3).map((goal) => (
-                <li key={goal.id}><span>{goal.name}</span><span><Money minor={goal.availableMinor} /> / <Money minor={goal.target_minor} /></span></li>
-              ))}
-            </ul>
-          )}
-          <p><Link to="/goals">Open goals</Link></p>
-        </article> : null}
+        {cards.ordered.map(([id]) => {
+          if (!cards.show(id)) return null;
+          if (id === "safe") return <article className="card" key={id}><p className="kicker">{short ? "Short before upcoming bills" : "Safe to spend"}</p><p className={`figure ${short ? "shortage" : ""}`}><Money minor={short ? dash.guidance.shortageMinor : dash.guidance.cashSafeMinor} tone={!short} /></p><p className="formula">{dash.guidance.formula}</p>{dash.guidance.projectedUsesExpectedIncome ? <p className="muted">Projected allowance, including expected income that is not cash: <Money minor={dash.guidance.projectedAllowanceMinor} />. Daily cash figure: <Money minor={dash.guidance.dailyCashMinor} />.</p> : null}</article>;
+          if (id === "ready") return <article className="card" key={id}><p className="kicker">Ready to Assign</p><p className="figure"><Money minor={dash.budget.readyToAssignMinor} /></p><p className="formula">{dash.explain.formula}</p></article>;
+          if (id === "worth") return <article className="card" key={id}><p className="kicker">Net worth</p><p className="figure"><Money minor={dash.netWorth.netMinor} /></p><p className="muted">Liquid <Money minor={dash.netWorth.liquidMinor} /></p></article>;
+          if (id === "age") return <article className="card" key={id}><p className="kicker">Age of money</p><p className="figure">{dash.ageOfMoney.days == null ? "—" : `${dash.ageOfMoney.days}d`}</p><p className="formula">{dash.ageOfMoney.formula}</p></article>;
+          if (id === "committed") return <article className="card" key={id}><p className="kicker">Already given a job</p><p className="figure"><Money minor={committed} /></p><p className="muted">Cash sitting in categories, envelopes, and reserves. It is not also free to spend.</p></article>;
+          if (id === "bill") return <article className="card" key={id}><p className="kicker">Next bill</p>{nextBill ? <p className="figure"><Money minor={nextBill.amountMinor} /></p> : <p className="figure">None</p>}<p className="muted">{nextBill ? `${nextBill.date} · ${nextBill.label}` : "No outflow is scheduled in the next month."}</p></article>;
+          if (id === "review") return <article className="card" key={id}><p className="kicker">Needs review</p><p className="figure">{dash.reviewCount}</p><p>{dash.reviewCount ? <Link to="/activity?review=needs_review">Open the queue</Link> : "Nothing is waiting for a category check."}</p></article>;
+          if (id === "goals") return <article className="card" key={id}><p className="kicker">Goals</p>{dash.goals.length === 0 ? <p className="muted">No goal is using an envelope yet.</p> : <ul className="list">{dash.goals.slice(0, 3).map((goal) => <li key={goal.id}><span>{goal.name}</span><span><Money minor={goal.availableMinor} /> / <Money minor={goal.target_minor} /></span></li>)}</ul>}<p><Link to="/goals">Open goals</Link></p></article>;
+          return null;
+        })}
       </div>
       <div className="grid two" style={{ marginTop: 16 }}>
         {cards.show("month") ? <article className="card">
