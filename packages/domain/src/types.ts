@@ -144,6 +144,8 @@ export interface Transaction {
   fx?: { rate: string; rateDate: string; originalCurrency: string; originalAmountMinor: number };
   deleted?: boolean;
   excludeFromReports?: boolean;
+  /** Present on records loaded from the API so an edit can detect a conflicting save. */
+  version?: number;
 }
 
 export interface Assignment {

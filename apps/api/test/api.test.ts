@@ -176,5 +176,215 @@ describe("BudgetCents API", () => {
       body: JSON.stringify({ question: "what can I safely spend?" }),
     }));
     expect(assistant.body.facts[0].formula).toMatch(/Expected income|expected income|shortage|Cash safe/i);
+    const roadmap = await json(await api.request(`/api/households/${hid}/roadmap?asOf=2026-11-10`, { headers: auth(token) }));
+    expect(roadmap.status).toBe(200);
+    expect(roadmap.body.essential.amountMinor).toBe(212_000);
+    expect(roadmap.body.essential.sources.map((source: { name: string }) => source.name)).toEqual(expect.arrayContaining(["Rent", "Car loan minimum"]));
+  });
+});
+
+describe("authorization, validation, and idempotency", () => {
+  async function household(api: Awaited<ReturnType<typeof app>>, email: string) {
+    const registered = await json(await api.request("/api/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse", displayName: email, householdName: email }),
+    }));
+    const token = registered.body.token as string;
+    const hid = (await json(await api.request("/api/households", { headers: auth(token) }))).body.households[0].id as string;
+    const dash = await json(await api.request(`/api/households/${hid}/dashboard?asOf=2026-11-10`, { headers: auth(token) }));
+    return { token, hid, spaceId: dash.body.spaceId as string, buckets: dash.body.buckets as { id: string; name: string }[] };
+  }
+
+  it("does not let an admin reset another household or a private space, and keeps transactions", async () => {
+    const api = await app();
+    const owner = await household(api, "owner-reset@example.com");
+    const other = await household(api, "other-reset@example.com");
+    const groceries = owner.buckets.find((bucket) => bucket.name === "Groceries")!;
+    const account = await json(await api.request(`/api/households/${owner.hid}/accounts`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, name: "Cash", kind: "cash", openingBalanceMinor: 8000, openingDate: "2026-11-01" }),
+    }));
+    await api.request(`/api/households/${owner.hid}/assignments`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, bucketId: groceries.id, periodKey: "2026-11", amountMinor: 3000 }),
+    });
+    const expense = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ date: "2026-11-02", accountId: account.body.id, amountMinor: -500, type: "expense", payee: "Cafe", bankStatus: "posted", splits: [{ bucketId: groceries.id, amountMinor: 500, role: "expense" }], categoryLocked: true }),
+    }));
+    expect(expense.status).toBe(201);
+    const otherGroceries = other.buckets.find((bucket) => bucket.name === "Groceries")!;
+    await api.request(`/api/households/${other.hid}/assignments`, {
+      method: "POST", headers: auth(other.token),
+      body: JSON.stringify({ spaceId: other.spaceId, bucketId: otherGroceries.id, periodKey: "2026-11", amountMinor: 4000 }),
+    });
+    const cross = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: other.spaceId, keepTargets: false }),
+    }));
+    expect(cross.status).toBe(404);
+    const otherDash = await json(await api.request(`/api/households/${other.hid}/dashboard?asOf=2026-11-10`, { headers: auth(other.token) }));
+    expect(otherDash.body.budget.buckets.find((row: { bucketId: string }) => row.bucketId === otherGroceries.id).assignedMinor).toBe(4000);
+
+    const personal = await json(await api.request(`/api/households/${owner.hid}/spaces`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ name: "Private plan", kind: "personal" }),
+    }));
+    const privateBucket = await json(await api.request(`/api/households/${owner.hid}/buckets`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: personal.body.id, name: "Secret", group: "Spending" }),
+    }));
+    await api.request(`/api/households/${owner.hid}/assignments`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: personal.body.id, bucketId: privateBucket.body.id, periodKey: "2026-11", amountMinor: 1200 }),
+    });
+    const invite = await json(await api.request(`/api/households/${owner.hid}/invitations`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ email: "admin-reset@example.com", role: "admin" }),
+    }));
+    const admin = await json(await api.request("/api/auth/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "admin-reset@example.com", password: "correct-horse", displayName: "Admin", householdName: "Admin home" }),
+    }));
+    await api.request(`/api/invitations/${invite.body.token}/accept`, { method: "POST", headers: auth(admin.body.token) });
+    const stolen = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
+      method: "POST", headers: auth(admin.body.token),
+      body: JSON.stringify({ spaceId: personal.body.id, keepTargets: false }),
+    }));
+    expect(stolen.status).toBe(404);
+    const editorInvite = await json(await api.request(`/api/households/${owner.hid}/invitations`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ email: "editor-reset@example.com", role: "editor" }),
+    }));
+    const editor = await json(await api.request("/api/auth/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "editor-reset@example.com", password: "correct-horse", displayName: "Editor", householdName: "Editor home" }),
+    }));
+    await api.request(`/api/invitations/${editorInvite.body.token}/accept`, { method: "POST", headers: auth(editor.body.token) });
+    const memberReset = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
+      method: "POST", headers: auth(editor.body.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, keepTargets: false }),
+    }));
+    expect(memberReset.status).toBe(403);
+
+    const before = await json(await api.request(`/api/households/${owner.hid}/transactions?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    const reset = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, keepTargets: false }),
+    }));
+    expect(reset.status).toBe(200);
+    const after = await json(await api.request(`/api/households/${owner.hid}/transactions?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(after.body.transactions).toHaveLength(before.body.transactions.length);
+    expect(after.body.transactions.some((txn: { payee: string }) => txn.payee === "Cafe")).toBe(true);
+    const cleared = await json(await api.request(`/api/households/${owner.hid}/dashboard?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(cleared.body.budget.buckets.find((row: { bucketId: string }) => row.bucketId === groceries.id).assignedMinor).toBe(0);
+    const audit = await json(await api.request(`/api/households/${owner.hid}/audit`, { headers: auth(owner.token) }));
+    expect(audit.body.events.some((event: { action: string }) => event.action === "plan.reset")).toBe(true);
+    const privateStill = await json(await api.request(`/api/households/${owner.hid}/dashboard?asOf=2026-11-10&spaceId=${personal.body.id}`, { headers: auth(owner.token) }));
+    expect(privateStill.body.budget.buckets.find((row: { bucketId: string }) => row.bucketId === privateBucket.body.id).assignedMinor).toBe(1200);
+  });
+
+  it("rejects a split that does not match and leaves the register readable", async () => {
+    const api = await app();
+    const owner = await household(api, "splits@example.com");
+    const groceries = owner.buckets.find((bucket) => bucket.name === "Groceries")!;
+    const account = await json(await api.request(`/api/households/${owner.hid}/accounts`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, name: "Cash", kind: "cash", openingBalanceMinor: 5000, openingDate: "2026-11-01" }),
+    }));
+    const bad = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        date: "2026-11-03", accountId: account.body.id, amountMinor: -1000, type: "expense", payee: "Market", bankStatus: "posted", categoryLocked: true,
+        splits: [{ bucketId: groceries.id, amountMinor: 400, role: "expense" }],
+      }),
+    }));
+    expect(bad.status).toBe(400);
+    const dash = await json(await api.request(`/api/households/${owner.hid}/dashboard?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(dash.status).toBe(200);
+    const list = await json(await api.request(`/api/households/${owner.hid}/transactions?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(list.body.transactions.some((txn: { payee: string }) => txn.payee === "Market")).toBe(false);
+    const report = await json(await api.request(`/api/households/${owner.hid}/reports/spending?asOf=2026-11-10&from=2026-11-01&to=2026-11-30`, { headers: auth(owner.token) }));
+    expect(report.status).toBe(200);
+
+    const good = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        date: "2026-11-03", accountId: account.body.id, amountMinor: -1000, type: "expense", payee: "Market", bankStatus: "posted", categoryLocked: true,
+        splits: [{ bucketId: groceries.id, amountMinor: 1000, role: "expense" }],
+      }),
+    }));
+    expect(good.status).toBe(201);
+    const edited = await json(await api.request(`/api/households/${owner.hid}/transactions/${good.body.id}`, {
+      method: "PATCH", headers: auth(owner.token),
+      body: JSON.stringify({ version: 1, splits: [{ bucketId: groceries.id, amountMinor: 250, role: "expense" }] }),
+    }));
+    expect(edited.status).toBe(400);
+    const still = await json(await api.request(`/api/households/${owner.hid}/transactions?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    const market = still.body.transactions.find((txn: { payee: string }) => txn.payee === "Market");
+    expect(market.splits[0].amountMinor).toBe(1000);
+    const readable = await json(await api.request(`/api/households/${owner.hid}/dashboard?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(readable.status).toBe(200);
+
+    await api.request(`/api/households/${owner.hid}/rules`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        name: "Bad cafe splits", priority: 1, matchMode: "all",
+        conditions: [{ field: "payee", op: "contains", value: "cafe" }],
+        actions: [{ type: "set_splits", splits: [{ bucketId: groceries.id, amountMinor: 1, role: "expense" }] }],
+      }),
+    });
+    const ruled = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ date: "2026-11-04", accountId: account.body.id, amountMinor: -700, type: "expense", payee: "Cafe", bankStatus: "posted", splits: [] }),
+    }));
+    expect(ruled.status).toBe(400);
+    const afterRule = await json(await api.request(`/api/households/${owner.hid}/transactions?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(afterRule.body.transactions.some((txn: { payee: string }) => txn.payee === "Cafe")).toBe(false);
+
+    const posted = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        date: "2026-11-05", accountId: account.body.id, amountMinor: -800, type: "expense", payee: "Books", bankStatus: "posted", categoryLocked: true,
+        splits: [{ bucketId: groceries.id, amountMinor: 800, role: "expense" }], providerTransactionId: "prov-1",
+      }),
+    }));
+    expect(posted.status).toBe(201);
+    const mismatch = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        date: "2026-11-05", accountId: account.body.id, amountMinor: -900, type: "expense", payee: "Books posted", bankStatus: "posted",
+        splits: [{ bucketId: groceries.id, amountMinor: 900, role: "expense" }], providerTransactionId: "prov-1",
+      }),
+    }));
+    expect(mismatch.status).toBe(400);
+    const books = await json(await api.request(`/api/households/${owner.hid}/dashboard?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(books.status).toBe(200);
+    expect(books.body.budget.spendingMinor).toBe(1800);
+  });
+
+  it("records one transaction when the same operation id is retried, including concurrently", async () => {
+    const api = await app();
+    const owner = await household(api, "retry@example.com");
+    const account = await json(await api.request(`/api/households/${owner.hid}/accounts`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, name: "Cash", kind: "cash", openingBalanceMinor: 5000, openingDate: "2026-11-01" }),
+    }));
+    const body = { date: "2026-11-06", accountId: account.body.id, amountMinor: -250, type: "expense", payee: "Bus", bankStatus: "posted", splits: [], opId: "phone-op-1" };
+    const [first, second] = await Promise.all([
+      json(await api.request(`/api/households/${owner.hid}/transactions`, { method: "POST", headers: auth(owner.token), body: JSON.stringify(body) })),
+      json(await api.request(`/api/households/${owner.hid}/transactions`, { method: "POST", headers: auth(owner.token), body: JSON.stringify(body) })),
+    ]);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    const ids = [first.body.id, second.body.id].filter(Boolean);
+    expect(new Set(ids).size).toBe(1);
+    expect(first.body.duplicate === true || second.body.duplicate === true).toBe(true);
+    const third = await json(await api.request(`/api/households/${owner.hid}/transactions`, { method: "POST", headers: auth(owner.token), body: JSON.stringify(body) }));
+    expect(third.body.duplicate).toBe(true);
+    expect(third.body.id).toBe(ids[0]);
+    const list = await json(await api.request(`/api/households/${owner.hid}/transactions?asOf=2026-11-10`, { headers: auth(owner.token) }));
+    expect(list.body.transactions.filter((txn: { payee: string }) => txn.payee === "Bus")).toHaveLength(1);
   });
 });

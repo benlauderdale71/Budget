@@ -179,6 +179,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS transactions_provider_idx
   ON transactions (household_id, provider_transaction_id)
   WHERE provider_transaction_id IS NOT NULL AND deleted = 0;
 
+CREATE UNIQUE INDEX IF NOT EXISTS transactions_client_op_idx
+  ON transactions (household_id, client_op_id)
+  WHERE client_op_id IS NOT NULL AND deleted = 0;
+
 CREATE INDEX IF NOT EXISTS transactions_household_date_idx ON transactions (household_id, date);
 
 CREATE TABLE IF NOT EXISTS splits (

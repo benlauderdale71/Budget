@@ -109,6 +109,7 @@ async function openPostgres(databaseUrl: string): Promise<Database> {
       await pool.query(sql);
     },
     tx: async <T>(fn: () => Promise<T>) => {
+      if (storage.getStore()) return fn();
       const client = await pool.connect();
       const clientRun: Runner = async (sql, params = []) => {
         const result = await client.query(sql, params as never[]);

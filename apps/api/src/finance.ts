@@ -257,6 +257,7 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
       fx: fx ? JSON.parse(fx) : undefined,
       deleted: false,
       excludeFromReports: num(row.exclude_from_reports) === 1,
+      version: num(row.version, 1),
     });
     const mapped = transactions[transactions.length - 1];
     if ((primaryVisible || (counterId && counterVisible)) && mapped) balanceTransactions.push(mapped);

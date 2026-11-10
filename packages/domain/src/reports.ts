@@ -1,5 +1,5 @@
-import { daysBetween, periodFromDate } from "./dates.js";
-import type { Account, EngineInput, Transaction } from "./types.js";
+import { daysBetween, periodFromDate, type Cadence } from "./dates.js";
+import type { Account, Bucket, EngineInput, Schedule, Transaction } from "./types.js";
 import { displayBalance, isLiability, isOnBudgetCash } from "./budget.js";
 
 export interface ReportRow {
@@ -215,6 +215,74 @@ export function financialRoadmap(input: {
     },
   };
   return input.order.map((item) => facts[item.id] ?? { id: item.id, label: item.label, complete: false, detail: "Custom milestone — mark it when you decide it is done." });
+}
+
+const OCCURRENCES_PER_YEAR: Record<Cadence, number> = {
+  weekly: 52,
+  biweekly: 26,
+  twice_monthly: 24,
+  monthly: 12,
+  every_2_months: 6,
+  every_3_months: 4,
+  every_6_months: 2,
+  annual: 1,
+  custom: 0,
+};
+
+/** Integer monthly equivalent. Custom cadences use a 30-day month and do not invent a default bill. */
+export function monthlyEquivalentMinor(amountMinor: number, cadence: Cadence, customDays?: number): number {
+  if (!Number.isInteger(amountMinor)) throw new Error("amount must be an integer number of minor units");
+  if (cadence === "custom") {
+    const days = customDays && customDays > 0 ? customDays : 30;
+    return Math.round((amountMinor * 30) / days);
+  }
+  return Math.round((amountMinor * OCCURRENCES_PER_YEAR[cadence]) / 12);
+}
+
+export interface EssentialSource {
+  name: string;
+  monthlyMinor: number;
+  kind: "bill" | "debt_minimum";
+}
+
+/**
+ * Essential spending is the household's confirmed obligations, not a stand-in amount.
+ * Flexible spending and expected income are left out. Loan minimums are included only
+ * when that loan is not already represented by a confirmed payment schedule.
+ */
+export function essentialObligations(input: {
+  schedules: Schedule[];
+  buckets: Bucket[];
+  accounts: Account[];
+}): { amountMinor: number; sources: EssentialSource[]; formula: string } {
+  const sources: EssentialSource[] = [];
+  const coveredAccounts = new Set<string>();
+  for (const schedule of input.schedules) {
+    if (schedule.paused || schedule.direction !== "outflow" || schedule.confirmed === false) continue;
+    if (schedule.type === "transfer" || schedule.type === "fill" || schedule.type === "income") continue;
+    const bucket = schedule.bucketId ? input.buckets.find((item) => item.id === schedule.bucketId) : undefined;
+    if (bucket?.systemRole) continue;
+    const markedObligation = schedule.type === "bill" || schedule.type === "subscription" || schedule.type === "debt_payment";
+    const fixedBucket = bucket?.flexRole === "fixed" || bucket?.flexRole === "non_monthly" || bucket?.purpose === "debt";
+    if (!markedObligation && !fixedBucket) continue;
+    if (!(schedule.cadence in OCCURRENCES_PER_YEAR)) continue;
+    const monthly = monthlyEquivalentMinor(schedule.amountMinor, schedule.cadence, schedule.customDays);
+    if (monthly <= 0) continue;
+    sources.push({ name: schedule.name, monthlyMinor: monthly, kind: "bill" });
+    if (schedule.accountId) coveredAccounts.add(schedule.accountId);
+  }
+  for (const account of input.accounts) {
+    if (account.archived) continue;
+    if (!["loan", "student_loan", "mortgage"].includes(account.kind)) continue;
+    const minimum = account.minimumPaymentMinor ?? 0;
+    if (minimum <= 0 || coveredAccounts.has(account.id)) continue;
+    sources.push({ name: `${account.name} minimum`, monthlyMinor: minimum, kind: "debt_minimum" });
+  }
+  const amountMinor = sources.reduce((sum, source) => sum + source.monthlyMinor, 0);
+  const formula = sources.length
+    ? "Essential monthly spending adds the monthly equivalent of confirmed bills, subscriptions, and debt payments, plus loan minimums that are not already scheduled. Flexible spending and expected income are not included. No default amount is substituted."
+    : "No confirmed bills or loan minimums are selected, so essential monthly spending is zero. BudgetCents does not substitute a default amount.";
+  return { amountMinor, sources, formula };
 }
 
 export function emergencyGap(essentialMonthlyMinor: number, months: number, currentMinor: number): {

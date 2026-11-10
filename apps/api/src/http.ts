@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, timeWeightedReturn, toCsv, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
@@ -351,6 +351,7 @@ export function createApp(db: Database) {
       goals: goals.map((goal) => ({ ...goal, availableMinor: loaded.budget.buckets.find((row) => row.bucketId === goal.bucket_id)?.availableMinor ?? 0 })),
       alerts,
       recent: loaded.input.transactions.slice(-8).reverse(),
+      reviewCount: loaded.input.transactions.filter((txn) => txn.reviewStatus === "needs_review").length,
       labelMode: loaded.member.labelMode,
     });
   });
@@ -464,16 +465,44 @@ export function createApp(db: Database) {
     if (num(existing.reconciled) === 1 && (body.amountMinor != null || body.accountId != null) && !body.reason) {
       throw new ApiError(409, "This transaction is reconciled. Give a reason to change the amount or account.");
     }
-    const updated = await db.query(
-      `UPDATE transactions SET date = COALESCE($1, date), payee = COALESCE($2, payee), notes = COALESCE($3, notes), amount_minor = COALESCE($4, amount_minor),
-       review_status = COALESCE($5, review_status), bank_status = COALESCE($6, bank_status), flag = COALESCE($7, flag), category_locked = COALESCE($8, category_locked),
-       version = version + 1, updated_at = $9 WHERE id = $10 AND version = $11 AND deleted = 0 RETURNING id`,
-      [body.date ?? null, body.payee ?? null, body.notes ?? null, body.amountMinor ?? null, body.reviewStatus ?? null, body.bankStatus ?? null, body.flag ?? null, body.categoryLocked == null ? null : body.categoryLocked ? 1 : 0, nowIso(), existing.id, body.version],
-    );
-    if (!updated.length) throw new ApiError(409, "Someone else changed this transaction. Reload it and try again.");
-    if (body.splits) await replaceSplits(String(existing.id), body.splits);
-    if (body.tags) await replaceTags(String(existing.id), body.tags);
-    await audit(db, member.householdId, me.id, "transaction.update", body.reason ?? "Edited transaction", "transaction", String(existing.id));
+    const accountId = body.accountId ?? String(existing.account_id);
+    const counterAccountId = body.counterAccountId ?? str(existing.counter_account_id);
+    const account = await mustAccount(me.id, member.householdId, accountId);
+    if (counterAccountId) await mustAccount(me.id, member.householdId, counterAccountId);
+    const splits = body.splits ? body.splits.map(splitFromInput) : await splitsOf(String(existing.id));
+    const resulting = transactionFromRow(existing, splits, {
+      date: body.date,
+      payee: body.payee,
+      notes: body.notes,
+      amountMinor: body.amountMinor,
+      reviewStatus: body.reviewStatus,
+      bankStatus: body.bankStatus,
+      flag: body.flag,
+      accountId,
+      counterAccountId,
+      type: body.type as Transaction["type"] | undefined,
+      currency: String(account.currency),
+    });
+    const accounts = await loadEngineAccounts(member.householdId, [resulting.accountId, resulting.counterAccountId]);
+    validateTransaction(resulting, accounts, String(account.currency));
+    await db.tx(async () => {
+      const updated = await db.query(
+        `UPDATE transactions SET date = COALESCE($1, date), payee = COALESCE($2, payee), notes = COALESCE($3, notes), amount_minor = COALESCE($4, amount_minor),
+         review_status = COALESCE($5, review_status), bank_status = COALESCE($6, bank_status), flag = COALESCE($7, flag), category_locked = COALESCE($8, category_locked),
+         account_id = $9, counter_account_id = $10, type = COALESCE($11, type), currency = $12, space_id = $13,
+         version = version + 1, updated_at = $14
+         WHERE id = $15 AND household_id = $16 AND version = $17 AND deleted = 0 RETURNING id`,
+        [
+          body.date ?? null, body.payee ?? null, body.notes ?? null, body.amountMinor ?? null, body.reviewStatus ?? null, body.bankStatus ?? null, body.flag ?? null,
+          body.categoryLocked == null ? null : body.categoryLocked ? 1 : 0, accountId, counterAccountId ?? null, body.type ?? null, account.currency, account.space_id,
+          nowIso(), existing.id, member.householdId, body.version,
+        ],
+      );
+      if (!updated.length) throw new ApiError(409, "Someone else changed this transaction. Reload it and try again.");
+      if (body.splits) await replaceSplits(String(existing.id), body.splits);
+      if (body.tags) await replaceTags(String(existing.id), body.tags);
+      await audit(db, member.householdId, me.id, "transaction.update", body.reason ?? "Edited transaction", "transaction", String(existing.id));
+    });
     return c.json({ ok: true });
   });
 
@@ -499,23 +528,34 @@ export function createApp(db: Database) {
       bucketId: z.string().optional(),
       deleted: z.boolean().optional(),
     }).parse(await c.req.json());
+    const prepared: { existing: Awaited<ReturnType<typeof mustTxn>>; splits: Transaction["splits"] }[] = [];
     for (const txnId of body.ids) {
       const existing = await mustTxn(me.id, member.householdId, txnId);
-      if (body.deleted) {
-        if (num(existing.reconciled) === 1) continue;
-        await db.query(`UPDATE transactions SET deleted = 1, updated_at = $1 WHERE id = $2`, [nowIso(), txnId]);
-      }
-      if (body.reviewStatus) await db.query(`UPDATE transactions SET review_status = $1, updated_at = $2 WHERE id = $3`, [body.reviewStatus, nowIso(), txnId]);
-      if (body.tag) await db.query(`INSERT INTO transaction_tags (transaction_id, tag) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [txnId, body.tag]);
+      let splits = await splitsOf(txnId);
       if (body.bucketId) {
-        await db.query(`DELETE FROM splits WHERE transaction_id = $1`, [txnId]);
-        await db.query(`INSERT INTO splits (id, transaction_id, bucket_id, amount_minor, role) VALUES ($1,$2,$3,$4,$5)`, [
-          id(), txnId, body.bucketId, Math.abs(num(existing.amount_minor)), num(existing.amount_minor) >= 0 ? "income" : "expense",
-        ]);
-        await db.query(`UPDATE transactions SET category_locked = 1 WHERE id = $1`, [txnId]);
+        splits = [{ bucketId: body.bucketId, amountMinor: Math.abs(num(existing.amount_minor)), role: num(existing.amount_minor) >= 0 ? "income" : "expense" }];
       }
+      const draft = transactionFromRow(existing, splits, { reviewStatus: body.reviewStatus });
+      const accounts = await loadEngineAccounts(member.householdId, [draft.accountId, draft.counterAccountId]);
+      validateTransaction(draft, accounts, draft.currency);
+      prepared.push({ existing, splits });
     }
-    await audit(db, member.householdId, me.id, "transaction.bulk", `Updated ${body.ids.length} transactions`);
+    await db.tx(async () => {
+      for (const { existing } of prepared) {
+        const txnId = String(existing.id);
+        if (body.deleted) {
+          if (num(existing.reconciled) === 1) continue;
+          await db.query(`UPDATE transactions SET deleted = 1, updated_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), txnId, member.householdId]);
+        }
+        if (body.reviewStatus) await db.query(`UPDATE transactions SET review_status = $1, updated_at = $2 WHERE id = $3 AND household_id = $4`, [body.reviewStatus, nowIso(), txnId, member.householdId]);
+        if (body.tag) await db.query(`INSERT INTO transaction_tags (transaction_id, tag) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [txnId, body.tag]);
+        if (body.bucketId) {
+          await replaceSplits(txnId, [{ bucketId: body.bucketId, amountMinor: Math.abs(num(existing.amount_minor)), role: num(existing.amount_minor) >= 0 ? "income" : "expense" }]);
+          await db.query(`UPDATE transactions SET category_locked = 1, updated_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), txnId, member.householdId]);
+        }
+      }
+      await audit(db, member.householdId, me.id, "transaction.bulk", `Updated ${body.ids.length} transactions`);
+    });
     return c.json({ ok: true });
   });
 
@@ -525,6 +565,7 @@ export function createApp(db: Database) {
     assertBudget(member);
     const body = z.object({ spaceId: z.string(), bucketId: z.string(), periodKey: z.string(), amountMinor: money }).parse(await c.req.json());
     await assertSpace(me.id, member.householdId, body.spaceId);
+    await assertBucket(member.householdId, body.spaceId, body.bucketId);
     await setAssignment(db, member.householdId, body.spaceId, body.bucketId, body.periodKey, body.amountMinor);
     await audit(db, member.householdId, me.id, "assign", "Updated an assignment");
     return c.json({ ok: true });
@@ -536,6 +577,8 @@ export function createApp(db: Database) {
     assertBudget(member);
     const body = z.object({ spaceId: z.string(), fromBucketId: z.string().nullable(), toBucketId: z.string().nullable(), periodKey: z.string(), amountMinor: money.positive() }).parse(await c.req.json());
     const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
+    if (body.fromBucketId) await assertBucket(member.householdId, body.spaceId, body.fromBucketId);
+    if (body.toBucketId) await assertBucket(member.householdId, body.spaceId, body.toBucketId);
     const adjust = async (bucketId: string, delta: number) => {
       const current = loaded.budget.buckets.find((row) => row.bucketId === bucketId)?.assignedMinor ?? 0;
       await setAssignment(db, member.householdId, body.spaceId, bucketId, body.periodKey, current + delta);
@@ -586,8 +629,12 @@ export function createApp(db: Database) {
       lines: z.array(z.object({ bucketId: z.string(), plannedMinor: money })),
     }).parse(await c.req.json());
     await assertSpace(me.id, member.householdId, body.spaceId);
+    for (const line of body.lines) {
+      if (line.plannedMinor === 0) continue;
+      await assertBucket(member.householdId, body.spaceId, line.bucketId);
+    }
     await db.tx(async () => {
-      await db.query(`DELETE FROM plan_lines WHERE space_id = $1 AND period_key = $2`, [body.spaceId, body.periodKey]);
+      await db.query(`DELETE FROM plan_lines WHERE household_id = $1 AND space_id = $2 AND period_key = $3`, [member.householdId, body.spaceId, body.periodKey]);
       for (const line of body.lines) {
         if (line.plannedMinor === 0) continue;
         await db.query(
@@ -629,6 +676,7 @@ export function createApp(db: Database) {
       rolloverCapMinor: money.optional(), purpose: z.string().optional(), icon: z.string().optional(),
       target: z.record(z.unknown()).nullable().optional(),
     }).parse(await c.req.json());
+    await assertSpace(me.id, member.householdId, body.spaceId);
     const bucketId = id();
     await db.query(
       `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, created_at)
@@ -847,6 +895,7 @@ export function createApp(db: Database) {
     if (body.format === "qif") rows = parseQif(body.text).map((txn, index) => ({ rowNumber: index + 1, ...txn, errors: [], duplicateKey: duplicateKey({ date: txn.date, amountMinor: txn.amountMinor, description: txn.payee, account: "" }) }));
     const existing = await db.query(`SELECT date, amount_minor, payee, account_id FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId]);
     const keys = new Set(existing.map((txn) => duplicateKey({ date: String(txn.date), amountMinor: num(txn.amount_minor), description: String(txn.payee), account: "" })));
+    await assertSpace(me.id, member.householdId, body.spaceId);
     const preview = rows.map((row) => ({ ...row, duplicate: row.duplicateKey ? keys.has(row.duplicateKey) : false }));
     const batchId = id();
     await db.query(`INSERT INTO import_batches (id, household_id, space_id, source, status, preview_json, created_at) VALUES ($1,$2,$3,$4,'preview',$5,$6)`, [batchId, member.householdId, body.spaceId, body.profile ?? body.format, JSON.stringify(preview), nowIso()]);
@@ -858,20 +907,25 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
     const body = z.object({ accountId: z.string(), rowNumbers: z.array(z.number().int()) }).parse(await c.req.json());
-    await mustAccount(me.id, member.householdId, body.accountId);
+    const account = await mustAccount(me.id, member.householdId, body.accountId);
     const batches = await db.query(`SELECT * FROM import_batches WHERE id = $1 AND household_id = $2 AND status = 'preview'`, [c.req.param("batchId"), member.householdId]);
     if (!batches.length) throw new ApiError(404, "Not found");
+    await assertSpace(me.id, member.householdId, String(batches[0].space_id));
+    if (String(account.space_id) !== String(batches[0].space_id)) throw new ApiError(400, "Choose an account in the same space as the import.");
     const rows = JSON.parse(String(batches[0].preview_json)) as { rowNumber: number; date?: string; amountMinor?: number; payee?: string; errors: string[]; duplicate?: boolean }[];
     let created = 0;
-    for (const row of rows) {
-      if (!body.rowNumbers.includes(row.rowNumber) || row.errors.length || row.duplicate || !row.date || row.amountMinor == null) continue;
-      await insertTransaction(me, member.householdId, {
-        spaceId: String(batches[0].space_id), date: row.date, accountId: body.accountId, amountMinor: row.amountMinor,
-        type: row.amountMinor >= 0 ? "income" : "expense", payee: row.payee || "Imported", splits: [], bankStatus: "posted", importBatchId: String(batches[0].id), reviewStatus: "needs_review",
-      });
-      created += 1;
-    }
-    await db.query(`UPDATE import_batches SET status = 'committed', committed_at = $1 WHERE id = $2`, [nowIso(), batches[0].id]);
+    await db.tx(async () => {
+      for (const row of rows) {
+        if (!body.rowNumbers.includes(row.rowNumber) || row.errors.length || row.duplicate || !row.date || row.amountMinor == null) continue;
+        const saved = await insertTransaction(me, member.householdId, {
+          spaceId: String(batches[0].space_id), date: row.date, accountId: body.accountId, amountMinor: row.amountMinor,
+          type: row.amountMinor >= 0 ? "income" : "expense", payee: row.payee || "Imported", splits: [], bankStatus: "posted", importBatchId: String(batches[0].id), reviewStatus: "needs_review",
+          opId: `import:${batches[0].id}:${row.rowNumber}`,
+        });
+        if (!saved.duplicate) created += 1;
+      }
+      await db.query(`UPDATE import_batches SET status = 'committed', committed_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), batches[0].id, member.householdId]);
+    });
     return c.json({ created });
   });
 
@@ -994,13 +1048,8 @@ export function createApp(db: Database) {
     const body = z.object({ ops: z.array(z.object({ opId: z.string(), transaction: transactionSchema })) }).parse(await c.req.json());
     const results = [];
     for (const op of body.ops) {
-      const seen = await db.query(`SELECT op_id FROM applied_ops WHERE household_id = $1 AND op_id = $2`, [c.req.param("hid"), op.opId]);
-      if (seen.length) {
-        results.push({ opId: op.opId, status: "duplicate" });
-        continue;
-      }
       const created = await insertTransaction(me, c.req.param("hid"), { ...op.transaction, opId: op.opId });
-      results.push({ opId: op.opId, status: "applied", id: created.id });
+      results.push({ opId: op.opId, status: created.duplicate ? "duplicate" : created.updated ? "updated" : "applied", id: created.id });
     }
     return c.json({ results });
   });
@@ -1018,11 +1067,15 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertAdmin(member);
     const body = z.object({ spaceId: z.string(), keepTargets: z.boolean() }).parse(await c.req.json());
-    const assignments = await db.query(`SELECT * FROM assignments WHERE space_id = $1`, [body.spaceId]);
-    await db.query(`INSERT INTO plan_archives (id, household_id, space_id, snapshot_json, created_at) VALUES ($1,$2,$3,$4,$5)`, [id(), member.householdId, body.spaceId, JSON.stringify({ assignments }), nowIso()]);
-    await db.query(`DELETE FROM assignments WHERE space_id = $1`, [body.spaceId]);
-    if (!body.keepTargets) await db.query(`UPDATE buckets SET target_json = NULL WHERE space_id = $1 AND system_role IS NULL`, [body.spaceId]);
-    await audit(db, member.householdId, me.id, "plan.reset", "Archived the plan and cleared assignments. Transactions were kept.");
+    await assertSpace(me.id, member.householdId, body.spaceId);
+    await db.tx(async () => {
+      const assignments = await db.query(`SELECT * FROM assignments WHERE household_id = $1 AND space_id = $2`, [member.householdId, body.spaceId]);
+      const targets = await db.query(`SELECT id, name, target_json FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, body.spaceId]);
+      await db.query(`INSERT INTO plan_archives (id, household_id, space_id, snapshot_json, created_at) VALUES ($1,$2,$3,$4,$5)`, [id(), member.householdId, body.spaceId, JSON.stringify({ assignments, targets, keepTargets: body.keepTargets }), nowIso()]);
+      await db.query(`DELETE FROM assignments WHERE household_id = $1 AND space_id = $2`, [member.householdId, body.spaceId]);
+      if (!body.keepTargets) await db.query(`UPDATE buckets SET target_json = NULL WHERE household_id = $1 AND space_id = $2 AND system_role IS NULL`, [member.householdId, body.spaceId]);
+      await audit(db, member.householdId, me.id, "plan.reset", "Archived the plan and cleared assignments. Transactions and accounts were kept.", "space", body.spaceId);
+    });
     return c.json({ ok: true, note: "Transactions and accounts were kept. Assignments were archived." });
   });
 
@@ -1139,6 +1192,11 @@ export function createApp(db: Database) {
     const me = await actor(c);
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined);
     const emergency = loaded.budget.buckets.find((row) => loaded.input.buckets.find((bucket) => bucket.id === row.bucketId)?.purpose === "emergency");
+    const essential = essentialObligations({
+      schedules: loaded.input.schedules ?? [],
+      buckets: loaded.input.buckets,
+      accounts: loaded.input.accounts.filter((account) => account.spaceId === loaded.spaceId && loaded.visibleAccountIds.has(account.id)),
+    });
     const orderRows = await db.query(`SELECT item_id, label FROM roadmap_order WHERE household_id = $1 ORDER BY sort`, [loaded.member.householdId]);
     const order = orderRows.length ? orderRows.map((row) => ({ id: String(row.item_id), label: String(row.label) })) : [
       { id: "starter_emergency", label: "Starter emergency buffer" },
@@ -1151,14 +1209,15 @@ export function createApp(db: Database) {
     return c.json({
       milestones: financialRoadmap({
         emergencyMonths: 3,
-        essentialMonthlyMinor: 200_000,
+        essentialMonthlyMinor: essential.amountMinor,
         emergencySavedMinor: emergency?.availableMinor ?? 0,
         debtBalanceMinor: debtBalance,
         retirementContributionAnnualMinor: 0,
-        retirementTargetAnnualMinor: 1,
+        retirementTargetAnnualMinor: 0,
         order,
       }),
-      emergency: emergencyGap(200_000, 3, emergency?.availableMinor ?? 0),
+      essential,
+      emergency: emergencyGap(essential.amountMinor, 3, emergency?.availableMinor ?? 0),
     });
   });
 
@@ -1171,6 +1230,12 @@ export function createApp(db: Database) {
       direction: z.enum(["inflow", "outflow"]), type: z.string(), accountId: z.string().optional(), bucketId: z.string().optional(),
       payee: z.string().optional(), trialEnds: z.string().optional(), reminderDays: z.number().int().optional(),
     }).parse(await c.req.json());
+    await assertSpace(me.id, member.householdId, body.spaceId);
+    if (body.accountId) {
+      const account = await mustAccount(me.id, member.householdId, body.accountId);
+      if (String(account.space_id) !== body.spaceId) throw new ApiError(400, "That account is in a different space.");
+    }
+    if (body.bucketId) await assertBucket(member.householdId, body.spaceId, body.bucketId);
     const scheduleId = id();
     await db.query(
       `INSERT INTO schedules (id, household_id, space_id, name, cadence, next_date, amount_minor, direction, account_id, bucket_id, type, payee, trial_ends, reminder_days, confirmed)
@@ -1197,6 +1262,8 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertBudget(member);
     const body = z.object({ spaceId: z.string(), name: z.string(), bucketId: z.string(), targetMinor: money, targetDate: z.string().optional(), purpose: z.string().optional() }).parse(await c.req.json());
+    await assertSpace(me.id, member.householdId, body.spaceId);
+    await assertBucket(member.householdId, body.spaceId, body.bucketId);
     const goalId = id();
     await db.query(`INSERT INTO goals (id, household_id, space_id, bucket_id, name, target_minor, target_date, purpose) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [goalId, member.householdId, body.spaceId, body.bucketId, body.name, body.targetMinor, body.targetDate ?? null, body.purpose ?? "goal"]);
     return c.json({ id: goalId, note: "Progress uses this envelope's available balance, so the dollars are not also free to spend." }, 201);
@@ -1210,6 +1277,7 @@ export function createApp(db: Database) {
       spaceId: z.string().optional(), name: z.string(), priority: z.number().int().default(100), matchMode: z.enum(["all", "any"]),
       conditions: z.array(z.record(z.unknown())), actions: z.array(z.record(z.unknown())), enabled: z.boolean().default(true),
     }).parse(await c.req.json());
+    if (body.spaceId) await assertSpace(me.id, member.householdId, body.spaceId);
     const ruleId = id();
     await db.query(`INSERT INTO rules (id, household_id, space_id, name, priority, enabled, match_mode, conditions_json, actions_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [ruleId, member.householdId, body.spaceId ?? null, body.name, body.priority, body.enabled ? 1 : 0, body.matchMode, JSON.stringify(body.conditions), JSON.stringify(body.actions)]);
     return c.json({ id: ruleId }, 201);
@@ -1325,6 +1393,11 @@ export function createApp(db: Database) {
     if (!spaces.some((space) => space.id === spaceId)) throw new ApiError(404, "Not found");
   }
 
+  async function assertBucket(householdId: string, spaceId: string, bucketId: string) {
+    const rows = await db.query(`SELECT id FROM buckets WHERE id = $1 AND household_id = $2 AND space_id = $3`, [bucketId, householdId, spaceId]);
+    if (!rows.length) throw new ApiError(404, "Not found");
+  }
+
   async function mustAccount(userId: string, householdId: string, accountId: string) {
     const rows = await db.query(`SELECT * FROM accounts WHERE id = $1 AND household_id = $2`, [accountId, householdId]);
     if (!rows.length || !canSeeAccount(userId, { visibility: String(rows[0].visibility), owner_user_id: str(rows[0].owner_user_id) ?? null })) throw new ApiError(404, "Not found");
@@ -1339,23 +1412,36 @@ export function createApp(db: Database) {
     return rows[0];
   }
 
+  async function loadEngineAccounts(householdId: string, ids: Array<string | undefined>): Promise<Account[]> {
+    const unique = [...new Set(ids.filter((value): value is string => !!value))];
+    if (!unique.length) return [];
+    const placeholders = unique.map((_, index) => `$${index + 2}`).join(",");
+    const rows = await db.query(`SELECT * FROM accounts WHERE household_id = $1 AND id IN (${placeholders})`, [householdId, ...unique]);
+    return rows.map((row) => ({
+      id: String(row.id),
+      name: String(row.name),
+      kind: String(row.kind) as Account["kind"],
+      currency: String(row.currency),
+      onBudget: num(row.on_budget) === 1,
+      archived: num(row.archived) === 1,
+      excludeFromNetWorth: num(row.exclude_from_net_worth) === 1,
+      minimumPaymentMinor: row.minimum_payment_minor == null ? undefined : num(row.minimum_payment_minor),
+      aprBps: row.apr_bps == null ? undefined : num(row.apr_bps),
+    }));
+  }
+
   async function insertTransaction(me: Actor, householdId: string, body: z.infer<typeof transactionSchema>) {
     const member = await requireMember(db, me.id, householdId);
     assertWrite(member);
-    if (body.opId) {
-      const seen = await db.query(`SELECT op_id FROM applied_ops WHERE household_id = $1 AND op_id = $2`, [householdId, body.opId]);
-      if (seen.length) {
-        const existing = await db.query(`SELECT id FROM transactions WHERE household_id = $1 AND client_op_id = $2`, [householdId, body.opId]);
-        return { id: existing[0]?.id, duplicate: true };
-      }
-    }
+    assertKnownType(body.type);
     const account = await mustAccount(me.id, householdId, body.accountId);
     if (body.counterAccountId) await mustAccount(me.id, householdId, body.counterAccountId);
+    if (body.spaceId) await assertSpace(me.id, householdId, body.spaceId);
     const rules = await db.query(`SELECT * FROM rules WHERE household_id = $1 AND enabled = 1`, [householdId]);
     let draft: Transaction = {
       id: id(), date: body.date, accountId: body.accountId, counterAccountId: body.counterAccountId, amountMinor: body.amountMinor,
       currency: String(account.currency), type: body.type as Transaction["type"], payee: body.payee, originalDescription: body.originalDescription,
-      splits: body.splits as Transaction["splits"], bankStatus: body.bankStatus, reviewStatus: body.reviewStatus ?? "needs_review",
+      splits: body.splits.map(splitFromInput), bankStatus: body.bankStatus, reviewStatus: body.reviewStatus ?? "needs_review",
       notes: body.notes, tags: body.tags, flag: body.flag, checkNumber: body.checkNumber, categoryLockedByUser: body.categoryLocked,
       ownerUserId: body.ownerUserId ?? me.id, businessSpaceId: body.businessSpaceId, scheduleId: body.scheduleId, refundOfId: body.refundOfId,
       providerTransactionId: body.providerTransactionId, clientOpId: body.opId, importBatchId: body.importBatchId,
@@ -1367,23 +1453,61 @@ export function createApp(db: Database) {
       })));
       draft = applied.transaction;
     }
-    if (body.providerTransactionId) {
-      const prior = await db.query(`SELECT id FROM transactions WHERE household_id = $1 AND provider_transaction_id = $2 AND deleted = 0`, [householdId, body.providerTransactionId]);
-      if (prior.length) {
-        await db.query(`UPDATE transactions SET bank_status = $1, amount_minor = $2, payee = CASE WHEN category_locked = 1 THEN payee ELSE $3 END, updated_at = $4 WHERE id = $5`, [draft.bankStatus, draft.amountMinor, draft.payee, nowIso(), prior[0].id]);
-        return { id: prior[0].id, updated: true };
-      }
+    const prior = body.providerTransactionId
+      ? await db.query(`SELECT * FROM transactions WHERE household_id = $1 AND provider_transaction_id = $2 AND deleted = 0`, [householdId, body.providerTransactionId])
+      : [];
+    if (prior.length) {
+      const existingSplits = await splitsOf(String(prior[0].id));
+      const resulting = transactionFromRow(prior[0], existingSplits, {
+        amountMinor: draft.amountMinor,
+        bankStatus: draft.bankStatus,
+        payee: num(prior[0].category_locked) === 1 ? undefined : draft.payee,
+      });
+      const accounts = await loadEngineAccounts(householdId, [resulting.accountId, resulting.counterAccountId]);
+      validateTransaction(resulting, accounts, resulting.currency);
+    } else {
+      const accounts = await loadEngineAccounts(householdId, [draft.accountId, draft.counterAccountId]);
+      validateTransaction(draft, accounts, draft.currency);
     }
-    await db.query(
-      `INSERT INTO transactions (id, household_id, space_id, date, account_id, counter_account_id, amount_minor, currency, type, payee, original_description, bank_status, review_status, flag, notes, check_number, owner_user_id, business_space_id, schedule_id, refund_of_id, provider_transaction_id, client_op_id, import_batch_id, category_locked, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$25)`,
-      [draft.id, householdId, String(account.space_id), draft.date, draft.accountId, draft.counterAccountId ?? null, draft.amountMinor, draft.currency, draft.type, draft.payee, draft.originalDescription ?? null, draft.bankStatus, draft.reviewStatus, draft.flag ?? null, draft.notes ?? null, draft.checkNumber ?? null, draft.ownerUserId ?? null, draft.businessSpaceId ?? null, draft.scheduleId ?? null, draft.refundOfId ?? null, draft.providerTransactionId ?? null, draft.clientOpId ?? null, draft.importBatchId ?? null, draft.categoryLockedByUser ? 1 : 0, nowIso()],
-    );
-    await replaceSplits(draft.id!, draft.splits);
-    await replaceTags(draft.id!, draft.tags ?? []);
-    if (body.opId) await db.query(`INSERT INTO applied_ops (household_id, op_id, created_at) VALUES ($1,$2,$3)`, [householdId, body.opId, nowIso()]);
-    await audit(db, householdId, me.id, "transaction.create", `Added ${draft.payee}`, "transaction", draft.id);
-    return { id: draft.id };
+    return db.tx(async () => {
+      if (body.opId) {
+        const claimed = await db.query(
+          `INSERT INTO applied_ops (household_id, op_id, created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING op_id`,
+          [householdId, body.opId, nowIso()],
+        );
+        if (!claimed.length) {
+          const existing = await db.query(`SELECT id FROM transactions WHERE household_id = $1 AND client_op_id = $2 AND deleted = 0`, [householdId, body.opId]);
+          return { id: existing[0] ? String(existing[0].id) : null, duplicate: true as const };
+        }
+      }
+      if (prior.length) {
+        await db.query(
+          `UPDATE transactions SET bank_status = $1, amount_minor = $2, payee = CASE WHEN category_locked = 1 THEN payee ELSE $3 END, updated_at = $4 WHERE id = $5 AND household_id = $6`,
+          [draft.bankStatus, draft.amountMinor, draft.payee, nowIso(), prior[0].id, householdId],
+        );
+        await audit(db, householdId, me.id, "transaction.update", `Updated ${draft.payee} from the provider id`, "transaction", String(prior[0].id));
+        return { id: String(prior[0].id), updated: true as const };
+      }
+      await db.query(
+        `INSERT INTO transactions (id, household_id, space_id, date, account_id, counter_account_id, amount_minor, currency, type, payee, original_description, bank_status, review_status, flag, notes, check_number, owner_user_id, business_space_id, schedule_id, refund_of_id, provider_transaction_id, client_op_id, import_batch_id, category_locked, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$25)`,
+        [draft.id, householdId, String(account.space_id), draft.date, draft.accountId, draft.counterAccountId ?? null, draft.amountMinor, draft.currency, draft.type, draft.payee, draft.originalDescription ?? null, draft.bankStatus, draft.reviewStatus, draft.flag ?? null, draft.notes ?? null, draft.checkNumber ?? null, draft.ownerUserId ?? null, draft.businessSpaceId ?? null, draft.scheduleId ?? null, draft.refundOfId ?? null, draft.providerTransactionId ?? null, draft.clientOpId ?? null, draft.importBatchId ?? null, draft.categoryLockedByUser ? 1 : 0, nowIso()],
+      );
+      await replaceSplits(draft.id!, draft.splits);
+      await replaceTags(draft.id!, draft.tags ?? []);
+      await audit(db, householdId, me.id, "transaction.create", `Added ${draft.payee}`, "transaction", draft.id);
+      return { id: draft.id };
+    });
+  }
+
+  async function splitsOf(txnId: string): Promise<Transaction["splits"]> {
+    const rows = await db.query(`SELECT bucket_id, amount_minor, role, memo FROM splits WHERE transaction_id = $1`, [txnId]);
+    return rows.map((row) => ({
+      bucketId: row.bucket_id == null ? null : String(row.bucket_id),
+      amountMinor: num(row.amount_minor),
+      role: String(row.role) as Transaction["splits"][number]["role"],
+      memo: str(row.memo),
+    }));
   }
 
   async function replaceSplits(txnId: string, splits: { bucketId: string | null; amountMinor: number; role: string; memo?: string }[]) {
@@ -1431,6 +1555,39 @@ export function createApp(db: Database) {
   }
 
   return app;
+}
+
+const TRANSACTION_TYPES = new Set([
+  "income", "expense", "transfer", "refund", "reimbursement", "cc_payment", "loan_payment", "loan_proceeds",
+  "opening", "reconciliation", "buy", "sell", "dividend", "interest", "fee",
+]);
+
+function assertKnownType(type: string) {
+  if (!TRANSACTION_TYPES.has(type)) throw new ApiError(400, "That transaction type is not supported.");
+}
+
+function splitFromInput(split: { bucketId: string | null; amountMinor: number; role: Transaction["splits"][number]["role"]; memo?: string }): Transaction["splits"][number] {
+  return { bucketId: split.bucketId, amountMinor: split.amountMinor, role: split.role, memo: split.memo };
+}
+
+function transactionFromRow(row: Record<string, unknown>, splits: Transaction["splits"], overrides: Partial<Transaction> = {}): Transaction {
+  const counter = overrides.counterAccountId !== undefined ? overrides.counterAccountId : str(row.counter_account_id);
+  return {
+    id: String(row.id),
+    date: overrides.date ?? String(row.date),
+    accountId: overrides.accountId ?? String(row.account_id),
+    counterAccountId: counter || undefined,
+    amountMinor: overrides.amountMinor ?? num(row.amount_minor),
+    currency: overrides.currency ?? String(row.currency),
+    type: (overrides.type ?? String(row.type)) as Transaction["type"],
+    payee: overrides.payee ?? String(row.payee),
+    notes: overrides.notes ?? str(row.notes),
+    splits,
+    bankStatus: (overrides.bankStatus ?? String(row.bank_status)) as Transaction["bankStatus"],
+    reviewStatus: (overrides.reviewStatus ?? String(row.review_status)) as Transaction["reviewStatus"],
+    flag: overrides.flag ?? str(row.flag),
+    deleted: false,
+  };
 }
 
 function mapUser(row: Record<string, unknown>): Actor {
