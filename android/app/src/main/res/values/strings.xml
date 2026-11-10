@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BudgetCents</string>
+    <string name="widget_name">BudgetCents summary</string>
+    <string name="widget_description">Safe to spend from the last sync. Amounts stay hidden when privacy mode is on.</string>
+    <string name="widget_empty">Open BudgetCents to sync.</string>
+</resources>

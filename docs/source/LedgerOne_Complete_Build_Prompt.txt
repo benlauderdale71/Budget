@@ -1,0 +1,444 @@
+LEDGERONE — COMPLETE COMBINED BUILD PROMPT
+Web application + Google Play Android application
+Research date: November 10, 2026
+Repository: https://github.com/benlauderdale71/Budget
+
+SCOPE AND EVIDENCE
+
+The original list contains seven distinct apps: Monarch Money, YNAB, Quicken Simplifi, Rocket Money, EveryDollar, Empower Personal Dashboard, and Goodbudget. EveryDollar appeared in both the paid and free lists. Combine capabilities across their documented free and paid offerings, including premium features. The scope is these named products, not every unrelated product sold by their parent companies.
+
+This is a comprehensive build specification based on the recovered prior scope and publicly documented features inspected on the research date. It also adds implementation requirements that make the combined product coherent. It is not a claim to know undisclosed, experimental, or unannounced competitor features. Source links and a feature-to-module coverage ledger appear at the end. During implementation, reconcile the current official documentation against this ledger; add newly discovered in-scope features rather than silently substituting a smaller feature set.
+
+BEGIN BUILD PROMPT
+
+01. PRODUCT MISSION AND NON-OMISSION RULE
+
+Build LedgerOne, a complete personal and household finance application that combines the capabilities of all seven reference apps into one consistent experience. Deliver a responsive web application and an installable Android application suitable for Google Play distribution. The primary owner should have the full combined capability set without artificial competitor-style limits on categories, envelopes, budgets, accounts, rules, goals, devices, or retained history.
+
+- Implement real end-to-end workflows with persistent data, accurate calculations, usable screens, and recovery from failures. A static mockup, landing page, menu of inactive buttons, or collection of disconnected demos does not satisfy this prompt.
+- Use one underlying financial record system. Category budgets, zero-based plans, envelopes, flexible budgets, reports, goals, and forecasts must operate on the same transactions without counting a purchase several times.
+- Preserve every requirement below. Development may proceed in stages, but stages determine order, not which features survive. Do not redefine completion as a smaller MVP.
+- Maintain a requirements ledger with a unique ID for each capability, source app and URL, web screen, Android screen, backend operation, integration dependency, acceptance check, and implementation status.
+- Distinguish implemented and tested features from provider-dependent features awaiting live activation. Keep the full workflow and setup requirements in scope; do not fabricate connected banks, actual credit reports, executed cancellations, completed negotiations, interest earnings, or successful transfers.
+- Produce an original identity and interface. Implement the underlying capabilities without copying competitors' logos, proprietary text, source code, illustrations, or screen designs.
+
+02. WEB AND ANDROID PLATFORM REQUIREMENTS
+
+- Provide a full browser application for desktop, laptop, tablet, and mobile browsers, with responsive layouts and an optional installable progressive web experience.
+- Provide a proper Android application with Android navigation, system back behavior, biometric unlock, notifications, file selection, receipt capture, secure storage, deep links, and home-screen widgets. A website shortcut alone is insufficient.
+- Use the same account, household, plans, permissions, records, and calculation rules on both platforms. Changes must synchronize without requiring users to export and re-import data.
+- Make every applicable feature usable on both web and Android, including advanced investment analysis, business tracking, forecasts, retirement planning, reports, and administration of personal settings.
+- Provide phone and tablet layouts, landscape support where useful, accessible charts and tables, and graceful handling of long account names and large datasets.
+- Features originally tied to Apple-only frameworks require an Android/web equivalent where possible. For Apple Card, Apple Cash, and Apple savings transactions, support compatible statement imports and authorized provider access where available; do not promise access to Apple-only device APIs from Android.
+
+03. MODERN, PROFESSIONAL, EASY-TO-USE UI
+
+Design a polished financial product that feels calm, modern, organized, and trustworthy. Use an original restrained palette with navy or charcoal text, teal or blue primary actions, neutral surfaces, clear spacing, readable typography, consistent icons, and subtle motion. Provide light, dark, and system themes. The design must prioritize fast understanding over decoration.
+
+- Desktop: persistent navigation sidebar, searchable page header, clear household/space selector, contextual actions, useful summary cards, and responsive content areas.
+- Android: five primary destinations such as Home, Plan, Activity, Wealth, and More. Use a readily reachable Add action and quick access to transaction entry, receipt capture, account sync, and financial assistance.
+- Group advanced features behind clear navigation and progressive disclosure while keeping them available. A simple default dashboard must not become a reason to omit advanced functions.
+- Let users rearrange, hide, resize where appropriate, and restore dashboard cards. Save layout preferences per user and device class.
+- The dashboard should answer: what do I own, what do I owe, what can I safely spend, what bills arrive next, what needs review, and am I progressing toward my goals?
+- Include balances, net worth, ready-to-assign money, funded budget amounts, flexible spending remaining, upcoming bills, goal progress, debt progress, portfolio summary, alerts, and a last-updated indicator.
+- Use consistent terminology, plain-language explanations, visible save states, immediate validation, undo where possible, sensible defaults, autocomplete, templates, and contextual help. Let users choose familiar labels for categories and envelopes.
+- Provide complete loading, empty, error, offline, disconnected, permission-denied, and success states. Every visible action must work or clearly explain its setup requirement.
+- Support keyboard navigation, screen readers, scalable text, adequate contrast, meaningful focus indicators, large touch targets, reduced motion, and alternatives to color-only warnings. Target WCAG 2.2 AA and verify rather than merely claiming conformance.
+- Present charts with readable units, dates, legends, tooltips, and equivalent tabular detail. Currency figures must remain legible at large text sizes and on small screens.
+
+04. ONBOARDING, ACCOUNTS, AND PREFERENCES
+
+- Offer guided setup for an individual, couple, family, freelancer, or mixed household/business user. Allow manual setup without linking a bank.
+- Support secure registration, sign-in, verified email, password reset, optional federated sign-in, multi-factor authentication, recovery options, and a list of active sessions/devices.
+- Let the user select a home currency, locale, date and number formatting, time zone, week start, pay schedule, and preferred budget approach.
+- Explain category, zero-based, envelope, and flexible approaches with short examples. Allow switching views without deleting financial history.
+- Offer account connection, opening balances, prior-app import, category templates, first budget, first goal, and household invitations as resumable setup steps.
+- Keep optional sample data isolated from real financial records. Provide a clearly labeled demo mode with a complete reset.
+- Support separate personal plans, shared household plans, and optional business spaces, each with explicit account inclusion and permissions.
+- Provide a fresh-start/reset-plan workflow that archives a read-only copy of the old plan, carries forward selected accounts/categories and current balances, and lets the user deliberately choose which targets and schedules to retain. Resetting a plan must not silently delete exports or prior history.
+
+05. ACCOUNT AGGREGATION AND CONNECTION MANAGEMENT
+
+- Support checking, savings, cash wallets, credit cards, loans, student loans, mortgages, retirement accounts, brokerage accounts, education accounts, crypto holdings, real estate, vehicles, other assets, and other liabilities.
+- Offer linked accounts, fully manual accounts, and tracking-only accounts excluded from spendable-budget funds.
+- Use authorized financial-data providers through replaceable adapters. Support provider-specific institution coverage and a controlled switch to another provider when a connection is unreliable.
+- Display current and available balances when supplied, pending activity, credit limit and utilization where applicable, historical balances, account owner, nickname, masked identifier, and institution.
+- Show connection health, consent status, last successful refresh, expected refresh behavior, errors, and reconnect instructions. Manual refresh must respect provider limits.
+- Handle initial historical backfill, incremental updates, pending-to-posted changes, removed provider transactions, renamed accounts, closed accounts, and duplicate connections.
+- Allow accounts to be archived, hidden, excluded from selected reports or net worth, reordered, or moved between eligible spaces without erasing history.
+- Store original currency and balance dates. Keep unrelated currencies in separate ledgers unless an explicit exchange-rate conversion is applied; label the rate, date, and base-currency estimate.
+- Never collect or store bank passwords in LedgerOne. Use the provider's authorized linking flow and keep provider credentials and tokens on the server.
+
+06. COMPLETE TRANSACTION REGISTER
+
+- Build one searchable register for all authorized accounts with account-level and household-level views, running balances, pagination or efficient scrolling, and saved filters.
+- Support income, expense, transfer, refund, reimbursement, credit-card payment, loan payment, interest, fee, opening balance, and reconciliation adjustment records.
+- Store original bank description and user-facing payee separately; also store dates, signed amount, currency, account, category, envelope allocation, tags, flags, notes, check number, receipt attachments, ownership, and optional business/property/project references.
+- Support manual entry, cash purchases, quick-add, duplicate-and-edit, scheduled entries, suggested payees, suggested categories/envelopes, and appropriate account defaults.
+- Split transactions across categories, envelopes, household members, businesses, projects, or tax designations. Enforce that splits sum exactly to the original amount and handle mixed income/expense splits explicitly.
+- Distinguish bank pending, posted, user-cleared, reconciled, needs-review, and reviewed statuses. Bank status and user-review status must remain separate.
+- Match and unmatch manual or scheduled records with imported activity, including transfers and debt payments, without creating duplicates or losing notes and receipts.
+- Provide bulk edit, selection, rename, recategorize, tag, review assignment, exclude/include, move to eligible account, and reversible deletion where practical.
+- Search by amount range, date range, account, institution, payee, description, category, tag, flag, review state, receipt, owner, business, and check number.
+- Reconcile statements against LedgerOne, lock reconciled records appropriately, and explain differences. Correct history through auditable changes rather than silently changing balances.
+- Track expected refunds and reimbursements, partial receipts, outstanding amounts, and linked original purchases. Do not classify a refund as new salary income by default.
+
+07. IMPORT, EXPORT, MIGRATION, AND RECEIPTS
+
+- Provide a preview-and-confirm import wizard for CSV, OFX/QFX and QIF where technically appropriate. Include field mapping, date and decimal formats, sign conventions, currency selection, duplicate detection, and row-level validation.
+- Provide import profiles for available exports from all seven source apps and legacy Mint exports where a compatible user-provided file exists. Preserve categories, tags, notes, splits, and historical balances when present in the export.
+- Explain fields a source export does not contain. Never invent unavailable history or claim a migration is lossless when information is missing.
+- Keep import batches identifiable and reversible; allow a user to correct mapping and retry without duplicating every record.
+- Capture receipts from the Android camera, upload images/PDFs on both platforms, and link multiple attachments to a transaction. Include OCR-assisted extraction of merchant, date, total, tax, and optional line items for user review.
+- Let users compare extracted receipt values with the transaction, correct OCR errors, and split a purchase from receipt items. OCR must not overwrite confirmed financial records without review.
+- Export filtered and complete transaction data, budgets, goals, debt schedules, holdings, and reports as appropriate to CSV, spreadsheet, printable PDF, and a documented machine-readable backup format.
+- Include check numbers and split details in exports. Provide export previews and protect spreadsheet exports against formula injection.
+
+08. CATEGORIES, TAGS, RULES, AND AUTOMATION
+
+- Provide unlimited custom categories, category groups, subcategories, icons/emojis, display order, hidden/archive states, and separate income, expense, and transfer classifications.
+- Provide independent tags and colored flags for trips, tax preparation, reimbursements, family members, projects, and other cross-category needs.
+- Learn category suggestions from confirmed user corrections. Show uncertainty and keep unknown items in a review queue instead of forcing an inaccurate category.
+- Create rules using payee or original description, account, amount or range, direction, and other supported conditions with clear AND/OR behavior.
+- Rules may rename payees, assign categories, add tags, assign ownership, set review responsibility, classify business activity, apply supported splits, and exclude specific views.
+- Support rule ordering, conflict explanations, enable/disable, future-only or historical application, a preview of affected transactions, and undo of batch changes.
+- Let users create a rule directly from an edited transaction. Prevent a broad rule from silently overriding a more specific confirmed choice.
+- Provide saved filtered views, including underfunded categories, overspent categories, upcoming bills, recently changed records, reimbursable expenses, and records needing review.
+
+09. TRADITIONAL CATEGORY AND PERCENTAGE BUDGETING
+
+- Build monthly and custom-period budgets with planned income, planned spending, actual activity, remaining amount, and variance at category and group level.
+- Support weekly, every-two-weeks, twice-monthly, monthly, every-two/three/six-month, annual, and custom date periods where appropriate.
+- Provide category templates, copy-from-prior-period, bulk changes, percentage-based allocation such as 50/30/20, and history-based suggestions.
+- Allow future budget planning and dated changes without rewriting prior periods. Present period comparisons and a clear month-close workflow.
+- Offer explicit rollover settings: unused money carries forward, overspending carries forward where selected, both, neither, or a capped balance. Show the resulting calculation.
+- Preserve budget activity when categories are renamed, merged, moved, or archived. Warn before changes that alter historical comparisons.
+- Allow total budgets and category budgets, recurring and one-time planned expenses, and optional inclusion or exclusion of particular accounts or transactions.
+
+10. ZERO-BASED BUDGETING
+
+- Provide an actual-cash allocation mode with Ready to Assign, Assigned, Activity, and Available values. Only eligible money actually received can be allocated as funded cash.
+- Also support an income-based planning view in which expected income minus planned allocations equals zero. Clearly distinguish a projected plan from funded money already available.
+- Move money between categories, cover overspending, fund future months, set priorities, and inspect a history of allocation changes.
+- Auto-assign by target shortfall, upcoming obligations, previous allocations, prior spending, or average spending, with an editable preview and an insufficient-funds explanation.
+- Provide quick actions to reduce overfunding, reset selected assignments, restore a prior allocation, and filter to underfunded or overspent categories.
+- Handle cash overspending and credit-card overspending differently at period close. Explain whether an overspend reduces available cash or becomes unfunded card debt.
+- Never count loan proceeds, credit limits, unrealized investment gains, or anticipated paychecks as earned income or spendable cash by default.
+- Include an explained cash-buffer/age-of-money indicator and its calculation period. Treat it as a budgeting measure rather than a guarantee of future liquidity.
+
+11. ENVELOPE BUDGETING AND DIGITAL CASH STUFFING
+
+- Provide regular spending envelopes, annual and irregular-expense envelopes, goal envelopes, debt-payment envelopes, and grouped envelopes with unlimited counts.
+- Separate the envelope question, what money is for, from the account question, where money is held. An envelope is a financial allocation, not a separate bank account.
+- Fill from new income or unallocated cash. Support adding a fixed amount, topping up to a balance, setting all selected envelopes, and sweeping remaining money into a selected envelope or unallocated funds.
+- Save remembered fill templates for different paychecks and irregular income sources, and support recurring fills and once-only fills.
+- Transfer allocations between envelopes, carry balances forward, set due dates, and calculate per-period funding needed for annual or longer expenses.
+- Display envelope balances, running balances, progress, overspending, expected pace, and remaining funding needs before confirming a fill or expense.
+- Show shared envelope changes promptly on other household devices. Support confirm, match, and unmatch for bank-imported activity that was manually entered earlier.
+- Provide envelope balance, spending-by-envelope, spending-by-month, and income-by-source reports, with groups and drill-down.
+
+12. FLEX BUDGETING AND AUTOMATIC SPENDING PLAN
+
+- Offer Fixed, Non-Monthly, and Flexible buckets, with one understandable flexible-spending number and optional deeper category detail.
+- Build an automatic spending plan from expected income, recurring bills, subscriptions, planned purchases, goal contributions, and selected savings commitments.
+- Show remaining money for the month, week, day, and until next payday, with an explanation of included income, pending activity, reserves, and exclusions.
+- Separate a forecast-based spending allowance from a cash-based safe-to-spend value. If the cash projection becomes negative, show the shortage rather than reassuring the user with a positive planned-income number.
+- Support planned spending, one-time exclusions, unused allocation release, and rollover options. Prevent an expense from reducing available funds both as a bill reserve and as a posted transaction.
+- Let users compare a detailed category view with the flexible summary while retaining the same records and allocations.
+
+13. PAYCHECK PLANNING AND IRREGULAR INCOME
+
+- Support multiple earners, salary, hourly work, commissions, freelance revenue, benefit payments, seasonal income, and other irregular receipts.
+- Record expected and received paychecks separately. Support weekly, biweekly, twice-monthly, monthly, and custom schedules.
+- Map bills and planned spending to pay periods, identify a shortage before a due date, and show which obligations each paycheck must cover.
+- Let users reserve money from an early paycheck for a later bill, keep a minimum cash buffer, and prioritize essentials when income is lower than planned.
+- Offer conservative, expected, and optimistic income scenarios, baseline budgets for irregular pay, and a temporary reduced-income or lean-budget template.
+- Present payday and calendar views with expected balances, overdue items, and remaining money until the next confirmed income event.
+
+14. GOALS, TARGETS, SINKING FUNDS, AND SAVINGS
+
+- Provide goals for emergency savings, travel, home purchase, education, vehicles, holidays, home repairs, retirement contributions, giving, large purchases, and debt reduction, plus fully custom goals.
+- Track amount, starting funds, due date, priority, linked accounts, linked categories/envelopes, contributions, withdrawals, remaining gap, and required contribution per period.
+- Support target behaviors equivalent to adding a fresh amount each period, refilling up to a limit, building a desired balance by a date, maintaining a balance without a date, and paying down debt.
+- Support weekly, monthly, yearly, custom recurring, and nonrecurring targets; progress bars; underfunding indicators; pause/snooze and resume; and clear treatment of rollover and refunds.
+- Let users contribute virtually from money already held in an account, withdraw for the intended purchase, and move allocations between goals. Label these as allocations, not bank transfers.
+- Prevent one dollar of account balance from being counted as fully funding multiple goals, emergency reserves, and spendable categories simultaneously.
+- Build a savings planner that compares retirement contributions, emergency savings, debt progress, annual savings, and remaining targets in one view.
+- Include an emergency-fund calculator using essential spending, user-selected coverage months, current liquid reserves, and a displayed funding gap.
+- Include optional automatic savings through a qualified banking/payment partner, with explicit enrollment, source and destination, limits, schedule, available-balance safeguards, pause/resume, withdrawals, transfer status, and failure/reversal handling.
+- If interest-bearing savings is offered, display the actual partner, current rate and date, terms, eligibility, and applicable deposit-insurance disclosures. A goal tracker alone must never claim to hold deposits or earn interest.
+
+15. CREDIT CARDS, LOANS, AND DEBT PAYOFF
+
+- Show all debts with balances, APR, minimum payment, due date, term, accrued interest where known, fees, and an estimated payoff date.
+- Support credit cards, installment loans, student loans, mortgages, and manual debts. Separate principal, interest, escrow where relevant, and fees in payments.
+- Offer debt snowball, debt avalanche, and custom payoff order. Compare total interest, time to payoff, monthly payment, and the effect of extra payments.
+- Reassign a paid-off debt's planned payment to the next priority and display a debt-free timeline and progress history.
+- Include an interactive loan planner for one-time extra payments, recurring extra payments, changed rates, payment holidays, and supported refinancing/consolidation comparisons with disclosed assumptions and fees.
+- For funded credit-card purchases, move the matching category allocation to the card-payment reserve. Treat paying the card as a transfer/payment, not a second purchase.
+- Handle opening card balances, credit-card overspending, refunds, rewards, interest, fees, partial payments, and underfunded payment reserves explicitly.
+- Show available credit, statement balance, current balance, payment reserve, and utilization as different concepts.
+- Provide financial-roadmap milestones, including an emergency buffer, debt payoff, larger emergency reserves, retirement savings, education, mortgage payoff, and long-term wealth. Let the user modify the sequence.
+
+16. RECURRING BILLS, SUBSCRIPTIONS, AND CALENDARS
+
+- Detect recurring income, bills, memberships, subscriptions, and installment payments from activity; allow user confirmation, correction, and manual creation.
+- Track merchant, amount or expected range, frequency, next date, payment account, reminder lead time, trial end, renewal date, ownership, and bill category.
+- Show list, timeline, payday, monthly calendar, and annual calendar views, with upcoming totals and an annualized subscription cost.
+- Where a bill-data provider supports it, obtain statement balance, minimum due, due date, and account status; label manual estimates separately.
+- Link a posted transaction to its expected bill, adjust forecasts when the amount changes, and avoid duplicating a scheduled charge after bank import.
+- Support once-only entries, recurring expenses and income, planned account transfers, envelope fills, and debt-payment schedules.
+- Allow skip, pause, reschedule, record-now, paid, overdue, and cancelled states with appropriate history and future-series editing controls.
+- Flag price increases, unexpected renewals, overlapping subscriptions, upcoming trial charges, missing recurring income, and bills exceeding typical ranges.
+- Offer shareable/exportable calendars and optional user-authorized calendar integration without requiring access to unrelated calendar content.
+
+17. CANCELLATION CONCIERGE, BILL NEGOTIATION, AND REFUNDS
+
+- Provide subscription detail pages with merchant support information, direct cancellation links/instructions, supporting documents, and an assisted cancellation request workflow.
+- Assisted cancellation must support explicit authorization, provider/service availability, request status, additional-information requests, confirmation evidence, and a follow-up check for further charges.
+- Provide bill negotiation intake for eligible internet, mobile phone, cable/satellite, security, and other supported services, with an uploaded bill and clearly stated service permissions.
+- Show whether a proposed savings arrangement changes the contract, service level, commitment term, or cancellation fee. Record user-selected limits and approval before such changes.
+- Track negotiation progress, quote, agreed terms, expected bill timing, actual savings, fees if applicable, failed attempts, and provider confirmation. Separate estimated annual savings from savings actually observed.
+- Include review of bank fees, duplicate charges, expected refunds, and potential erroneous charges; provide a supported reimbursement/dispute-assistance handoff and case tracking.
+- Never submit a cancellation, contact a biller, dispute a charge, or move money merely because a model suggested it. Require the appropriate explicit user authorization and authenticated execution path.
+- Build customer-facing workflows and staff/provider case-management screens where a real service requires human handling. An AI chat response is not evidence that the service was performed.
+
+18. CASH FLOW AND SHORT-TERM FORECASTING
+
+- Provide historical income/expense cash flow, account-level and combined projections, and a day-by-day running balance calendar.
+- Forecast using cleared balances, selected pending items, scheduled bills, expected income, known one-time events, and budgeted discretionary spending, with duplicate-reserve prevention.
+- Show minimum projected balance, likely overdraft dates, low-balance alerts, shortfalls before payday, and amounts reserved for goals and obligations.
+- Offer 7-, 30-, 90-day and 12-month views plus custom horizons. Display confidence and missing-data warnings where history is insufficient.
+- Include income/expense charts, cash-flow Sankey diagrams, and a monthly review with changes from the prior period.
+- Let users create isolated what-if scenarios for a changed paycheck, unexpected expense, cancelled subscription, additional debt payment, purchase, or savings contribution.
+- Make forecast inputs and assumptions inspectable. Separate a scenario from confirmed transactions; applying a scenario must be an intentional action.
+
+19. NET WORTH, PROPERTY, AND OTHER ASSETS
+
+- Calculate assets minus liabilities with account-level drill-down, historical snapshots, change over time, and source timestamps.
+- Include bank funds, investments, retirement, crypto, homes, vehicles, collectibles, jewelry, and custom assets, together with loans and other obligations.
+- Support authorized property and vehicle valuation providers, manual values, dated appraisals, valuation history, and a clear distinction between estimates and actual sale proceeds.
+- Link a property to its mortgage and a vehicle to its loan, calculate equity, and prevent duplicate assets from repeated provider connections.
+- Show liquid net worth separately from total net worth and from cash available to spend. Include/exclude selected holdings and spaces with explicit controls.
+- Allow historical balance imports, correction of dated values, and documented net-worth adjustments without inventing transactions.
+
+20. INVESTMENT TRACKING AND ANALYSIS
+
+- Aggregate investment accounts and positions with ticker/identifier, quantity, price, cost basis, market value, contributions, withdrawals, dividends, interest, and relevant transaction history where available.
+- Support stocks, ETFs, mutual funds, bonds, cash, retirement assets, crypto, and manually tracked investments. Retain unsupported holdings as visible manual records.
+- Provide portfolio growth, period returns, comparisons with appropriate benchmarks, and clear separation of deposits/withdrawals from investment performance.
+- Where data supports it, calculate both time-weighted and money-weighted performance and explain missing-price or missing-transaction limitations.
+- Show realized and unrealized gains/losses, holding period, tax lots, and editable missing cost basis. Include manual/imported tax-lot information without pretending to execute brokerage trades.
+- Provide allocation by asset class, sector, geography, account, and security where licensed data is available. Include fund look-through, overlapping exposure, diversification, and concentration analysis.
+- Include a portfolio/investment checkup against a user-selected risk profile and target allocation, with drift and scenario comparisons.
+- Include an investment/retirement fee analyzer for expense ratios, advisory charges, estimated annual fees, and compounded long-term fee impact. Support manual fee inputs when a feed omits them.
+- Show quote source, market timestamp, delayed/real-time status, and currency. Obtain market and fund classification data through authorized licensed services; do not fabricate live prices.
+
+21. RETIREMENT AND LONG-TERM FINANCIAL PLANNING
+
+- Build retirement projections from actual assets, savings, debts, contributions, expected living expenses, and user-entered assumptions.
+- Support separate partners' retirement ages, planning horizon, Social Security assumptions, pensions, other income, employer matching, inflation, investment returns, fees, tax assumptions, and withdrawals.
+- Include major life events such as college, a home purchase, child-related costs, travel, a move, changing jobs, rental income, an inheritance, and one-time expenses/income.
+- Provide deterministic projections and Monte Carlo scenario analysis, a clearly described success metric, portfolio balance ranges, and an income-versus-spending view.
+- Compare multiple saved scenarios, retirement dates, savings rates, spending levels, contribution patterns, market shocks, and recession stress tests.
+- Provide a retirement spending/withdrawal planner, annual savings gap, recommended-contribution calculation based on chosen assumptions, and progress toward long-term milestones.
+- Do not present projections or simulated success probabilities as guaranteed outcomes. Allow the user to inspect assumptions and rerun the model as current data changes.
+- Include education and other large-goal planning alongside retirement so the same assets are not fully committed to several future goals at once.
+
+22. BUSINESS, TAX PREPARATION, AND ESTATE PLANNING ACCESS
+
+- Support multiple side businesses, sole-proprietor activities, single-member businesses, rental properties, and freelance income streams in separate spaces within the financial picture.
+- Assign accounts, transactions and individual splits to the correct business/property, and show personal-only, business-only, and consolidated views.
+- Provide business income/expense summaries, cash flow, profit/loss reporting, deductible-expense tags, receipt organization, reimbursable costs, and accountant exports.
+- Track owner contributions/draws and inter-space transfers without misclassifying them as external revenue or personal spending.
+- Provide editable tax-category mappings and an optional tax set-aside estimate using disclosed user assumptions. Do not represent a budgeting estimate as a filed return.
+- Include an optional connection/handoff to a qualified tax-filing service with user consent, document checklist, progress status, secure document exchange, and a return to LedgerOne.
+- Include estate-planning readiness, beneficiary/inventory checklist, secure document references, shared-access controls, and an optional qualified will/trust provider handoff with eligibility, pricing/benefits, and completion status.
+- Do not pretend LedgerOne has created a legally executed will, delivered tax advice, or filed documents when only a checklist or referral exists. Keep partner-backed services in the feature ledger until actually activated.
+
+23. REPORTING, WATCHLISTS, AND PERIOD REVIEWS
+
+- Provide income versus spending, spending by category/envelope/payee/tag, income by source, spending by month, account and envelope balances, budget versus actual, savings rate, net worth, debt progress, portfolio performance, fees, business profit/loss, and projected cash-flow reports.
+- Include frequent merchants, largest purchases, subscriptions, recurring bill changes, refund/reimbursement status, and ownership/household spending views.
+- Offer custom date ranges, previous-period and year-over-year comparisons, category groups, account/space filters, saved report configurations, and drill-down from every total to underlying records.
+- Provide watchlists defined by payees, categories, tags, and optional time ranges, independent of whether a formal budget exists for that spending area.
+- Each watchlist should show actual spending, selected target, year-to-date total, historical average, expected upcoming obligations, projected period total, and trend charts.
+- Calculate averages and projections consistently with documented treatment of partial months, date windows, missing history, and scheduled versus posted transactions.
+- Include weekly recaps, monthly review, annual review, allocation history, goal achievements, debt milestones, and actionable exceptions needing user attention.
+- Export and print the data behind reports. Provide useful summaries without preventing access to the exact figures and transactions.
+
+24. AI ASSISTANT, PROACTIVE INSIGHTS, AND TEXT ASSISTANCE
+
+- Provide financial assistance inside the web and Android app, plus optional opt-in two-way SMS/messaging integration comparable to a text-based financial concierge.
+- Answer questions about actual authorized records: spending this month, bills before payday, unfamiliar charges, available flexible money, goal shortfalls, investment changes, and scenario results.
+- Attach the date range, source records, applicable filters, calculation, and freshness to numerical answers. If the data is missing, say what is missing instead of generating a plausible balance.
+- Suggest category corrections, useful rules, new budget categories, unusual-spend alerts, subscription reviews, savings opportunities, and plan adjustments.
+- Allow previewed actions such as adding a manual transaction, tagging/renaming/recategorizing a record, building a budget, creating a goal, adjusting a target, or initiating a supported service request.
+- Provide proactive low-balance, safe-to-spend, trial-ending, renewal, budget, and weekly-summary messages with user-controlled frequency and quiet hours.
+- Require confirmation for meaningful financial edits and appropriate authorization for external service actions. Provide undo and an activity history for supported reversible changes.
+- Enforce household and business permissions for every model query and action, including text conversations. Do not send private account details to a shared phone number.
+- Default to secure links or masked/minimal amounts in SMS, with verified enrollment, opt-out, account recovery, and re-authentication for sensitive actions.
+- Treat receipts, merchant descriptions, imported files, and other retrieved content as data rather than executable instructions. Keep calculation logic deterministic and independent from generated prose.
+- Allow AI to be disabled while all core finance features continue working. Make model-provider data handling transparent and minimize financial data sent outside the application.
+
+25. HOUSEHOLD SHARING AND PROFESSIONAL COLLABORATION
+
+- Provide separate logins for household members; support at least six users per household and a configurable higher limit rather than a hard-coded two-person restriction.
+- Offer personal and shared plans, yours/mine/ours ownership views, combined and filtered dashboards, and account or transaction visibility permissions.
+- Support owner/admin, editor, limited contributor, and read-only roles, plus optional financial coach, planner, or accountant access.
+- Enforce privacy on the server, including aggregates, exports, notifications, searches, AI responses, attachments, and direct API access. Hiding a UI row is insufficient.
+- Allow shared budgets and goals while retaining private personal spaces. Explain what each invitation will reveal before it is accepted.
+- Assign transactions for review, leave comments or questions, see who changed a shared record, and resolve an item without deleting its audit history.
+- Support invitations, expiration, revocation, leaving a household, ownership transfer, device/session revocation, and appropriate handling of shared-data retention.
+- Reflect concurrent changes promptly and surface edit conflicts rather than allowing one person's update to silently overwrite another's.
+
+26. ALERTS, WIDGETS, AND QUICK ACCESS
+
+- Provide configurable alerts for bills, trials, renewals, price increases, low balance, likely overdraft, unusual spending, large transactions, missing pay, overspending, underfunded goals, credit changes, debt milestones, and broken bank connections.
+- Support in-app, push, email, and optional text channels with channel-specific consent and settings.
+- Provide quiet hours, digest schedules, thresholds, snooze, deduplication, escalation preferences, and a history of delivered alerts.
+- Include Android widgets for selected envelope/category balances, flexible spending, upcoming bills, goals, and quick-add transaction. Respect lock-screen privacy and session-lock settings.
+- Offer home-screen shortcuts and deep links to a transaction, category, bill, account, or goal, with authentication and permission checks before showing data.
+- Provide a privacy mode to mask financial amounts when viewing the app in public or sharing a screen.
+
+27. FINANCIAL EDUCATION, COACHING, AND SUPPORT
+
+- Provide a searchable help center, guided tours, contextual explanations, short lessons, videos, quizzes, budgeting practice, calculators, and progress tracking.
+- Cover zero-based budgeting, envelopes, irregular income, debt strategies, credit cards, emergency funds, retirement, investment fees, and household money discussions.
+- Use original or licensed educational content and worksheets. Do not copy proprietary source-app courses or assume their subscriptions are included.
+- Support live training and Q&A listings, group sessions, and optional one-to-one coaching with scheduling, enrollment, reminders, and a qualified provider directory.
+- Provide customer support/chat or a ticketing handoff, attachments with consent, searchable status, and a feedback/feature-request workflow.
+- Make the distinction between automated guidance, human coaching, and regulated professional advice clear. Do not simulate an available human coach or a completed support session.
+
+28. SECURITY, PRIVACY, AND DATA CONTROL
+
+- Use encryption in transit and at rest, secure password hashing or a suitable identity provider, MFA, safe session lifetimes, and Android hardware-backed secure storage where supported.
+- Keep bank, market-data, credit, messaging, banking-partner, and AI secrets off clients and out of GitHub. Provide example configuration files with placeholders only.
+- Apply least-privilege authorization, strict household isolation, protected file access, rate limits, input validation, CSRF protections where relevant, and redacted logs.
+- Provide biometric/app lock, session and device management, suspicious-sign-in alerts, revocation, recovery, and optional masking of balances in notifications.
+- Do not sell financial data or require advertising-based profiling. Explain data collection, provider sharing, retention, analytics, and AI use plainly.
+- Support full export, backup, restore, unlinking, consent withdrawal, and account deletion from the app and a web page, with clearly explained handling of shared records and legitimately retained data.
+- Maintain an audit trail for changes, provider authorizations, sensitive actions, and administrative access. Access to support diagnostics must be limited and visible.
+- Secure attachments, scan and validate uploads, restrict file types and sizes sensibly, and use expiring authorized download access.
+- Provide a threat model, security review, dependency scanning, permission tests, and a recovery procedure. Do not claim certifications, audits, bank status, or insurance that the actual product has not obtained.
+
+29. OFFLINE USE, SYNCHRONIZATION, AND RELIABILITY
+
+- Cache authorized data securely for practical offline access on Android and the web where appropriate. Allow offline manual transaction entry and budget changes where conflicts can be handled safely.
+- Clearly show offline status, pending changes, stale financial data, last synchronization, and failed operations.
+- Use durable change queues, operation IDs, retry with backoff, conflict detection, and visible resolution for incompatible edits.
+- Process provider webhooks and bank updates idempotently. Replaying an event must not add the same purchase, transfer, or savings movement twice.
+- Preserve user edits when a pending bank transaction posts under a different ID or merchant name. Handle provider deletions, reversals, and duplicate-account repair.
+- Keep backups with tested restore paths, monitor sync failures and job queues, and make essential financial calculations available during an AI/provider outage.
+- Optimize large transaction lists and reports, isolate slow provider calls from normal UI use, and retain diagnostic information without exposing financial details in general logs.
+
+30. OUTSIDE PROVIDERS, CREDIT MONITORING, AND PERSONAL-USE ENTITLEMENTS
+
+- Build replaceable integrations for bank aggregation, bill data, securities/fund data, property/vehicle valuations, credit reporting, messaging, banking/payment services, service-concierge operations, coaching, tax filing, and estate planning.
+- Provide a setup/status page for each integration, with supported capabilities, connection state, required credentials/consents, environment, last test, errors, estimated operating costs, and manual fallback where applicable.
+- Include credit score, score history, score factors, full credit-report access, report-change alerts, account/inquiry details where supplied, and directions for handling an apparent error through the correct provider.
+- Display the actual credit bureau, scoring model, range, report date, and refresh interval. A manually entered score must be labeled as manual, not as a live credit-monitoring result.
+- Support authorized identity verification and consumer consent through the appropriate provider for credit/deposit services. Do not manufacture report contents or imply a soft/hard inquiry type without provider evidence.
+- All owner-facing software features should be enabled for personal use. Provider fees and licensing requirements must be visible operating dependencies, not hidden reasons to delete functionality.
+- Do not copy competitor free-plan limits. Preserve full history and data portability rather than expiring records after a plan-specific number of years.
+- If public monetization is later enabled, provide configurable trials, subscriptions, household entitlements, restore purchase, cancellations, and applicable web/Google Play purchase handling. Keep this optional so the personal owner is not forced to buy their own app subscription.
+
+31. ARCHITECTURE AND FINANCIAL CORRECTNESS
+
+- Use a maintainable architecture: typed web client, Android client, authenticated API, relational database, secure object storage, background workers, provider adapters, and shared domain calculation code.
+- A sensible implementation is a TypeScript web frontend and React Native Android frontend with a TypeScript backend and PostgreSQL. Use maintained stable versions and document any justified alternative. Do not choose a stack that makes advanced Android or offline features impractical.
+- Model users, households, memberships, permissions, spaces, accounts, connections, balances, transactions, splits, transfer links, categories, tags, rules, plans, assignments, envelopes, fills, targets, goals, schedules, debts, holdings, lots, valuations, forecasts, reports, alerts, receipts, service cases, consents, and audit events explicitly.
+- Keep posting records, allocation records, and forecasting records distinct. A virtual envelope fill changes allocation, not the bank account balance; a hypothetical event changes a scenario, not the actual ledger.
+- Use integer minor currency units or exact decimal arithmetic with currency-specific precision. Never use binary floating-point arithmetic for stored money or balance reconciliation.
+- Represent transfers with linked equal/opposite postings; enforce split totals; keep immutable original provider IDs/descriptions; retain a reliable change history.
+- Define formulas for net worth, cash balance, safe-to-spend, available category funds, debt payoff, return calculations, and forecast reserves. Show users a plain-language explanation of consequential totals.
+- Prevent duplicate commitment of funds across envelopes, goals, bills, and cash buffers. For example, $1,000 cash with $300 in upcoming bills, $200 reserved for a goal, and $100 buffer leaves $400 before other expenses, not $900.
+- Handle calendar boundaries, time zones, leap years, payment frequency, historical rule edits, archiving, refunds across periods, and multi-currency conversion explicitly.
+- Provide a documented authenticated API and optional user-scoped tokens/webhooks for authorized integrations, with revocation, rate limits, and access logging.
+
+32. TESTING AND ACCEPTANCE CRITERIA
+
+Use meaningful automated and manual checks that prove the financial behavior and user workflows. Include web and Android verification. Do not replace functionality with tests that simply repeat the implementation.
+
+- Prove manual entry, import preview, categorization, splitting, receipt linking, review, reconciliation, export, and restoration work end to end.
+- Prove a pending purchase becoming posted remains one purchase; replayed webhooks, retries, and reconnects do not duplicate records.
+- Prove transfers and credit-card payments do not inflate spending or income, and refunds reverse the intended expense without inventing salary.
+- Prove zero-based funding uses actual eligible cash, while expected income remains visibly forecast-only until received.
+- Prove envelope fills, rollover, scheduled fills, target behaviors, debt reserves, goal contributions, and safe-to-spend agree with the same underlying money.
+- Prove a $100 card purchase split $60 groceries/$40 household reduces those allocations and reserves $100 for payment; paying the card does not create another $100 expense.
+- Prove pay-period planning catches bills due before the next paycheck and forecasts update correctly after the bill posts.
+- Prove debt schedules reproduce known examples, extra payments reduce modeled interest/time appropriately, and assumptions are displayed.
+- Prove reports drill down to records whose totals equal the headline numbers; show the selected currency and exclude transfers consistently.
+- Prove private account details cannot leak through shared dashboards, aggregates, AI, SMS, widgets, exports, attachments, or direct API calls.
+- Prove offline edits reconnect safely, concurrent household changes are handled, session revocation works, and account deletion is accessible on Android and the web.
+- Test empty accounts, negative balances, variable income, large histories, closed accounts, missing cost basis, partial refunds, overdue bills, failed transfers, and disconnected providers.
+- Verify accessibility, keyboard operation, screen-reader labels, large text, contrast, touch targets, Android back navigation, and a representative range of screen sizes.
+- Check every reference-app feature against the requirements ledger before completion. Any incomplete item must remain explicitly visible with a concrete remaining dependency; it must not disappear from the checklist.
+
+33. WEB DEPLOYMENT AND GOOGLE PLAY DELIVERY
+
+- Deliver production web configuration, HTTPS support, deployment instructions, environment templates, database migrations, monitoring, backups, and rollback procedures.
+- Deliver a signed Android App Bundle for Play distribution and an installable test APK, plus signing/setup instructions that keep private keys out of the repository.
+- Verify current Google Play target API, app signing, Android device compatibility, privacy policy, Data safety answers, financial-feature declaration, account-deletion page, content rating, and applicable testing/review requirements at submission time.
+- Prepare original app icon, screenshots from the real app, feature graphic, store description, support contact, privacy URL, and review-access instructions where required.
+- Use minimum necessary Android permissions. Use system file/photo selection and request camera, notification, or biometric capabilities only at an appropriate point in the workflow.
+- Handle web links, password resets, bank-link returns, notification navigation, app upgrades, and schema migrations without losing the user's financial data.
+- Verify release builds and provide release notes and version numbers. Do not claim the app is published until the web deployment is reachable and Google Play has actually accepted/published the Android release.
+
+34. GITHUB AND COMPLETION DELIVERABLES
+
+- Save the implementation, design system, schema/migrations, tests, requirement ledger, provider setup guide, environment examples, build instructions, deployment instructions, and user documentation to https://github.com/benlauderdale71/Budget.
+- Use coherent commits and confirm the saved branch/commit. Do not report successful GitHub saving based only on files existing locally.
+- Keep source files and reproducible build instructions in GitHub. Use appropriate release assets for APK/AAB downloads instead of unnecessary repeated large binaries or dependency folders in source control.
+- Provide a coverage report listing every feature in this prompt, implementation status, web and Android location, validation performed, and any precise external activation requirement.
+- Provide a concise handoff with the actual repository commit, web URL if deployed, Android download/release if built, supported provider connections, and remaining activation work.
+- Completion means the combined software is implemented and verified. Provider-dependent production activation must be reported separately. A stub adapter, demo chart, placeholder score, or unexecuted service request cannot be counted as a live completed feature.
+
+END BUILD PROMPT
+
+SOURCE-APP COVERAGE LEDGER
+
+Monarch Money — account aggregation and switching providers; manual assets and valuations; net worth; customizable dashboard; category and Flex budgeting; rollovers; transactions, rules, tags, splits, notes and review assignments; recurring/bill calendar and bill data; goals and debt goals; cash flow, Sankey and monthly review; household yours/mine/ours and professional access; AI; credit score; investments. Plus adds forecasting/life events, separate businesses/rental tracking, advanced fund analysis, cost basis/gains/losses/tax lots, and will/trust partner access. Covered by modules 03–10, 12, 14–16, 18–25 and 30–31.
+
+YNAB — actual-cash zero-based planning; Ready to Assign/Assigned/Activity/Available; categories/templates; targets and differing refill/set-aside/balance behaviors; auto-assign and overfunding reduction; funding future months; overspending handling; credit-card payment reserves; loan planner; direct and file import/manual entry; transaction matching, flags, splits and reconciliation; shared and separate plans for a group; focused views; reporting; cash-buffer/age-of-money; offline/device sync; widgets; help/workshops/coaching and developer integrations. Covered by modules 02, 04–11, 13–15, 23 and 25–32. Apple-only financial import is handled through platform-compatible data access in modules 02 and 07.
+
+Quicken Simplifi — aggregation; automatic customizable spending plan; planned and ignored spending; daily remaining allowance; savings-goal reserves; recurring bills; projected account balances; what-if scenarios; category/payee/tag watchlists with targets/averages/projections; rules; reports/exports; spaces/sharing; investments, cost basis, returns and quotes; retirement planning; Quicken Assist insights. Covered by modules 03–10, 12–16, 18–21 and 23–25.
+
+Rocket Money — linked accounts; spending categorization, income/spend charts, frequent spend and largest purchases; budgets; advanced transaction edits/tags/notes/splits/rules/manual entries/export; subscriptions and recurring bills; cancellation concierge; bill negotiation; payday/calendar views; watchlists; net worth/home estimate/manual assets; partner sharing; goals/automatic savings; debt paydown; score/full credit report/monitoring; balance and budget alerts; customizable dashboard/widgets; education/support; Rowan AI text questions, summaries, trials, category/budget actions and service requests. Covered by modules 03–08, 12–19, 23–30.
+
+EveryDollar — monthly income-based zero plan; unlimited budget lines/categories; manual transactions; splits; sinking funds; giving/saving/spending; due dates; household sharing; bank connect; paycheck planning; custom reports/CSV; financial roadmap/projected net worth; debt snowball and progress adjustments; personalized guidance; live weekly training, group and one-to-one coaching, Q&A and human support. Covered by modules 03–10, 13–16, 19, 23–25 and 27.
+
+Empower Personal Dashboard — account aggregation including retirement/investments/loans; transactions; budgeting/cash flow; net worth; portfolio analysis/checkup, benchmarks/allocation/risk; investment fees; savings planner/emergency fund/debt paydown; retirement and major-life-event planning, spending/withdrawals, Monte Carlo and stress testing; optional access to professionals and tax-filing partners. Covered by modules 05–08, 14–15, 18–23, 25, 27 and 30. Unrelated institutional retirement administration and wealth-management products are not silently assumed to be part of the named Dashboard product.
+
+Goodbudget — regular/annual/goal/debt envelopes, groups and due dates; fills from income/unallocated, top-up/add/set/sweep, remembered and scheduled fills; envelope/account transfers; manual and automated bank imports including pending status; confirm/match/unmatch; splits/check numbers/notes/payee suggestions; reconciliation and running balances; spending/envelope-balance/income-source reports; CSV export; debt progress; cross-device household sharing; currency-format preferences; education/help and widgets. Covered by modules 02–11, 13–16, 23 and 25–29.
+
+The ledger groups shared capabilities to avoid duplication; it does not mean a general label such as 'budgeting' replaces the more specific requirements above. Competitor pricing tiers, arbitrary record-retention limits, coupon programs, and unrelated parent-company products are not required limits or services in this personal app.
+
+PRIMARY SOURCES INSPECTED
+
+Monarch product overview: https://www.monarch.com/about
+Monarch getting started: https://help.monarch.com/hc/en-us/articles/360048393272-Getting-Started-with-Monarch
+Monarch Plus details: https://help.monarch.com/hc/en-us/articles/48349699981972-Monarch-Plus-Tier
+YNAB features: https://www.ynab.com/features
+YNAB manual/file/direct imports, credit-card handling, reports and sharing overview: https://www.ynab.com/blog/ynab-vs-mint-a-better-way-to-manage-money
+YNAB targets: https://support.ynab.com/en_us/getting-started-with-targets-ryAEP08xC
+YNAB rollover: https://support.ynab.com/en_us/when-the-month-rolls-over-a-guide-rkyyd6qC9
+YNAB API: https://support.ynab.com/en_us/the-ynab-api-an-overview-BJMgQ3zAq
+Simplifi product: https://www.quicken.com/products/simplifi/
+Simplifi Assist: https://www.quicken.com/products/simplifi-ai-assist/
+Simplifi watchlists: https://support.simplifi.quicken.com/en/articles/4637231-using-watchlists-on-the-mobile-app
+Rocket Money FAQ: https://www.rocketmoney.com/faq
+Rocket Money free/Premium/Premium+ feature comparison: https://www.rocketmoney.com/learn/personal-finance/how-much-does-rocket-money-cost
+Rocket Money Rowan: https://www.rocketmoney.com/rowan
+EveryDollar free/premium comparison and FAQ: https://www.ramseysolutions.com/money/everydollar
+Empower financial tools: https://www.empower.com/tools
+Empower portfolio analysis: https://www.empower.com/tools/portfolio-analysis
+Empower savings planner: https://www.empower.com/tools/savings-planner
+Empower retirement planner: https://www.empower.com/tools/retirement-planner
+Empower simulation explanation: https://www.empower.com/the-currency/money/how-to-calculate-your-retirement-number
+Goodbudget capabilities: https://goodbudget.com/what-you-get/
+Goodbudget free/premium comparison: https://goodbudget.com/signup
+Goodbudget released functionality: https://goodbudget.com/changelog/
+Google Play policy requirements: https://support.google.com/googleplay/android-developer/answer/18265346
+
+Research limitations handled in the prompt: public documentation may change; Rocket Money's free-plan tables/FAQ do not always agree; older help articles can describe platform/tier restrictions. The combined build retains the capabilities regardless of source tier and requires a new source-by-source reconciliation before claiming complete parity. Provider-backed banking, credit, negotiation, human coaching, tax filing, legal-document services and licensed market data require real agreements and activation; they remain in the feature scope and may not be replaced by misleading simulations.
