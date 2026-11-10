@@ -75,6 +75,11 @@ export interface Bucket {
   linkedAccountId?: string;
   purpose?: "emergency" | "giving" | "sinking" | "debt" | "goal" | "general";
   dueDay?: number;
+  version?: number;
+  /** Latest saved rollover rule. The original rollover stays in `rollover` so earlier months do not change. */
+  displayRollover?: RolloverMode;
+  displayRolloverCapMinor?: number;
+  rolloverEffectivePeriod?: string;
 }
 
 export type TransactionType =
@@ -202,6 +207,16 @@ export interface EngineInput {
   schedules?: Schedule[];
   planLines?: PlanLine[];
   includePending?: boolean;
+  /** Rollover rules that take effect on and after effectivePeriod. Earlier boundaries keep the older rule. */
+  rolloverPolicies?: RolloverPolicy[];
+}
+
+export interface RolloverPolicy {
+  bucketId: string;
+  /** Inclusive YYYY-MM. The carry out of this month uses this rule. */
+  effectivePeriod: string;
+  rollover: RolloverMode;
+  rolloverCapMinor?: number;
 }
 
 export interface BucketMonth {

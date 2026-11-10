@@ -42,9 +42,17 @@ export interface Bucket {
   flexRole: string;
   envelopeStyle: string;
   rollover: string;
+  rolloverCapMinor?: number;
+  displayRollover?: string;
+  displayRolloverCapMinor?: number;
+  rolloverEffectivePeriod?: string;
+  icon?: string;
+  displayOrder?: number;
+  version?: number;
+  hidden?: boolean;
   systemRole?: string | null;
   purpose?: string;
-  target?: { type: string; amountMinor: number; cadence: string; dueDate?: string };
+  target?: { type: string; amountMinor: number; cadence: string; dueDate?: string; pausedUntil?: string; percentBps?: number };
   archived?: boolean;
 }
 
@@ -165,4 +173,9 @@ export interface Dashboard {
   alerts: { id: string; title: string; body: string; kind: string; read_at: string | null; created_at: string }[];
   recent: Txn[];
   reviewCount: number;
+  funding?: {
+    eligiblePostedIncomeMinor: number;
+    formula: string;
+    buckets: { bucketId: string; percentBps: number | null; percentLabel: string | null; targetMinor: number; fundedMinor: number; shortfallMinor: number; paused: boolean }[];
+  };
 }

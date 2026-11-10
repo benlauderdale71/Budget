@@ -538,6 +538,73 @@ CREATE TABLE IF NOT EXISTS consents (
   withdrawn_at text
 );
 
+CREATE TABLE IF NOT EXISTS bucket_revisions (
+  bucket_id text PRIMARY KEY REFERENCES buckets(id) ON DELETE CASCADE,
+  household_id text NOT NULL,
+  version integer NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bucket_policies (
+  id text PRIMARY KEY,
+  household_id text NOT NULL,
+  bucket_id text NOT NULL REFERENCES buckets(id) ON DELETE CASCADE,
+  effective_period text NOT NULL,
+  rollover text NOT NULL,
+  rollover_cap_minor bigint,
+  created_at text NOT NULL,
+  UNIQUE (bucket_id, effective_period)
+);
+
+CREATE TABLE IF NOT EXISTS fill_templates (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  space_id text NOT NULL,
+  name text NOT NULL,
+  cadence text,
+  custom_days integer,
+  start_date text NOT NULL,
+  end_date text,
+  next_date text,
+  time_zone text NOT NULL,
+  paused integer NOT NULL DEFAULT 0,
+  shortfall_policy text NOT NULL,
+  sweep_bucket_id text,
+  created_by text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  archived integer NOT NULL DEFAULT 0,
+  created_at text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fill_lines (
+  id text PRIMARY KEY,
+  template_id text NOT NULL REFERENCES fill_templates(id) ON DELETE CASCADE,
+  household_id text NOT NULL,
+  bucket_id text NOT NULL,
+  mode text NOT NULL,
+  amount_minor bigint,
+  percent_bps integer,
+  priority integer NOT NULL,
+  source_bucket_id text
+);
+
+CREATE TABLE IF NOT EXISTS fill_occurrences (
+  id text PRIMARY KEY,
+  template_id text NOT NULL,
+  household_id text NOT NULL,
+  occurrence_key text NOT NULL,
+  status text NOT NULL,
+  allocated_minor bigint NOT NULL DEFAULT 0,
+  shortfall_minor bigint NOT NULL DEFAULT 0,
+  detail_json text NOT NULL DEFAULT '{}',
+  error text,
+  attempt integer NOT NULL DEFAULT 0,
+  created_at text NOT NULL,
+  finished_at text,
+  UNIQUE (household_id, occurrence_key)
+);
+
 CREATE TABLE IF NOT EXISTS balance_snapshots (
   id text PRIMARY KEY,
   household_id text NOT NULL,

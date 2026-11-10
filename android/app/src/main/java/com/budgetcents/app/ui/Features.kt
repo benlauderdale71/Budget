@@ -1,5 +1,6 @@
 package com.budgetcents.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -108,27 +109,8 @@ fun FeatureScreen(
             }
         }
         "debts" -> DebtScreen(api, hid, privacy)
-        "categories" -> CategoryScreen(dash, onError) { name, kind, role, style, percent ->
-            scope.launch {
-                runIo(onError) {
-                    val body = JSONObject()
-                        .put("spaceId", dash?.optString("spaceId"))
-                        .put("name", name)
-                        .put("kind", kind)
-                        .put("flexRole", role)
-                        .put("envelopeStyle", style)
-                        .put("rollover", "both")
-                    if (percent.isNotBlank()) {
-                        val bps = percent.toDoubleOrNull()?.times(100)?.toInt()
-                        if (bps == null || bps !in 0..10000) { onError("Enter a percent from 0 to 100."); return@runIo }
-                        body.put("target", JSONObject().put("type", "set_aside").put("amountMinor", 0).put("cadence", "monthly").put("percentBps", bps))
-                    }
-                    api.request("POST", "/api/households/$hid/buckets", body)
-                    onStatus("Category saved. Assign money on the Plan tab. A percent uses posted income only.")
-                    onChanged()
-                }
-            }
-        }
+        "categories" -> CategoryScreen(api, hid, dash, onError, onStatus, onChanged)
+        "fills" -> FillsScreen(api, hid, dash, onError, onStatus, onChanged)
         "paycheck" -> RemoteScreen("paycheck", { api.request("GET", "/api/households/$hid/income-plan?spaceId=${dash?.optString("spaceId") ?: ""}") }) { data ->
             Text(data.optString("note"))
             Text("Expected this period ${money(data.optLong("expectedIncomeMinor"), privacy)}")
@@ -371,39 +353,233 @@ private fun AccountsScreen(dash: JSONObject?, privacy: Boolean, onError: (String
 }
 
 @Composable
-private fun CategoryScreen(dash: JSONObject?, onError: (String) -> Unit, onSave: (String, String, String, String, String) -> Unit) {
+private fun CategoryScreen(api: BudgetApi, hid: String, dash: JSONObject?, onError: (String) -> Unit, onStatus: (String) -> Unit, onChanged: () -> Unit) {
+    val scope = rememberCoroutineScope()
     val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
-    if (buckets.length() == 0) Text("No categories yet.")
-    for (index in 0 until buckets.length()) {
-        val bucket = buckets.getJSONObject(index)
-        if (bucket.optString("systemRole").isNotBlank()) continue
-        val style = bucket.optString("envelopeStyle").ifBlank { "regular" }
-        Text("${bucket.optString("name")} · ${bucket.optString("kind")} · ${bucket.optString("flexRole").ifBlank { "flexible" }} · $style")
+    val period = dash?.optJSONObject("budget")?.optString("periodKey") ?: java.time.LocalDate.now().toString().take(7)
+    var editing by remember { mutableStateOf<JSONObject?>(null) }
+    BackHandler(enabled = editing != null) { editing = null }
+    val funding = dash?.optJSONObject("funding")
+    if (funding != null) Text("Eligible posted income ${money(funding.optLong("eligiblePostedIncomeMinor"), false)}. ${funding.optString("formula")}")
+    if (editing == null) {
+        if (buckets.length() == 0) Text("No categories yet.")
+        for (index in 0 until buckets.length()) {
+            val bucket = buckets.getJSONObject(index)
+            if (bucket.optString("systemRole").isNotBlank() || bucket.optBoolean("archived")) continue
+            val style = bucket.optString("envelopeStyle").ifBlank { "regular" }
+            Text("${bucket.optString("name")} · ${bucket.optString("kind")} · ${bucket.optString("flexRole").ifBlank { "flexible" }} · $style")
+            TextButton(onClick = { editing = bucket }) { Text("Edit ${bucket.optString("name")}") }
+        }
+        CategoryForm(null, period, onError) { body ->
+            scope.launch {
+                try {
+                    body.put("spaceId", dash?.optString("spaceId"))
+                    withContext(Dispatchers.IO) { api.request("POST", "/api/households/$hid/buckets", body) }
+                    onStatus("Category saved. Nothing was assigned.")
+                    onChanged()
+                } catch (caught: Exception) {
+                    onError(caught.message ?: "Could not save the category.")
+                }
+            }
+        }
+    } else {
+        val current = editing ?: return
+        Text("Editing ${current.optString("name")}. Version ${current.optInt("version", 1)}.")
+        val progress = funding?.optJSONArray("buckets")
+        if (progress != null) {
+            for (index in 0 until progress.length()) {
+                val row = progress.getJSONObject(index)
+                if (row.optString("bucketId") == current.optString("id") && row.optInt("percentBps", -1) >= 0) {
+                    Text("Eligible ${money(funding.optLong("eligiblePostedIncomeMinor"), false)} · ${row.optString("percentLabel")} · target ${money(row.optLong("targetMinor"), false)} · funded ${money(row.optLong("fundedMinor"), false)} · still needed ${money(row.optLong("shortfallMinor"), false)}")
+                }
+            }
+        }
+        CategoryForm(current, period, onError) { body ->
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) { api.request("PATCH", "/api/households/$hid/buckets/${current.optString("id")}", body) }
+                    onStatus("Category saved. No money was moved.")
+                    editing = null
+                    onChanged()
+                } catch (caught: Exception) {
+                    onError(caught.message ?: "Could not save the category.")
+                }
+            }
+        }
     }
-    var name by remember { mutableStateOf("") }
-    var kind by remember { mutableStateOf("expense") }
-    var role by remember { mutableStateOf("flexible") }
-    var style by remember { mutableStateOf("regular") }
-    var percent by remember { mutableStateOf("") }
+    Text("A category and an envelope are views of the same money. Editing a target does not assign cash. A percent uses posted income only.")
+}
+
+@Composable
+private fun CategoryForm(existing: JSONObject?, period: String, onError: (String) -> Unit, onSave: (JSONObject) -> Unit) {
+    val target = existing?.optJSONObject("target")
+    var name by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("name") ?: "") }
+    var group by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("group") ?: "Spending") }
+    var icon by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("icon") ?: "") }
+    var order by remember(existing?.optString("id")) { mutableStateOf((existing?.optInt("displayOrder") ?: 0).toString()) }
+    var kind by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("kind")?.ifBlank { "expense" } ?: "expense") }
+    var role by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("flexRole")?.ifBlank { "flexible" } ?: "flexible") }
+    var style by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("envelopeStyle")?.ifBlank { "regular" } ?: "regular") }
+    var rollover by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("displayRollover")?.ifBlank { existing.optString("rollover").ifBlank { "both" } } ?: "both") }
+    var cap by remember(existing?.optString("id")) { mutableStateOf("") }
+    var targetType by remember(existing?.optString("id")) { mutableStateOf(target?.optString("type")?.ifBlank { "none" } ?: "none") }
+    var targetAmount by remember(existing?.optString("id")) { mutableStateOf(if (target == null) "" else money(target.optLong("amountMinor"), false).removePrefix("$")) }
+    var percent by remember(existing?.optString("id")) { mutableStateOf(if (target?.has("percentBps") == true) (target.optInt("percentBps") / 100.0).toString() else "") }
+    var due by remember(existing?.optString("id")) { mutableStateOf(target?.optString("dueDate") ?: "") }
+    var paused by remember(existing?.optString("id")) { mutableStateOf(target?.optString("pausedUntil") ?: "") }
+    var effective by remember(existing?.optString("id")) { mutableStateOf(existing?.optString("rolloverEffectivePeriod")?.ifBlank { period } ?: period) }
+    var archived by remember(existing?.optString("id")) { mutableStateOf(existing?.optBoolean("archived") ?: false) }
     OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(group, { group = it }, label = { Text("Group") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(icon, { icon = it }, label = { Text("Icon") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(order, { order = it }, label = { Text("Display order") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+    ChoiceRow("Kind", listOf("expense", "income"), kind) { kind = it }
+    ChoiceRow("Classification", listOf("fixed", "non_monthly", "flexible"), role) { role = it }
+    ChoiceRow("Style", listOf("regular", "annual", "goal", "debt"), style) { style = it }
+    ChoiceRow("Rollover", listOf("both", "positive", "negative", "none", "capped"), rollover) { rollover = it }
+    OutlinedTextField(cap, { cap = it }, label = { Text("Rollover cap") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(effective, { effective = it }, label = { Text("Effective month YYYY-MM") }, modifier = Modifier.fillMaxWidth())
+    Text("A rollover change applies when that month closes. Earlier months stay put unless you recalculate from the web app and review the change.")
+    ChoiceRow("Target", listOf("none", "refill", "set_aside", "balance_by_date", "maintain_balance", "debt_payment"), targetType) { targetType = it }
+    OutlinedTextField(targetAmount, { targetAmount = it }, label = { Text("Target amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(percent, { percent = it }, label = { Text("Percent of eligible posted income") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(due, { due = it }, label = { Text("Target date") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(paused, { paused = it }, label = { Text("Pause until YYYY-MM-DD") }, modifier = Modifier.fillMaxWidth())
+    if (existing != null) TextButton(onClick = { archived = !archived }) { Text(if (archived) "Archived — tap to restore" else "Archive this category") }
+    Button(onClick = {
+        try {
+            if (name.isBlank()) { onError("Name the category."); return@Button }
+            val body = JSONObject()
+                .put("name", name.trim())
+                .put("group", group.ifBlank { "Spending" })
+                .put("displayOrder", order.toIntOrNull() ?: 0)
+                .put("kind", kind)
+                .put("flexRole", role)
+                .put("envelopeStyle", style)
+                .put("rollover", rollover)
+                .put("archived", archived)
+                .put("effectivePeriod", effective.ifBlank { period })
+            if (icon.isNotBlank()) body.put("icon", icon) else if (existing != null) body.put("icon", JSONObject.NULL)
+            if (rollover == "capped") body.put("rolloverCapMinor", parseDollars(cap.ifBlank { "0" }))
+            if (existing != null) body.put("version", existing.optInt("version", 1))
+            if (targetType == "none") body.put("target", JSONObject.NULL) else {
+                val targetBody = JSONObject().put("type", targetType).put("amountMinor", parseDollars(targetAmount.ifBlank { "0" })).put("cadence", "monthly")
+                if (due.isNotBlank()) targetBody.put("dueDate", due)
+                if (paused.isNotBlank()) targetBody.put("pausedUntil", paused)
+                if (percent.isNotBlank()) targetBody.put("percentBps", percentBps(percent))
+                body.put("target", targetBody)
+            }
+            onSave(body)
+        } catch (caught: Exception) {
+            onError(caught.message ?: "Check the amounts and percent.")
+        }
+    }) { Text(if (existing == null) "Add category" else "Save category") }
+}
+
+@Composable
+private fun ChoiceRow(label: String, choices: List<String>, selected: String, onSelect: (String) -> Unit) {
+    Text(label)
     Row {
-        listOf("expense", "income").forEach { choice ->
-            TextButton(onClick = { kind = choice }) { Text(if (kind == choice) choice.replaceFirstChar { it.titlecase() } else choice) }
+        choices.forEach { choice ->
+            TextButton(onClick = { onSelect(choice) }) { Text(if (choice == selected) choice.replace('_', ' ').replaceFirstChar { it.titlecase() } else choice.replace('_', ' ')) }
         }
     }
-    Row {
-        listOf("fixed", "flexible", "non_monthly").forEach { choice ->
-            TextButton(onClick = { role = choice }) { Text(if (role == choice) choice.replace('_', ' ') else choice.replace('_', ' ')) }
+}
+
+@Composable
+private fun FillsScreen(api: BudgetApi, hid: String, dash: JSONObject?, onError: (String) -> Unit, onStatus: (String) -> Unit, onChanged: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var reload by remember { mutableStateOf(0) }
+    Text("A fill assigns cash already in the budget. It is not a bank transfer. Saved and Scheduled are not the same as Applied.")
+    RemoteScreen("fills-$reload", { api.request("GET", "/api/households/$hid/fills") }) { data ->
+        Text(data.optString("note"))
+        val fills = data.optJSONArray("fills") ?: JSONArray()
+        if (fills.length() == 0) Text("No saved fills yet.")
+        for (index in 0 until fills.length()) {
+            val fill = fills.getJSONObject(index)
+            Text("${fill.optString("name")} · ${fill.optString("statusLabel")} · next ${fill.optString("nextDate").ifBlank { "none" }}")
+            val last = fill.optJSONObject("lastOutcome")
+            if (last == null) Text("No occurrence has run.") else Text("Last result ${last.optString("statusLabel")} ${money(last.optLong("allocatedMinor"), false)}")
+            Row {
+                TextButton(onClick = { fillAction(scope, api, hid, fill.optString("id"), "run", onError, onStatus) { reload += 1; onChanged() } }) { Text("Run now") }
+                TextButton(onClick = { fillAction(scope, api, hid, fill.optString("id"), "skip", onError, onStatus) { reload += 1; onChanged() } }) { Text("Skip") }
+                TextButton(onClick = {
+                    val action = if (fill.optString("statusLabel") == "Paused") "resume" else "pause"
+                    fillAction(scope, api, hid, fill.optString("id"), action, onError, onStatus) { reload += 1; onChanged() }
+                }) { Text(if (fill.optString("statusLabel") == "Paused") "Resume" else "Pause") }
+            }
         }
     }
-    Row {
-        listOf("regular", "annual", "goal", "debt").forEach { choice ->
-            TextButton(onClick = { style = choice }) { Text(if (style == choice) choice.replaceFirstChar { it.titlecase() } else choice) }
+    FillForm(dash, onError) { body ->
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { api.request("POST", "/api/households/$hid/fills", body) }
+                onStatus("Fill saved. It has not moved any money.")
+                reload += 1
+                onChanged()
+            } catch (caught: Exception) {
+                onError(caught.message ?: "Could not save the fill.")
+            }
         }
     }
-    OutlinedTextField(percent, { percent = it }, label = { Text("Percent of posted income") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
-    Button(onClick = { if (name.isBlank()) onError("Name the category.") else onSave(name, kind, role, style, percent) }) { Text("Add category") }
-    Text("A category, an envelope, and a flexible plan are views of the same money. A percent does not assign cash, and expected pay is not included.")
+}
+
+private fun fillAction(scope: kotlinx.coroutines.CoroutineScope, api: BudgetApi, hid: String, id: String, action: String, onError: (String) -> Unit, onStatus: (String) -> Unit, onDone: () -> Unit) {
+    scope.launch {
+        try {
+            val result = withContext(Dispatchers.IO) { api.request("POST", "/api/households/$hid/fills/$id/$action", JSONObject()) }
+            onStatus(result.optString("statusLabel").ifBlank { "Saved" } + ". " + result.optString("explanation").ifBlank { result.optString("note") })
+            onDone()
+        } catch (caught: Exception) {
+            onError(caught.message ?: "Could not update the fill.")
+        }
+    }
+}
+
+@Composable
+private fun FillForm(dash: JSONObject?, onError: (String) -> Unit, onSave: (JSONObject) -> Unit) {
+    val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
+    val choices = (0 until buckets.length()).map { buckets.getJSONObject(it) }.filter { it.optString("systemRole").isBlank() && !it.optBoolean("archived") }
+    var name by remember { mutableStateOf("Payday fill") }
+    var cadence by remember { mutableStateOf("monthly") }
+    var policy by remember { mutableStateOf("partial") }
+    var bucketId by remember { mutableStateOf(choices.firstOrNull()?.optString("id") ?: "") }
+    var mode by remember { mutableStateOf("add") }
+    var amount by remember { mutableStateOf("") }
+    var secondId by remember { mutableStateOf("") }
+    var secondAmount by remember { mutableStateOf("") }
+    OutlinedTextField(name, { name = it }, label = { Text("Fill name") }, modifier = Modifier.fillMaxWidth())
+    ChoiceRow("Schedule", listOf("once", "weekly", "biweekly", "twice_monthly", "monthly", "annual"), cadence) { cadence = it }
+    ChoiceRow("If cash is short", listOf("partial", "skip"), policy) { policy = it }
+    Text(if (policy == "skip") "The whole occurrence is skipped when cash is short." else "Envelopes are funded in priority order until Ready to Assign runs out.")
+    Text("Envelope")
+    Row { choices.forEach { choice -> TextButton(onClick = { bucketId = choice.optString("id") }) { Text(if (bucketId == choice.optString("id")) "Selected ${choice.optString("name")}" else choice.optString("name")) } } }
+    ChoiceRow("Action", listOf("add", "top_up", "shortfall", "percent"), mode) { mode = it }
+    OutlinedTextField(amount, { amount = it }, label = { Text(if (mode == "percent") "Percent" else "Amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    Text("Second envelope, optional")
+    Row {
+        TextButton(onClick = { secondId = "" }) { Text(if (secondId.isBlank()) "No second envelope" else "Clear second") }
+        choices.forEach { choice -> TextButton(onClick = { secondId = choice.optString("id") }) { Text(choice.optString("name")) } }
+    }
+    OutlinedTextField(secondAmount, { secondAmount = it }, label = { Text("Second amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    Button(onClick = {
+        try {
+            if (bucketId.isBlank()) { onError("Choose an envelope."); return@Button }
+            val first = JSONObject().put("bucketId", bucketId).put("mode", mode).put("priority", 1)
+            if (mode == "percent") first.put("percentBps", percentBps(amount)) else if (mode != "shortfall") first.put("amountMinor", parseDollars(amount.ifBlank { "0" }))
+            val lines = org.json.JSONArray().put(first)
+            if (secondId.isNotBlank()) lines.put(JSONObject().put("bucketId", secondId).put("mode", "add").put("priority", 2).put("amountMinor", parseDollars(secondAmount.ifBlank { "0" })))
+            onSave(JSONObject()
+                .put("spaceId", dash?.optString("spaceId"))
+                .put("name", name)
+                .put("cadence", cadence)
+                .put("startDate", java.time.LocalDate.now().toString())
+                .put("shortfallPolicy", policy)
+                .put("lines", lines))
+        } catch (caught: Exception) {
+            onError(caught.message ?: "Check the amounts.")
+        }
+    }) { Text("Save fill") }
 }
 
 @Composable

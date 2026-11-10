@@ -12,3 +12,5 @@ export * from "./importers.js";
 export * from "./assistant.js";
 export * from "./sync.js";
 export * from "./match.js";
+export * from "./percent.js";
+export * from "./fills.js";

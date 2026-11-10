@@ -37,6 +37,17 @@ export function minorToInput(minor: number, currency = "USD"): string {
   return places === 0 ? `${sign}${whole}` : `${sign}${whole}.${frac}`;
 }
 
+/** Basis points. 10.5% is 1050. More than two decimal places is rejected. */
+export function percentBpsFromInput(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) throw new Error("Enter a percent from 0 to 100 with at most two decimal places.");
+  const [whole, fraction = ""] = trimmed.split(".");
+  const bps = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
+  if (bps > 10_000) throw new Error("Enter a percent from 0 to 100.");
+  return bps;
+}
+
 export function todayISO(): string {
   const date = new Date();
   const month = String(date.getMonth() + 1).padStart(2, "0");

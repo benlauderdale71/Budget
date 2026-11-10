@@ -1,5 +1,6 @@
 import { enumerateMonths, periodFromDate } from "./dates.js";
 import { assertMinor, type ExplainedNumber } from "./money.js";
+import { percentTargetMinor } from "./percent.js";
 import {
   IDENTITY_FORMULA,
   type Account,
@@ -9,6 +10,7 @@ import {
   type BudgetResult,
   type EngineInput,
   type PlanLine,
+  type RolloverPolicy,
   type Split,
   type Transaction,
 } from "./types.js";
@@ -183,6 +185,14 @@ function borrowedId(buckets: Bucket[]): string {
   const found = buckets.find((b) => b.systemRole === "borrowed_funds");
   if (!found) throw new BudgetError("Household is missing the borrowed-funds parking bucket.");
   return found.id;
+}
+
+function rolloverForPeriod(bucket: Bucket, periodKey: string, policies: RolloverPolicy[] | undefined): Bucket {
+  const chosen = (policies ?? [])
+    .filter((policy) => policy.bucketId === bucket.id && policy.effectivePeriod <= periodKey)
+    .sort((a, b) => (a.effectivePeriod < b.effectivePeriod ? 1 : -1))[0];
+  if (!chosen) return bucket;
+  return { ...bucket, rollover: chosen.rollover, rolloverCapMinor: chosen.rolloverCapMinor };
 }
 
 function applyRollover(amount: number, bucket: Bucket): { keep: number; release: number } {
@@ -435,11 +445,12 @@ export function computeBudget(input: EngineInput): BudgetResult {
     state.creditOverspend = new Map();
 
     if (period.key !== periods[0].key) {
+      const previous = periods[periods.indexOf(period) - 1]!;
       for (const bucket of input.buckets) {
         if (bucket.kind !== "expense") continue;
         if (bucket.systemRole === "borrowed_funds" || bucket.systemRole === "cc_reserve") continue;
         const prev = avail(state, bucket.id);
-        const { keep, release } = applyRollover(prev, bucket);
+        const { keep, release } = applyRollover(prev, rolloverForPeriod(bucket, previous.key, input.rolloverPolicies));
         state.available.set(bucket.id, keep);
         state.rta += release;
         rolloverIn.set(bucket.id, keep);
@@ -663,7 +674,7 @@ export function neededForTarget(bucket: Bucket, availableIncludingAssigned: numb
   const target = bucket.target;
   if (!target || target.pausedUntil) return 0;
   const months = Math.max(1, monthsRemaining);
-  const amount = target.percentBps == null ? target.amountMinor : Math.round((postedIncomeMinor * target.percentBps) / 10_000);
+  const amount = target.percentBps == null ? target.amountMinor : percentTargetMinor(postedIncomeMinor, target.percentBps);
   if (target.type === "set_aside") return Math.max(0, amount - assignedThisPeriod);
   if (target.type === "refill" || target.type === "maintain_balance") {
     return Math.max(0, amount - availableIncludingAssigned);

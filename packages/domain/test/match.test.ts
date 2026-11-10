@@ -11,6 +11,7 @@ describe("transaction matching", () => {
     expect(matchProblem(keeper, { ...bank, amountMinor: -2600 })).toMatch(/equal/);
     expect(matchProblem({ ...keeper, providerTransactionId: "a" }, bank)).toMatch(/provider ids/);
     expect(matchProblem(keeper, keeper)).toMatch(/different/);
+    expect(matchProblem({ ...keeper, type: "expense" }, { ...bank, type: "refund" })).toMatch(/same type/);
   });
 
   it("removes the duplicate once and restores that same amount", () => {

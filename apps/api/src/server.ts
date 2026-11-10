@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runDueFills } from "./fills.js";
 import { createApp, demoLoginAllowed } from "./http.js";
 import { openDatabase } from "./db.js";
 import { ensureDemo } from "./seed.js";
@@ -40,8 +41,16 @@ app.use("*", async (c, next) => {
   }
 });
 
+const fillPollMs = Number(process.env.BUDGETCENTS_FILL_POLL_MS ?? 0);
+
 serve({ fetch: app.fetch, port }, () => {
   console.log(`BudgetCents API listening on http://127.0.0.1:${port}`);
   console.log(`Serving the web build from ${webRoot}`);
   if (demoLoginAllowed()) console.log("Sample household login is enabled for this environment.");
+  if (Number.isFinite(fillPollMs) && fillPollMs > 0) {
+    setInterval(() => {
+      runDueFills(db).catch((error) => console.error("Scheduled fill failed", error));
+    }, fillPollMs);
+    console.log(`Scheduled envelope fills poll every ${fillPollMs} ms. Unset BUDGETCENTS_FILL_POLL_MS to leave fills for Run now or an operator call.`);
+  }
 });

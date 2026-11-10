@@ -7,6 +7,7 @@ export interface MatchRecord {
   currency: string;
   providerTransactionId?: string;
   reconciled?: boolean;
+  type?: string;
 }
 
 export function matchProblem(keeper: MatchRecord, incoming: MatchRecord): string | null {
@@ -14,6 +15,7 @@ export function matchProblem(keeper: MatchRecord, incoming: MatchRecord): string
   if (keeper.accountId !== incoming.accountId) return "Match transactions that belong to the same account.";
   if (keeper.currency !== incoming.currency) return "Match transactions in the same currency.";
   if (keeper.amountMinor !== incoming.amountMinor) return "The amounts have to be equal. Matching then removes one copy, so the total changes once.";
+  if (keeper.type && incoming.type && keeper.type !== incoming.type) return "Match records of the same type. An equal amount is not enough.";
   if (keeper.reconciled && incoming.reconciled) return "Unreconcile one of them before matching.";
   if (keeper.providerTransactionId && incoming.providerTransactionId) {
     return keeper.providerTransactionId === incoming.providerTransactionId

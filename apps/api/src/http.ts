@@ -1,9 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
+import { saveCategory } from "./categories.js";
+import { deleteFill, fillHistory, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { planRestore } from "./restore.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, totp, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
@@ -21,6 +23,7 @@ import {
   evaluateIncomePlan,
   guidanceFor,
   loadSpace,
+  lockHousehold,
   planView,
   previewAutoAssign,
   publicAccounts,
@@ -35,6 +38,47 @@ import { textPdf } from "./pdf.js";
 import { DEMO_EMAIL, DEMO_PASSWORD, ensureDemo } from "./seed.js";
 
 const money = z.number().int();
+
+const categoryEditSchema = z.object({
+  version: z.number().int().positive(),
+  name: z.string().min(1).max(80),
+  group: z.string().min(1).max(80),
+  icon: z.string().max(40).nullable().optional(),
+  displayOrder: z.number().int().min(0).max(9999),
+  kind: z.enum(["income", "expense"]),
+  flexRole: z.enum(["fixed", "non_monthly", "flexible", "income", "reserve"]),
+  envelopeStyle: z.enum(["regular", "annual", "goal", "debt", "none"]),
+  rollover: z.enum(["both", "positive", "negative", "none", "capped"]),
+  rolloverCapMinor: money.nullable().optional(),
+  purpose: z.string().max(40).nullable().optional(),
+  archived: z.boolean(),
+  hidden: z.boolean().optional(),
+  target: z.record(z.unknown()).nullable().optional(),
+  effectivePeriod: z.string(),
+  recalculate: z.boolean().default(false),
+  preview: z.boolean().default(false),
+});
+
+const fillTemplateSchema: z.ZodType<FillTemplateInput> = z.object({
+  version: z.number().int().positive().optional(),
+  spaceId: z.string(),
+  name: z.string().min(1).max(80),
+  cadence: z.enum(["once", "weekly", "biweekly", "twice_monthly", "monthly", "every_2_months", "every_3_months", "every_6_months", "annual", "custom"]),
+  customDays: z.number().int().min(1).max(366).nullable().optional(),
+  startDate: z.string(),
+  endDate: z.string().nullable().optional(),
+  paused: z.boolean().optional(),
+  shortfallPolicy: z.enum(["skip", "partial"]),
+  sweepBucketId: z.string().nullable().optional(),
+  lines: z.array(z.object({
+    bucketId: z.string(),
+    mode: z.enum(["add", "top_up", "shortfall", "percent"]),
+    amountMinor: money.nullable().optional(),
+    percentBps: z.number().int().min(0).max(10_000).nullable().optional(),
+    priority: z.number().int().min(0).max(999),
+    sourceBucketId: z.string().nullable().optional(),
+  })).min(1).max(40),
+});
 
 function targetJson(target: Record<string, unknown> | null | undefined): string | null {
   if (target == null) return null;
@@ -363,6 +407,7 @@ export function createApp(db: Database) {
       recent: loaded.input.transactions.slice(-8).reverse(),
       reviewCount: loaded.input.transactions.filter((txn) => txn.reviewStatus === "needs_review").length,
       labelMode: loaded.member.labelMode,
+      funding: fundingFor(loaded),
     });
   });
 
@@ -603,8 +648,8 @@ export function createApp(db: Database) {
     const keeper = await mustTxn(me.id, member.householdId, c.req.param("id"));
     const incoming = await mustTxn(me.id, member.householdId, body.otherId);
     const problem = matchProblem(
-      { id: String(keeper.id), accountId: String(keeper.account_id), amountMinor: num(keeper.amount_minor), currency: String(keeper.currency), providerTransactionId: str(keeper.provider_transaction_id), reconciled: num(keeper.reconciled) === 1 },
-      { id: String(incoming.id), accountId: String(incoming.account_id), amountMinor: num(incoming.amount_minor), currency: String(incoming.currency), providerTransactionId: str(incoming.provider_transaction_id), reconciled: num(incoming.reconciled) === 1 },
+      { id: String(keeper.id), accountId: String(keeper.account_id), amountMinor: num(keeper.amount_minor), currency: String(keeper.currency), providerTransactionId: str(keeper.provider_transaction_id), reconciled: num(keeper.reconciled) === 1, type: String(keeper.type) },
+      { id: String(incoming.id), accountId: String(incoming.account_id), amountMinor: num(incoming.amount_minor), currency: String(incoming.currency), providerTransactionId: str(incoming.provider_transaction_id), reconciled: num(incoming.reconciled) === 1, type: String(incoming.type) },
     );
     if (problem) throw new ApiError(400, problem);
     const existing = await db.query(
@@ -739,8 +784,11 @@ export function createApp(db: Database) {
     const body = z.object({ spaceId: z.string(), bucketId: z.string(), periodKey: z.string(), amountMinor: money }).parse(await c.req.json());
     await assertSpace(me.id, member.householdId, body.spaceId);
     await assertBucket(member.householdId, body.spaceId, body.bucketId);
-    await setAssignment(db, member.householdId, body.spaceId, body.bucketId, body.periodKey, body.amountMinor);
-    await audit(db, member.householdId, me.id, "assign", "Updated an assignment");
+    await db.tx(async () => {
+      await lockHousehold(db, member.householdId);
+      await setAssignment(db, member.householdId, body.spaceId, body.bucketId, body.periodKey, body.amountMinor);
+      await audit(db, member.householdId, me.id, "assign", "Updated an assignment");
+    });
     return c.json({ ok: true });
   });
 
@@ -749,16 +797,19 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertBudget(member);
     const body = z.object({ spaceId: z.string(), fromBucketId: z.string().nullable(), toBucketId: z.string().nullable(), periodKey: z.string(), amountMinor: money.positive() }).parse(await c.req.json());
-    const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
     if (body.fromBucketId) await assertBucket(member.householdId, body.spaceId, body.fromBucketId);
     if (body.toBucketId) await assertBucket(member.householdId, body.spaceId, body.toBucketId);
-    const adjust = async (bucketId: string, delta: number) => {
-      const current = loaded.budget.buckets.find((row) => row.bucketId === bucketId)?.assignedMinor ?? 0;
-      await setAssignment(db, member.householdId, body.spaceId, bucketId, body.periodKey, current + delta);
-    };
-    if (body.fromBucketId) await adjust(body.fromBucketId, -body.amountMinor);
-    if (body.toBucketId) await adjust(body.toBucketId, body.amountMinor);
     if (!body.fromBucketId && !body.toBucketId) throw new ApiError(400, "Choose a source or a destination.");
+    await db.tx(async () => {
+      await lockHousehold(db, member.householdId);
+      const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
+      const adjust = async (bucketId: string, delta: number) => {
+        const current = loaded.budget.buckets.find((row) => row.bucketId === bucketId)?.assignedMinor ?? 0;
+        await setAssignment(db, member.householdId, body.spaceId, bucketId, body.periodKey, current + delta);
+      };
+      if (body.fromBucketId) await adjust(body.fromBucketId, -body.amountMinor);
+      if (body.toBucketId) await adjust(body.toBucketId, body.amountMinor);
+    });
     return c.json({ ok: true });
   });
 
@@ -768,14 +819,41 @@ export function createApp(db: Database) {
     assertBudget(member);
     const body = z.object({ spaceId: z.string(), strategy: z.enum(["underfunded", "previous", "spending", "average"]), apply: z.boolean().default(false) }).parse(await c.req.json());
     const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
-    const preview = previewAutoAssign({ result: loaded.budget, buckets: loaded.input.buckets, strategy: body.strategy, postedIncomeMinor: loaded.budget.incomeMinor });
+    const eligible = eligiblePostedIncomeMinor({
+      transactions: loaded.input.transactions,
+      accounts: loaded.input.accounts,
+      currency: loaded.input.currency,
+      from: loaded.budget.periodStart,
+      to: loaded.budget.periodEnd,
+    });
+    const preview = previewAutoAssign({ result: loaded.budget, buckets: loaded.input.buckets, strategy: body.strategy, postedIncomeMinor: eligible });
+    let lines = preview.lines;
     if (body.apply) {
-      for (const line of preview.lines) {
-        const current = loaded.budget.buckets.find((row) => row.bucketId === line.bucketId)?.assignedMinor ?? 0;
-        await setAssignment(db, member.householdId, body.spaceId, line.bucketId, loaded.budget.periodKey, current + line.amountMinor);
-      }
+      lines = await db.tx(async () => {
+        await lockHousehold(db, member.householdId);
+        const fresh = await loadSpace(db, me, member.householdId, body.spaceId);
+        const freshEligible = eligiblePostedIncomeMinor({
+          transactions: fresh.input.transactions,
+          accounts: fresh.input.accounts,
+          currency: fresh.input.currency,
+          from: fresh.budget.periodStart,
+          to: fresh.budget.periodEnd,
+        });
+        const again = previewAutoAssign({ result: fresh.budget, buckets: fresh.input.buckets, strategy: body.strategy, postedIncomeMinor: freshEligible });
+        const applied = [];
+        let ready = Math.max(0, fresh.budget.readyToAssignMinor);
+        for (const line of again.lines) {
+          const give = Math.min(line.amountMinor, ready);
+          if (give <= 0) continue;
+          const current = fresh.budget.buckets.find((row) => row.bucketId === line.bucketId)?.assignedMinor ?? 0;
+          await setAssignment(db, member.householdId, body.spaceId, line.bucketId, fresh.budget.periodKey, current + give);
+          ready -= give;
+          applied.push({ ...line, amountMinor: give });
+        }
+        return applied;
+      });
     }
-    return c.json(preview);
+    return c.json({ ...preview, lines, eligiblePostedIncomeMinor: eligible, note: "Automatic assignment stops when Ready to Assign reaches zero." });
   });
 
   app.get("/api/households/:hid/schedules", async (c) => {
@@ -847,34 +925,103 @@ export function createApp(db: Database) {
       envelopeStyle: z.enum(["regular", "annual", "goal", "debt", "none"]).default("regular"),
       rollover: z.enum(["both", "positive", "negative", "none", "capped"]).default("both"),
       rolloverCapMinor: money.optional(), purpose: z.string().optional(), icon: z.string().optional(),
+      displayOrder: z.number().int().min(0).max(9999).optional(),
       target: z.record(z.unknown()).nullable().optional(),
     }).parse(await c.req.json());
     await assertSpace(me.id, member.householdId, body.spaceId);
+    if (body.target) targetJson(body.target);
     const bucketId = id();
-    await db.query(
-      `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [bucketId, member.householdId, body.spaceId, body.name, body.group, body.kind, body.flexRole, body.envelopeStyle, body.rollover, body.rolloverCapMinor ?? null, body.icon ?? null, body.purpose ?? null, targetJson(body.target), nowIso()],
-    );
-    return c.json({ id: bucketId }, 201);
+    await db.tx(async () => {
+      await db.query(
+        `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, display_order, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [bucketId, member.householdId, body.spaceId, body.name, body.group, body.kind, body.flexRole, body.envelopeStyle, body.rollover, body.rolloverCapMinor ?? null, body.icon ?? null, body.purpose ?? null, targetJson(body.target), body.displayOrder ?? 0, nowIso()],
+      );
+      await db.query(`INSERT INTO bucket_revisions (bucket_id, household_id, version, updated_at) VALUES ($1,$2,1,$3)`, [bucketId, member.householdId, nowIso()]);
+    });
+    return c.json({ id: bucketId, version: 1 }, 201);
   });
 
   app.patch("/api/households/:hid/buckets/:id", async (c) => {
     const me = await actor(c);
+    const body = categoryEditSchema.parse(await c.req.json());
+    if (body.target) targetJson(body.target);
+    const saved = await saveCategory(db, me, c.req.param("hid"), c.req.param("id"), {
+      ...body,
+      icon: body.icon ?? null,
+      rolloverCapMinor: body.rolloverCapMinor ?? null,
+      purpose: body.purpose ?? null,
+      target: body.target ?? null,
+    });
+    return c.json(saved);
+  });
+
+  app.get("/api/households/:hid/fills", async (c) => {
+    const me = await actor(c);
+    return c.json(await listFills(db, me, c.req.param("hid")));
+  });
+
+  app.post("/api/households/:hid/fills", async (c) => {
+    const me = await actor(c);
+    const body = fillTemplateSchema.parse(await c.req.json());
+    return c.json(await saveFillTemplate(db, me, c.req.param("hid"), null, body), 201);
+  });
+
+  app.patch("/api/households/:hid/fills/:id", async (c) => {
+    const me = await actor(c);
+    const body = fillTemplateSchema.parse(await c.req.json());
+    return c.json(await saveFillTemplate(db, me, c.req.param("hid"), c.req.param("id"), body));
+  });
+
+  app.post("/api/households/:hid/fills/preview", async (c) => {
+    const me = await actor(c);
+    const body = fillTemplateSchema.parse(await c.req.json());
+    return c.json(await previewFill(db, me, c.req.param("hid"), body, c.req.query("today") ?? undefined));
+  });
+
+  app.post("/api/households/:hid/fills/due", async (c) => {
+    const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertBudget(member);
-    const body = z.object({
-      name: z.string().optional(), group: z.string().optional(), rollover: z.string().optional(),
-      archived: z.boolean().optional(), hidden: z.boolean().optional(), target: z.record(z.unknown()).nullable().optional(),
-      flexRole: z.string().optional(), purpose: z.string().optional(),
-    }).parse(await c.req.json());
-    await db.query(
-      `UPDATE buckets SET name = COALESCE($1, name), group_name = COALESCE($2, group_name), rollover = COALESCE($3, rollover),
-       archived = COALESCE($4, archived), hidden = COALESCE($5, hidden), flex_role = COALESCE($6, flex_role), purpose = COALESCE($7, purpose),
-       target_json = COALESCE($8, target_json) WHERE id = $9 AND household_id = $10`,
-      [body.name ?? null, body.group ?? null, body.rollover ?? null, flag(body.archived), flag(body.hidden), body.flexRole ?? null, body.purpose ?? null, body.target === undefined ? null : targetJson(body.target), c.req.param("id"), member.householdId],
-    );
-    return c.json({ ok: true });
+    assertAdmin(member);
+    return c.json(await runDueFills(db, { householdId: member.householdId, today: c.req.query("today") ?? undefined }));
+  });
+
+  app.post("/api/households/:hid/fills/:id/pause", async (c) => {
+    const me = await actor(c);
+    return c.json(await setFillPaused(db, me, c.req.param("hid"), c.req.param("id"), true));
+  });
+
+  app.post("/api/households/:hid/fills/:id/resume", async (c) => {
+    const me = await actor(c);
+    return c.json(await setFillPaused(db, me, c.req.param("hid"), c.req.param("id"), false, c.req.query("today") ?? undefined));
+  });
+
+  app.post("/api/households/:hid/fills/:id/preview", async (c) => {
+    const me = await actor(c);
+    const listed = await listFills(db, me, c.req.param("hid"));
+    const template = listed.fills.find((fill) => fill.id === c.req.param("id"));
+    if (!template) throw new ApiError(404, "Not found");
+    return c.json(await previewFill(db, me, c.req.param("hid"), template, c.req.query("today") ?? undefined));
+  });
+
+  app.post("/api/households/:hid/fills/:id/run", async (c) => {
+    const me = await actor(c);
+    return c.json(await runFill(db, me, c.req.param("hid"), c.req.param("id"), c.req.query("today") ?? undefined));
+  });
+
+  app.post("/api/households/:hid/fills/:id/skip", async (c) => {
+    const me = await actor(c);
+    return c.json(await skipFill(db, me, c.req.param("hid"), c.req.param("id")));
+  });
+
+  app.delete("/api/households/:hid/fills/:id", async (c) => {
+    const me = await actor(c);
+    return c.json(await deleteFill(db, me, c.req.param("hid"), c.req.param("id")));
+  });
+
+  app.get("/api/households/:hid/fills/:id/history", async (c) => {
+    const me = await actor(c);
+    return c.json(await fillHistory(db, me, c.req.param("hid"), c.req.param("id")));
   });
 
   app.get("/api/households/:hid/forecast", async (c) => {
@@ -1872,6 +2019,24 @@ function mapUser(row: Record<string, unknown>): Actor {
     id: String(row.id), email: String(row.email), displayName: String(row.display_name),
     privacyMode: num(row.privacy_mode) === 1, aiEnabled: num(row.ai_enabled) === 1,
     locale: String(row.locale), timeZone: String(row.time_zone), theme: String(row.theme), weekStart: num(row.week_start),
+  };
+}
+
+function fundingFor(loaded: Awaited<ReturnType<typeof loadSpace>>) {
+  const eligible = eligiblePostedIncomeMinor({
+    transactions: loaded.input.transactions,
+    accounts: loaded.input.accounts,
+    currency: loaded.input.currency,
+    from: loaded.budget.periodStart,
+    to: loaded.budget.periodEnd,
+  });
+  return {
+    eligiblePostedIncomeMinor: eligible,
+    formula: "Eligible income is posted income on an on-budget cash account for this month. Expected pay, transfers, refunds, reimbursements, loan proceeds, opening balances, and unrealized gains are not included. Percentages use basis points: 1 basis point is 0.01 percent, and 10.5 percent is 1050. The target is that income times the rate, rounded to the nearest minor unit.",
+    buckets: loaded.input.buckets.map((bucket) => {
+      const month = loaded.budget.buckets.find((row) => row.bucketId === bucket.id);
+      return targetProgress(bucket, month?.availableMinor ?? 0, month?.assignedMinor ?? 0, eligible);
+    }),
   };
 }
 

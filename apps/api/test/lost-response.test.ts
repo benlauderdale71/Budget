@@ -24,7 +24,8 @@ function installBrowser() {
 }
 
 async function client() {
-  return import("../../web/src/api.ts");
+  const specifier = "../../web/src/api.ts";
+  return import(specifier);
 }
 
 describe("lost response retry", () => {

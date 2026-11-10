@@ -12,6 +12,12 @@ Credit-card debt that was never funded is not cash. A transfer between on-budget
 
 Cash that has entered on-budget accounts and has not been given a job, minus cash that left without a category. Expected paychecks are not included. Loan proceeds sit in the borrowed-funds bucket and are not income. An investment withdrawal can increase Ready to Assign and is not income. Unrealized gains do not enter the budget.
 
+## Percent targets and fills
+
+Eligible posted income is posted `income` on an on-budget checking, savings, or cash account for the selected month. It excludes expected paychecks, transfers, refunds, reimbursements, loan proceeds, opening balances, pending transactions, and unrealized gains. Percentages are basis points: 1 basis point is 0.01 percent, so 10.5 percent is 1050. More than two decimal places is rejected. The target is `round(eligible * percentBps / 10000)`, half away from zero. With no eligible income the target is zero.
+
+An envelope fill changes assignments only. Ready to Assign falls by the amount actually allocated, and the destination envelopes rise by the same total. Account balances, net worth, income, and spending stay the same. If the plan does not fit, the saved policy either skips the occurrence or funds envelopes in priority order and stops at zero. It does not make Ready to Assign negative. A category-to-category line moves available money and does not create a bank transaction. Leftover Ready to Assign is swept only when every line was fully funded.
+
 ## Safe to spend
 
 Ready to Assign + flexible envelope balances − upcoming bills that are not already reserved.

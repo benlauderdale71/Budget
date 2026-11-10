@@ -614,6 +614,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
     listOf(
         "accounts" to "Accounts",
         "categories" to "Categories and envelopes",
+        "fills" to "Envelope fills",
         "bills" to "Bills and subscriptions",
         "paycheck" to "Paycheck plan",
         "goals" to "Goals",
@@ -685,7 +686,7 @@ private fun tabIndex(host: String) = when (host) {
     "plan" -> 1
     "activity" -> 2
     "wealth", "investments", "retirement", "reports" -> 3
-    "more", "accounts", "categories", "bills", "paycheck", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import" -> 4
+    "more", "accounts", "categories", "fills", "bills", "paycheck", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import" -> 4
     else -> 0
 }
 

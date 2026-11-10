@@ -153,6 +153,15 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
     }
   }
   const bucketRows = await db.query(`SELECT * FROM buckets WHERE space_id = $1`, [space.id]);
+  const revisionRows = await db.query<{ bucket_id: string; version: number }>(`SELECT bucket_id, version FROM bucket_revisions WHERE household_id = $1`, [householdId]);
+  const policyRows = await db.query(`SELECT bucket_id, effective_period, rollover, rollover_cap_minor FROM bucket_policies WHERE household_id = $1`, [householdId]);
+  const versions = new Map(revisionRows.map((row) => [String(row.bucket_id), num(row.version, 1)]));
+  const rolloverPolicies = policyRows.map((row) => ({
+    bucketId: String(row.bucket_id),
+    effectivePeriod: String(row.effective_period),
+    rollover: String(row.rollover) as Bucket["rollover"],
+    rolloverCapMinor: row.rollover_cap_minor == null ? undefined : num(row.rollover_cap_minor),
+  }));
   const txnRows = await db.query(`SELECT * FROM transactions WHERE household_id = $1 AND deleted = 0`, [householdId]);
   const txnIds = txnRows.map((txn) => String(txn.id));
   const splitRows = await idsQuery(db, "splits", "transaction_id", txnIds);
@@ -282,7 +291,15 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
     linkedAccountId: str(row.linked_account_id),
     purpose: str(row.purpose) as Bucket["purpose"],
     dueDay: row.due_day == null ? undefined : num(row.due_day),
+    version: versions.get(String(row.id)) ?? 1,
   }));
+  for (const bucket of buckets) {
+    const latest = rolloverPolicies.filter((policy) => policy.bucketId === bucket.id).sort((a, b) => (a.effectivePeriod < b.effectivePeriod ? 1 : -1))[0];
+    if (!latest) continue;
+    bucket.displayRollover = latest.rollover;
+    bucket.displayRolloverCapMinor = latest.rolloverCapMinor;
+    bucket.rolloverEffectivePeriod = latest.effectivePeriod;
+  }
   const assignments: Assignment[] = assignmentRows.map((row) => ({
     id: String(row.id),
     bucketId: String(row.bucket_id),
@@ -306,6 +323,7 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
       plannedMinor: num(row.planned_minor),
     })),
     includePending: false,
+    rolloverPolicies,
   };
   for (const txn of transactions) {
     if (txn.currency !== member.currency) continue;
@@ -475,6 +493,10 @@ export function assertBudget(member: Member) {
 
 export function assertAdmin(member: Member) {
   if (!ADMIN_ROLES.has(member.role)) throw new ApiError(403, "Only an owner or admin can do that.");
+}
+
+export async function lockHousehold(db: Database, householdId: string) {
+  await db.query(`SELECT id FROM households WHERE id = $1 FOR UPDATE`, [householdId]);
 }
 
 export async function setAssignment(db: Database, householdId: string, spaceId: string, bucketId: string, periodKey: string, amountMinor: number) {

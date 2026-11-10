@@ -32,6 +32,16 @@ Receipts are written under `BUDGETCENTS_UPLOADS`. Back that directory up with th
 
 Password reset and address verification are written to the `outbox` table until `SMTP_URL` is set. `ALLOW_DEV_MAILSINK=true` returns the raw token in the API response. Leave it unset or `false` on any server other people can reach.
 
+## Scheduled fills
+
+Envelope fills are assignment changes, not bank transactions. Schedules and occurrence rows live in the database. Each occurrence key is unique per household, so a retry, a second worker, or another Run now does not apply it twice. The household row is locked for the duration of a fill and for manual assignment, move, and auto-assign, so those cannot spend the same Ready to Assign at the same time.
+
+Dates use the household time zone's calendar day. Weekly and custom schedules add a fixed number of days. Monthly, annual, and every-two/three/six-month schedules keep the start day's number and use the last day of a short month, including February 29 in a leap year. The arithmetic is on calendar dates, so a daylight-saving change does not move the day.
+
+Missed dates are recorded as Skipped and allocate nothing. A restart does not apply a backlog. At most the occurrence dated today is applied. If a schedule is more than 36 dates behind, it is paused after those skips. Pause and resume do not move money. Resume skips dates that already passed.
+
+Development runs a fill when someone uses Run now. The API also accepts `POST /api/households/:id/fills/due` for an owner or admin. Production can set `BUDGETCENTS_FILL_POLL_MS` to a positive number of milliseconds and the server process will call the same due-fill function on that interval. Leave it unset when an external cron calls the due route instead. The poll is off by default so tests and a normal `npm start` do not move money in the background.
+
 ## Demo
 
 `DEMO_LOGIN` defaults to on when `NODE_ENV` is not `production`. Set `DEMO_LOGIN=false` and `SEED_DEMO=false` for a deployment that should not offer the sample household.
