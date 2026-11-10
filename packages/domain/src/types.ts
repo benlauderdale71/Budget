@@ -186,6 +186,17 @@ export interface Schedule {
   fulfilledThrough?: string;
   confirmed?: boolean;
   detected?: boolean;
+  /** Stored interval for every N days or weeks. customDays remains the day count used by monthly equivalents. */
+  interval?: number;
+  anchorDay?: number;
+  twiceDayA?: number;
+  twiceDayB?: number;
+  endDate?: string;
+  exceptionDates?: string[];
+  reserved?: boolean;
+  archived?: boolean;
+  /** Set when the stored cadence is once, every N days, every N weeks, or irregular. */
+  scheduleMode?: "once" | "every_n_days" | "every_n_weeks" | "irregular";
 }
 
 export interface PlanLine {

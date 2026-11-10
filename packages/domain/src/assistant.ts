@@ -40,6 +40,9 @@ export function answerFinanceQuestion(question: string, facts: AssistantFact[]):
     text = fact
       ? `You can safely spend ${fact.text ?? formatFact(fact)}. ${fact.formula ?? ""}`.trim()
       : "I don't have a safe-to-spend figure for that question.";
+  } else if (q.includes("paycheck") || q.includes("expected income")) {
+    const fact = take("next_paycheck");
+    text = fact?.text ?? "I don't have an expected paycheck in the records you can see. Expected income is not cash on hand.";
   } else if (q.includes("bill") || q.includes("payday")) {
     const fact = take("bills_before_payday");
     text = fact ? `Before the next paycheck: ${fact.text ?? formatFact(fact)}.` : "I don't have upcoming bills on file.";

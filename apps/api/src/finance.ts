@@ -1,4 +1,5 @@
 import {
+  addDays,
   ageOfMoney,
   applyRules,
   type Account,
@@ -11,6 +12,7 @@ import {
   evaluateWatchlist,
   explainReadyToAssign,
   financialRoadmap,
+  forecastDatesForSchedule,
   neededForTarget,
   netWorth,
   payoffPlan,
@@ -167,7 +169,11 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
   const splitRows = await idsQuery(db, "splits", "transaction_id", txnIds);
   const tagRows = await idsQuery(db, "transaction_tags", "transaction_id", txnIds);
   const assignmentRows = await db.query(`SELECT * FROM assignments WHERE space_id = $1`, [space.id]);
-  const scheduleRows = await db.query(`SELECT * FROM schedules WHERE space_id = $1`, [space.id]);
+  const scheduleRows = await db.query(
+    `SELECT s.*, d.anchor_day, d.twice_day_a, d.twice_day_b, d.custom_weeks, d.end_date AS detail_end_date, d.exceptions_json, d.reserved AS detail_reserved, d.archived AS detail_archived
+     FROM schedules s LEFT JOIN schedule_details d ON d.schedule_id = s.id WHERE s.space_id = $1`,
+    [space.id],
+  );
   const planRows = await db.query(`SELECT * FROM plan_lines WHERE space_id = $1`, [space.id]);
 
   const splitsByTxn = new Map<string, import("@budgetcents/domain").Split[]>();
@@ -344,11 +350,30 @@ function stubAccount(accountId: string, currency: string): Account {
 }
 
 function mapSchedule(row: Record<string, unknown>) {
+  const stored = String(row.cadence);
+  const mode = stored === "every_n_days" || stored === "every_n_weeks" || stored === "once" || stored === "irregular" ? stored : undefined;
+  const scheduleMode = mode as import("@budgetcents/domain").Schedule["scheduleMode"];
+  const aliases: Record<string, import("@budgetcents/domain").Schedule["cadence"]> = { semimonthly: "twice_monthly", yearly: "annual", annually: "annual" };
+  const cadence = (aliases[stored] ?? (mode ? "custom" : stored)) as import("@budgetcents/domain").Schedule["cadence"];
+  const interval = row.custom_days == null ? undefined : num(row.custom_days);
+  const weekDays = mode === "every_n_weeks" && interval ? interval * 7 : interval;
+  const skipped = JSON.parse(String(row.skipped_dates || "[]")) as string[];
+  const extra = JSON.parse(String(row.exceptions_json || "[]")) as string[];
   return {
     id: String(row.id),
+    spaceId: String(row.space_id),
     name: String(row.name),
-    cadence: String(row.cadence) as import("@budgetcents/domain").Schedule["cadence"],
-    customDays: row.custom_days == null ? undefined : num(row.custom_days),
+    cadence,
+    customDays: weekDays,
+    interval,
+    scheduleMode,
+    anchorDay: row.anchor_day == null ? undefined : num(row.anchor_day),
+    twiceDayA: row.twice_day_a == null ? undefined : num(row.twice_day_a),
+    twiceDayB: row.twice_day_b == null ? undefined : num(row.twice_day_b),
+    endDate: str(row.detail_end_date),
+    exceptionDates: [...new Set([...skipped, ...extra])],
+    reserved: num(row.detail_reserved) === 1,
+    archived: num(row.detail_archived) === 1,
     nextDate: String(row.next_date),
     amountMinor: num(row.amount_minor),
     amountMaxMinor: row.amount_max_minor == null ? undefined : num(row.amount_max_minor),
@@ -521,21 +546,26 @@ export function planView(loaded: Loaded) {
     }));
   const obligations = events
     .filter((event) => event.amountMinor < 0)
-    .map((event) => ({
-      id: event.id,
-      date: event.date,
-      amountMinor: -event.amountMinor,
-      name: event.label,
-      reservedMinor: 0,
-    }));
+    .map((event) => {
+      const scheduleId = event.scheduleId ?? event.id;
+      const schedule = loaded.input.schedules?.find((item) => item.id === scheduleId);
+      const amountMinor = -event.amountMinor;
+      return {
+        id: event.id,
+        date: event.date,
+        amountMinor,
+        name: event.label,
+        reservedMinor: schedule?.reserved ? amountMinor : 0,
+      };
+    });
   const reserved = uncoveredOutflows(
-    obligations.map((item) => ({ bucketId: loaded.input.schedules?.find((schedule) => schedule.id === item.id)?.bucketId ?? null, amountMinor: item.amountMinor })),
+    obligations.map((item) => ({ bucketId: loaded.input.schedules?.find((schedule) => schedule.id === (item.id.split(":")[0] ?? item.id))?.bucketId ?? null, amountMinor: item.amountMinor })),
     loaded.budget,
     loaded.input.buckets,
   );
   const cash = loaded.budget.cashPoolMinor;
   return {
-    paychecks: planPaychecks({ asOf: loaded.input.asOf, startingCashMinor: cash, paychecks, obligations: obligations.map((item) => ({ ...item, reservedMinor: 0 })) }),
+    paychecks: planPaychecks({ asOf: loaded.input.asOf, startingCashMinor: cash, paychecks, obligations }),
     note: "Reserved bills are removed in safe-to-spend. This paycheck view lists the obligations before the next payday against cash already on hand.",
     uncoveredPreviewMinor: reserved,
   };
@@ -581,24 +611,41 @@ export function forecastEventsFromSchedules(
   horizonDays: number,
   transactions: Transaction[],
 ) {
-  const until = new Date(Date.parse(`${asOf}T00:00:00Z`) + horizonDays * 86_400_000).toISOString().slice(0, 10);
-  const posted = new Set(transactions.filter((txn) => txn.scheduleId && txn.date <= asOf).map((txn) => `${txn.scheduleId}:${txn.date}`));
-  const events: { id: string; date: string; amountMinor: number; label: string; kind: "income" | "expense"; expectedIncome?: boolean; bucketId?: string }[] = [];
+  const until = addDays(asOf, horizonDays);
+  const postedBefore = new Set(transactions.filter((txn) => txn.scheduleId && !txn.deleted && txn.date <= asOf).map((txn) => `${txn.scheduleId}:${txn.date}`));
+  const postedAfter = new Map(transactions.filter((txn) => txn.scheduleId && !txn.deleted && txn.date > asOf).map((txn) => [`${txn.scheduleId}:${txn.date}`, txn]));
+  const events: { id: string; scheduleId?: string; date: string; amountMinor: number; label: string; kind: "income" | "expense"; expectedIncome?: boolean; bucketId?: string }[] = [];
   for (const schedule of schedules) {
-    if (schedule.paused) continue;
-    if (schedule.nextDate < asOf || schedule.nextDate > until) continue;
-    if (schedule.fulfilledThrough && schedule.fulfilledThrough >= schedule.nextDate) continue;
-    if (posted.has(`${schedule.id}:${schedule.nextDate}`)) continue;
-    const signed = schedule.direction === "inflow" ? schedule.amountMinor : -schedule.amountMinor;
-    events.push({
-      id: schedule.id,
-      date: schedule.nextDate,
-      amountMinor: signed,
-      label: schedule.name,
-      kind: schedule.direction === "inflow" ? "income" : "expense",
-      expectedIncome: schedule.direction === "inflow",
-      bucketId: schedule.bucketId,
-    });
+    if (schedule.paused || schedule.archived || schedule.type === "transfer" || schedule.type === "fill") continue;
+    const dates = forecastDatesForSchedule(schedule, asOf, until);
+    for (const item of dates) {
+      const key = `${schedule.id}:${item.date}`;
+      if (postedBefore.has(key)) continue;
+      const later = postedAfter.get(key);
+      if (later) {
+        events.push({
+          id: key,
+          scheduleId: schedule.id,
+          date: later.date,
+          amountMinor: later.amountMinor,
+          label: schedule.name,
+          kind: later.amountMinor < 0 ? "expense" : "income",
+          expectedIncome: false,
+          bucketId: schedule.bucketId,
+        });
+        continue;
+      }
+      events.push({
+        id: key,
+        scheduleId: schedule.id,
+        date: item.date,
+        amountMinor: schedule.direction === "inflow" ? item.amountMinor : -item.amountMinor,
+        label: schedule.name,
+        kind: schedule.direction === "inflow" ? "income" : "expense",
+        expectedIncome: schedule.direction === "inflow",
+        bucketId: schedule.bucketId,
+      });
+    }
   }
   return events;
 }

@@ -177,6 +177,9 @@ td.num, th.num { text-align: right; }
 .tabbar a[aria-current="page"] { color: var(--teal); font-weight: 700; }
 .more-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .more-grid a { text-decoration: none; color: inherit; display: block; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin: 12px 0 20px; }
+.calendar-day { border: 1px solid var(--line); border-radius: 10px; min-height: 92px; padding: 6px; background: var(--surface); }
+.calendar-day button { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: 2px 0; color: inherit; }
 .chart { width: 100%; height: auto; color: var(--teal); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
@@ -191,6 +194,7 @@ td.num, th.num { text-align: right; }
   .tabbar { display: flex; }
   .content, .topbar { padding-inline: 16px; }
   .split-row { grid-template-columns: 1fr; }
+  .calendar-grid { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }

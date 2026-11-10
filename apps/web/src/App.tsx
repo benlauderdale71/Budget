@@ -6,6 +6,7 @@ import { Plan } from "./pages/Plan.js";
 import { Activity } from "./pages/Activity.js";
 import { Accounts } from "./pages/Accounts.js";
 import { Bills, Debts, Forecast, Goals } from "./pages/Planning.js";
+import { CalendarPage, Paychecks } from "./pages/Paychecks.js";
 import { Investments, Reports, Retirement, Wealth } from "./pages/Wealth.js";
 import { Assistant, Cases, Checklists, Credit, Household, ImportPage, Learn, More, Providers, Rules, Settings } from "./pages/Tools.js";
 import { AccountDeletion, PrivacyPolicy } from "./pages/Legal.js";
@@ -19,7 +20,7 @@ const primary = [
 ] as const;
 
 const groups: { title: string; links: [string, string][] }[] = [
-  { title: "Planning", links: [["/forecast", "Forecast"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"]] },
+  { title: "Planning", links: [["/forecast", "Forecast"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"]] },
   { title: "Insight", links: [["/reports", "Reports"], ["/investments", "Investments"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
   { title: "Household", links: [["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
 ];
@@ -95,6 +96,8 @@ export function App() {
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/wealth" element={<Wealth />} />
         <Route path="/forecast" element={<Forecast />} />
+        <Route path="/paychecks" element={<Paychecks />} />
+        <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/bills" element={<Bills />} />
         <Route path="/debts" element={<Debts />} />
         <Route path="/goals" element={<Goals />} />

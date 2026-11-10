@@ -621,3 +621,83 @@ CREATE TABLE IF NOT EXISTS roadmap_order (
   sort integer NOT NULL,
   PRIMARY KEY (household_id, item_id)
 );
+
+CREATE TABLE IF NOT EXISTS income_sources (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  space_id text NOT NULL,
+  name text NOT NULL,
+  kind text NOT NULL,
+  owner_user_id text,
+  account_id text NOT NULL,
+  amount_minor bigint NOT NULL,
+  amount_max_minor bigint,
+  cadence text NOT NULL,
+  custom_interval integer,
+  anchor_day integer,
+  twice_day_a integer,
+  twice_day_b integer,
+  start_date text NOT NULL,
+  end_date text,
+  paused integer NOT NULL DEFAULT 0,
+  archived integer NOT NULL DEFAULT 0,
+  notes text,
+  version integer NOT NULL DEFAULT 1,
+  created_at text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS income_dates (
+  source_id text NOT NULL REFERENCES income_sources(id) ON DELETE CASCADE,
+  expected_date text NOT NULL,
+  amount_minor bigint NOT NULL,
+  amount_max_minor bigint,
+  note text,
+  PRIMARY KEY (source_id, expected_date)
+);
+
+CREATE TABLE IF NOT EXISTS income_exceptions (
+  source_id text NOT NULL REFERENCES income_sources(id) ON DELETE CASCADE,
+  exception_date text NOT NULL,
+  PRIMARY KEY (source_id, exception_date)
+);
+
+CREATE TABLE IF NOT EXISTS income_occurrences (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  source_id text NOT NULL REFERENCES income_sources(id) ON DELETE CASCADE,
+  occurrence_key text NOT NULL,
+  expected_date text NOT NULL,
+  status text NOT NULL,
+  expected_amount_minor bigint NOT NULL,
+  revised_date text,
+  revised_amount_minor bigint,
+  received_date text,
+  received_amount_minor bigint,
+  remaining_minor bigint,
+  delayed_until text,
+  transaction_id text,
+  extra_transaction_id text,
+  note text,
+  client_op_id text,
+  settle_op_id text,
+  scope text,
+  created_at text NOT NULL,
+  updated_at text NOT NULL,
+  UNIQUE (household_id, occurrence_key)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS income_occurrence_op_idx ON income_occurrences (household_id, client_op_id) WHERE client_op_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS income_occurrence_settle_idx ON income_occurrences (household_id, settle_op_id) WHERE settle_op_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS schedule_details (
+  schedule_id text PRIMARY KEY REFERENCES schedules(id) ON DELETE CASCADE,
+  anchor_day integer,
+  twice_day_a integer,
+  twice_day_b integer,
+  custom_weeks integer,
+  end_date text,
+  exceptions_json text NOT NULL DEFAULT '[]',
+  reserved integer NOT NULL DEFAULT 0,
+  archived integer NOT NULL DEFAULT 0
+);

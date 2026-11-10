@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api.js";
-import { parseAmount, todayISO } from "../format.js";
+import { minorToInput, parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, Spark, useFormError, useLoad } from "../ui.js";
 
@@ -57,41 +57,102 @@ export function Forecast() {
   );
 }
 
+const BILL_CADENCES = [
+  ["weekly", "Weekly"],
+  ["biweekly", "Every two weeks"],
+  ["twice_monthly", "Twice a month"],
+  ["monthly", "Monthly"],
+  ["every_2_months", "Every two months"],
+  ["every_3_months", "Every three months"],
+  ["every_6_months", "Every six months"],
+  ["annual", "Yearly"],
+  ["every_n_days", "Every N days"],
+  ["every_n_weeks", "Every N weeks"],
+  ["once", "One time"],
+] as const;
+
+interface BillSchedule {
+  id: string;
+  name: string;
+  cadence: string;
+  nextDate: string;
+  amountMinor: number;
+  direction: string;
+  type: string;
+  accountId?: string;
+  bucketId?: string;
+  paused?: boolean;
+  interval?: number;
+  anchorDay?: number;
+  twiceDayA?: number;
+  twiceDayB?: number;
+  endDate?: string;
+  scheduleMode?: string;
+}
+
 export function Bills() {
   const session = useSession();
-  const state = useLoad(() => api<{ schedules: { id: string; name: string; cadence: string; nextDate: string; amountMinor: number; direction: string; type: string; payee?: string; paused?: boolean }[] }>(scoped(session.householdId, "/schedules", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  const state = useLoad(() => api<{ schedules: BillSchedule[] }>(scoped(session.householdId, "/schedules", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const dash = useLoad(() => api<{ spaceId: string; accounts: { id: string; name: string }[]; buckets: { id: string; name: string; systemRole?: string | null }[] }>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const form = useFormError();
+  const [editing, setEditing] = useState<BillSchedule | null>(null);
+  const [cadence, setCadence] = useState("monthly");
   if (!state.data || !dash.data) return state.error ? <ErrorNote message={state.error} /> : <Loading label="Loading bills" />;
+  const shownCadence = editing ? (editing.scheduleMode ?? editing.cadence) : cadence;
   return (
-    <Page title="Bills and income" lede="A schedule is a forecast until the money moves. Skipping an occurrence does not delete the series.">
+    <Page title="Bills and subscriptions" lede="A bill schedule is an estimate until it is paid. Skipping one date does not delete the series. Irregular pay belongs on Paychecks and does not add cash.">
       <ul className="list card">
         {state.data.schedules.map((item) => (
           <li key={item.id}>
-            <span>{item.name} · {item.cadence} · next {item.nextDate}{item.direction === "inflow" ? " · expected income" : ""}</span>
-            <span className="row"><Money minor={item.direction === "inflow" ? item.amountMinor : -item.amountMinor} /><button className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/skip`), { method: "POST" }); session.bump(); }}>Skip next</button></span>
+            <span>{item.name} · {item.scheduleMode ?? item.cadence} · next {item.nextDate}{item.paused ? " · Paused" : ""}</span>
+            <span className="row">
+              <Money minor={item.direction === "inflow" ? item.amountMinor : -item.amountMinor} />
+              <button className="btn-quiet" onClick={() => { setEditing(item); setCadence(item.scheduleMode ?? item.cadence); }}>Edit</button>
+              <button className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/skip`), { method: "POST" }); session.bump(); }}>Skip next</button>
+              {item.direction === "outflow" && item.bucketId ? <button className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/reserve`), { method: "POST" }); session.bump(); }}>Reserve from cash</button> : null}
+            </span>
           </li>
         ))}
       </ul>
-      <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
+      <form key={editing?.id ?? "new"} className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
-        await api(scoped(session.householdId, "/schedules"), { method: "POST", body: JSON.stringify({
-          spaceId: dash.data!.spaceId, name: data.get("name"), cadence: data.get("cadence"), nextDate: data.get("date"),
-          amountMinor: Math.abs(parseAmount(String(data.get("amount")), session.currency)), direction: data.get("direction"),
-          type: data.get("direction") === "inflow" ? "income" : "bill", accountId: data.get("accountId") || undefined, bucketId: data.get("bucketId") || undefined,
-        }) });
+        const body = {
+          spaceId: dash.data!.spaceId,
+          name: data.get("name"),
+          cadence: shownCadence,
+          nextDate: data.get("date"),
+          amountMinor: Math.abs(parseAmount(String(data.get("amount")), session.currency)),
+          direction: data.get("direction"),
+          type: data.get("direction") === "inflow" ? "income" : data.get("subscription") === "on" ? "subscription" : "bill",
+          accountId: data.get("accountId") || undefined,
+          bucketId: data.get("bucketId") || undefined,
+          customInterval: data.get("interval") ? Number(data.get("interval")) : null,
+          anchorDay: data.get("anchor") ? Number(data.get("anchor")) : null,
+          twiceDays: shownCadence === "twice_monthly" ? [Number(data.get("dayA")), Number(data.get("dayB"))] : null,
+          endDate: data.get("end") || null,
+          paused: data.get("paused") === "on",
+        };
+        await api(scoped(session.householdId, editing ? `/schedules/${editing.id}` : "/schedules"), { method: editing ? "PATCH" : "POST", body: JSON.stringify(body) });
+        setEditing(null);
         session.bump();
       })}>
-        <h2>Add schedule</h2>
-        <Field label="Name"><input name="name" required /></Field>
-        <Field label="Direction"><select name="direction"><option value="outflow">Bill</option><option value="inflow">Income</option></select></Field>
-        <Field label="Cadence"><select name="cadence"><option value="weekly">Weekly</option><option value="biweekly">Every two weeks</option><option value="semimonthly">Twice a month</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></Field>
-        <Field label="Next date"><input name="date" type="date" required /></Field>
-        <Field label="Amount"><input name="amount" required inputMode="decimal" /></Field>
-        <Field label="Account"><select name="accountId"><option value="">Later</option>{dash.data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        <Field label="Category"><select name="bucketId"><option value="">None</option>{dash.data.buckets.filter((bucket) => !bucket.systemRole).map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+        <h2>{editing ? `Edit ${editing.name}` : "Add schedule"}</h2>
+        <p className="muted">An anchored day stays the anchor after a short month. Every N days is rejected when the number is missing. It is not replaced with 30. Twice a month uses the two days below and is not every two weeks.</p>
+        <Field label="Name"><input name="name" required defaultValue={editing?.name ?? ""} /></Field>
+        <Field label="Direction"><select name="direction" defaultValue={editing?.direction ?? "outflow"}><option value="outflow">Bill</option><option value="inflow">Income schedule</option></select></Field>
+        <Field label="Cadence"><select value={shownCadence} onChange={(event) => { setCadence(event.target.value); if (editing) setEditing({ ...editing, cadence: event.target.value, scheduleMode: undefined }); }}>{BILL_CADENCES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+        {shownCadence === "every_n_days" || shownCadence === "every_n_weeks" ? <Field label={shownCadence === "every_n_weeks" ? "Number of weeks" : "Number of days"}><input name="interval" type="number" min={1} required defaultValue={editing?.interval ?? ""} /></Field> : null}
+        {shownCadence === "twice_monthly" ? <div className="row"><Field label="First day"><input name="dayA" type="number" min={1} max={31} required defaultValue={editing?.twiceDayA ?? 1} /></Field><Field label="Second day"><input name="dayB" type="number" min={1} max={31} required defaultValue={editing?.twiceDayB ?? 15} /></Field></div> : null}
+        {shownCadence === "monthly" || shownCadence.endsWith("months") || shownCadence === "annual" ? <Field label="Anchored day"><input name="anchor" type="number" min={1} max={31} defaultValue={editing?.anchorDay ?? ""} /></Field> : null}
+        <Field label="Next date"><input name="date" type="date" required defaultValue={editing?.nextDate ?? todayISO()} /></Field>
+        <Field label="End date"><input name="end" type="date" defaultValue={editing?.endDate ?? ""} /></Field>
+        <Field label="Amount"><input name="amount" required inputMode="decimal" defaultValue={editing ? minorToInput(editing.amountMinor, session.currency) : ""} /></Field>
+        <Field label="Account"><select name="accountId" defaultValue={editing?.accountId ?? ""}><option value="">Later</option>{dash.data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        <Field label="Category"><select name="bucketId" defaultValue={editing?.bucketId ?? ""}><option value="">None</option>{dash.data.buckets.filter((bucket) => !bucket.systemRole).map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+        <label className="row"><input name="subscription" type="checkbox" defaultChecked={editing?.type === "subscription"} /> Subscription</label>
+        <label className="row"><input name="paused" type="checkbox" defaultChecked={editing?.paused ?? false} /> Paused</label>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-        <button className="btn" type="submit">Save schedule</button>
+        <button className="btn" type="submit">{editing ? "Save bill" : "Save schedule"}</button>
       </form>
     </Page>
   );

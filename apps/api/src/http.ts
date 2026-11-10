@@ -6,6 +6,7 @@ import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
+import { createBill, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
 import { planRestore } from "./restore.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, totp, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
@@ -688,6 +689,8 @@ export function createApp(db: Database) {
         `INSERT INTO transaction_matches (id, household_id, keeper_id, archived_id, provider_copied, moved_attachment_ids, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
         [id(), member.householdId, keeper.id, incoming.id, copyProvider ? 1 : 0, JSON.stringify(moved), nowIso()],
       );
+      await db.query(`UPDATE income_occurrences SET transaction_id = $1, updated_at = $2 WHERE household_id = $3 AND transaction_id = $4`, [keeper.id, nowIso(), member.householdId, incoming.id]);
+      await db.query(`UPDATE income_occurrences SET extra_transaction_id = $1, updated_at = $2 WHERE household_id = $3 AND extra_transaction_id = $4`, [keeper.id, nowIso(), member.householdId, incoming.id]);
       await audit(db, member.householdId, me.id, "transaction.match", "Matched two records of the same money", "transaction", String(keeper.id));
     });
     return c.json({ ok: true, keeperId: keeper.id, archivedId: incoming.id, note: "Notes, tags, review, and the keeper amount stayed. The other record is hidden so it is not counted twice." });
@@ -1068,8 +1071,10 @@ export function createApp(db: Database) {
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
     const days = Math.min(370, Number(c.req.query("days") ?? 30));
     const guide = guidanceFor(loaded, days);
-    const cash = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events: guide.events.map((event) => ({ ...event, kind: event.kind })), includeExpectedIncome: false });
-    const plan = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events: guide.events, includeExpectedIncome: true });
+    const income = await expectedIncomeEvents(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
+    const events = [...guide.events, ...income];
+    const cash = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events, includeExpectedIncome: false });
+    const plan = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events, includeExpectedIncome: true });
     return c.json({ cash, plan, paycheck: planView(loaded), guidance: guide.guidance, spaceId: loaded.spaceId, note: "The cash projection does not spend a paycheck that has not arrived. The plan view is labeled separately." });
   });
 
@@ -1363,6 +1368,16 @@ export function createApp(db: Database) {
       { id: "net_worth", label: "Net worth", amountMinor: worth.netMinor, formula: worth.formula, text: `${(worth.netMinor / 100).toFixed(2)} ${loaded.member.currency}` },
       { id: "goal_gap", label: "Goals", text: "Open Goals for the envelope that backs each goal. The same dollars are not counted twice." },
     ];
+    const paycheck = await paycheckPlan(db, me, c.req.param("hid"), { spaceId: body.spaceId });
+    facts.push({
+      id: "next_paycheck",
+      label: "Next expected paycheck",
+      amountMinor: paycheck.next?.amountMinor ?? paycheck.actual.cashMinor,
+      text: paycheck.next
+        ? `${paycheck.next.name || "Paycheck"} on ${paycheck.next.date} for ${(paycheck.next.amountMinor / 100).toFixed(2)} ${loaded.member.currency} is expected income, not cash on hand. Cash on hand is ${(paycheck.actual.cashMinor / 100).toFixed(2)}.`
+        : `No paycheck is expected in the window you can see. Cash on hand is ${(paycheck.actual.cashMinor / 100).toFixed(2)} ${loaded.member.currency}. Expected income is not cash on hand.`,
+      formula: paycheck.explanation,
+    });
     const answer = answerFinanceQuestion(body.question, facts);
     const suggestion = suggestBucket(body.question, loaded.input.transactions);
     return c.json({ ...answer, suggestion, proposedActions: answer.proposedActions });
@@ -1682,38 +1697,13 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/schedules", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const body = z.object({
-      spaceId: z.string(), name: z.string(), cadence: z.string(), nextDate: z.string(), amountMinor: money,
-      direction: z.enum(["inflow", "outflow"]), type: z.string(), accountId: z.string().optional(), bucketId: z.string().optional(),
-      payee: z.string().optional(), trialEnds: z.string().optional(), reminderDays: z.number().int().optional(),
-    }).parse(await c.req.json());
-    await assertSpace(me.id, member.householdId, body.spaceId);
-    if (body.accountId) {
-      const account = await mustAccount(me.id, member.householdId, body.accountId);
-      if (String(account.space_id) !== body.spaceId) throw new ApiError(400, "That account is in a different space.");
-    }
-    if (body.bucketId) await assertBucket(member.householdId, body.spaceId, body.bucketId);
-    const scheduleId = id();
-    await db.query(
-      `INSERT INTO schedules (id, household_id, space_id, name, cadence, next_date, amount_minor, direction, account_id, bucket_id, type, payee, trial_ends, reminder_days, confirmed)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1)`,
-      [scheduleId, member.householdId, body.spaceId, body.name, body.cadence, body.nextDate, body.amountMinor, body.direction, body.accountId ?? null, body.bucketId ?? null, body.type, body.payee ?? body.name, body.trialEnds ?? null, body.reminderDays ?? 3],
-    );
-    return c.json({ id: scheduleId }, 201);
+    const created = await createBill(db, me, c.req.param("hid"), await c.req.json(), incomeHooks());
+    return c.json(created, 201);
   });
 
   app.post("/api/households/:hid/schedules/:id/skip", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const rows = await db.query(`SELECT skipped_dates, next_date FROM schedules WHERE id = $1 AND household_id = $2`, [c.req.param("id"), member.householdId]);
-    if (!rows.length) throw new ApiError(404, "Not found");
-    const skipped = JSON.parse(String(rows[0].skipped_dates || "[]")) as string[];
-    skipped.push(String(rows[0].next_date));
-    await db.query(`UPDATE schedules SET skipped_dates = $1, fulfilled_through = $2 WHERE id = $3`, [JSON.stringify(skipped), rows[0].next_date, c.req.param("id")]);
-    return c.json({ ok: true });
+    return c.json(await skipBill(db, me, c.req.param("hid"), c.req.param("id")));
   });
 
   app.post("/api/households/:hid/goals", async (c) => {
@@ -2022,6 +2012,27 @@ export function createApp(db: Database) {
     const worth = visibleNetWorth(loaded, overrides);
     return { ...worth, holdingDaysExample: holdingPeriodDays("2026-01-01", loaded.input.asOf) };
   }
+
+  const incomeHooks = () => ({
+    actor,
+    assertSpace,
+    mustAccount,
+    insertIncome: (user: Actor, householdId: string, input: { accountId: string; amountMinor: number; date: string; payee: string; opId: string; spaceId: string; notes?: string }) =>
+      insertTransaction(user, householdId, {
+        date: input.date,
+        accountId: input.accountId,
+        amountMinor: input.amountMinor,
+        type: "income",
+        payee: input.payee,
+        splits: [],
+        bankStatus: "posted",
+        reviewStatus: "reviewed",
+        notes: input.notes,
+        opId: input.opId,
+        spaceId: input.spaceId,
+      }),
+  });
+  mountIncome(app, db, incomeHooks());
 
   return app;
 }
