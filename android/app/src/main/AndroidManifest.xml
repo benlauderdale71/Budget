@@ -28,6 +28,24 @@
                 <data android:scheme="budgetcents" android:host="plan" />
                 <data android:scheme="budgetcents" android:host="activity" />
                 <data android:scheme="budgetcents" android:host="wealth" />
+                <data android:scheme="budgetcents" android:host="more" />
+                <data android:scheme="budgetcents" android:host="accounts" />
+                <data android:scheme="budgetcents" android:host="categories" />
+                <data android:scheme="budgetcents" android:host="paycheck" />
+                <data android:scheme="budgetcents" android:host="investments" />
+                <data android:scheme="budgetcents" android:host="retirement" />
+                <data android:scheme="budgetcents" android:host="rules" />
+                <data android:scheme="budgetcents" android:host="household" />
+                <data android:scheme="budgetcents" android:host="connections" />
+                <data android:scheme="budgetcents" android:host="learn" />
+                <data android:scheme="budgetcents" android:host="assistant" />
+                <data android:scheme="budgetcents" android:host="import" />
+                <data android:scheme="budgetcents" android:host="bills" />
+                <data android:scheme="budgetcents" android:host="goals" />
+                <data android:scheme="budgetcents" android:host="debts" />
+                <data android:scheme="budgetcents" android:host="forecast" />
+                <data android:scheme="budgetcents" android:host="reports" />
+                <data android:scheme="budgetcents" android:host="security" />
             </intent-filter>
         </activity>
 

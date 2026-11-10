@@ -34,6 +34,10 @@ Cash outflows consume the oldest cash inflows. The figure is an average of recen
 
 Missing prices stay missing. A holding with a price replaces that account’s transaction balance so cash and the holding are not both counted. Time-weighted return chains subperiod growth. The retirement model is a seeded simulation. Its success rate is not a promise.
 
+## Essential spending
+
+The roadmap uses confirmed bills, subscriptions, and debt payments, converted to a monthly equivalent, plus loan minimums that are not already on that schedule. Flexible spending and expected income are left out. If none of those are selected, the figure is zero. BudgetCents does not substitute a default amount.
+
 ## Reports
 
 Spending excludes transfers, card payments, and principal. Refunds reduce the total. Savings rate is `(income − spending) / income` when income is positive. Watchlists use transactions you already have and do not invent charges.

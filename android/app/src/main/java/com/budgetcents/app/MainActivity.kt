@@ -17,6 +17,13 @@ import com.budgetcents.app.ui.BudgetApp
 class MainActivity : FragmentActivity() {
     var receiptBytes: ByteArray? = null
     var onReceipt: ((ByteArray) -> Unit)? = null
+    var onFile: ((ByteArray) -> Unit)? = null
+
+    private val file = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@registerForActivityResult
+        onFile?.invoke(bytes)
+    }
 
     private val camera = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
         if (bitmap == null) return@registerForActivityResult
@@ -39,6 +46,10 @@ class MainActivity : FragmentActivity() {
         ensureChannel()
         val start = intent?.data?.host ?: "home"
         setContent { BudgetApp(this, start) }
+    }
+
+    fun pickReceipt() {
+        file.launch("*/*")
     }
 
     fun captureReceipt() {

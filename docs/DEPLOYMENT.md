@@ -11,7 +11,7 @@ npm run build
 npm start
 ```
 
-`npm start` runs the API with `tsx`. If `apps/web/dist` exists, the same process serves it. Otherwise it answers that the API is up.
+`npm start` runs the API with `tsx` from `apps/api/src/server.ts`. npm runs that script with `apps/api` as the working directory. The web build is still resolved from the repository root as `apps/web/dist`. Set `BUDGETCENTS_WEB` to an absolute path or a path relative to the repository root, such as `./apps/web/dist`. A request that escapes that directory is rejected. If the build is missing, the process answers that the API is up.
 
 Environment variables are listed in `.env.example`. Placeholders only. Do not commit `.env`.
 

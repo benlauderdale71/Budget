@@ -37,10 +37,19 @@ class Store(context: Context) {
     var summary: String
         get() = prefs.getString("summary", "") ?: ""
         set(value) { prefs.edit().putString("summary", value).apply() }
+    var userId: String?
+        get() = prefs.getString("userId", null)
+        set(value) { prefs.edit().putString("userId", value).apply() }
+    var theme: String
+        get() = prefs.getString("theme", "system") ?: "system"
+        set(value) { prefs.edit().putString("theme", value).apply() }
 
     fun enqueue(path: String, body: String) {
+        val owner = userId ?: return
+        val parsed = JSONObject(body)
+        if (parsed.optString("opId").isBlank()) parsed.put("opId", java.util.UUID.randomUUID().toString())
         val queue = JSONArray(prefs.getString("queue", "[]"))
-        queue.put(JSONObject().put("path", path).put("body", body))
+        queue.put(JSONObject().put("path", path).put("body", parsed.toString()).put("ownerId", owner).put("opId", parsed.getString("opId")))
         prefs.edit().putString("queue", queue.toString()).apply()
     }
 
@@ -48,6 +57,12 @@ class Store(context: Context) {
 
     fun replaceQueue(queue: JSONArray) {
         prefs.edit().putString("queue", queue.toString()).apply()
+    }
+
+    fun pendingForCurrentUser(): List<JSONObject> {
+        val owner = userId ?: return emptyList()
+        val queue = queued()
+        return (0 until queue.length()).map { queue.getJSONObject(it) }.filter { it.optString("ownerId") == owner }
     }
 
     fun clearSession() {
