@@ -58,7 +58,7 @@ export function Assistant() {
 export function ImportPage() {
   const session = useSession();
   const accounts = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId]);
-  const [preview, setPreview] = useState<{ batchId: string; rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; duplicate?: boolean; errors: string[] }[]; missing: string[] } | null>(null);
+  const [preview, setPreview] = useState<{ batchId: string; rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; duplicate?: boolean; possibleMatch?: boolean; errors: string[] }[]; missing: string[] } | null>(null);
   const form = useFormError();
   return (
     <Page title="Import" lede="Preview first. Duplicates and broken rows are left out of the commit. A profile does not invent columns the file does not have.">
@@ -85,7 +85,7 @@ export function ImportPage() {
       })}>
         <p>{preview.missing.join(" ")}</p>
         <Field label="Account"><select name="accountId" required>{accounts.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        {preview.rows.slice(0, 40).map((row) => <label key={row.rowNumber} className="link-row"><span><input type="checkbox" name={`row-${row.rowNumber}`} defaultChecked={!row.duplicate && !row.errors.length} disabled={!!row.duplicate || row.errors.length > 0} /> {row.date} {row.payee} {row.duplicate ? "(duplicate)" : row.errors.join(", ")}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>)}
+        {preview.rows.slice(0, 40).map((row) => <label key={row.rowNumber} className="link-row"><span><input type="checkbox" name={`row-${row.rowNumber}`} defaultChecked={!row.duplicate && !row.possibleMatch && !row.errors.length} disabled={!!row.duplicate || row.errors.length > 0} /> {row.date} {row.payee} {row.duplicate ? "(already imported)" : row.possibleMatch ? "(same date, payee, and amount already in the register — check this only if it is the bank copy you want to match)" : row.errors.join(", ")}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>)}
         <button className="btn" type="submit">Import selected</button>
       </form> : null}
     </Page>
@@ -324,18 +324,9 @@ export function Settings() {
       </section>
       <section className="card" style={{ marginTop: 16 }}>
         <h2>Your data</h2>
+        <RestoreBackup />
         <div className="row">
           <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/backup"), "budgetcents-backup.json")}>Download backup</button>
-          <label className="btn-secondary">Restore a file<input type="file" accept="application/json" hidden onChange={async (event) => {
-            const file = event.target.files?.[0];
-            if (!file) return;
-            const backup = JSON.parse(await file.text()) as unknown;
-            const preview = await api<{ adds: Record<string, number>; skipped: number; warnings: string[]; note: string }>(scoped(session.householdId, "/restore"), { method: "POST", body: JSON.stringify({ mode: "preview", backup }) });
-            const adds = Object.entries(preview.adds).map(([name, count]) => `${name} ${count}`).join(", ");
-            if (!window.confirm(`${preview.note} Would add ${adds || "nothing"}. Skipped ${preview.skipped}. ${preview.warnings.join(" ")} Add the missing rows?`)) return;
-            await api(scoped(session.householdId, "/restore"), { method: "POST", body: JSON.stringify({ mode: "add-missing", backup }) });
-            session.bump();
-          }} /></label>
           <button className="btn-secondary" onClick={async () => {
             if (!window.confirm("Archive assignments and keep transactions?")) return;
             const dash = await api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId));
@@ -348,6 +339,51 @@ export function Settings() {
       <Support />
       {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
     </Page>
+  );
+}
+
+function RestoreBackup() {
+  const session = useSession();
+  const [error, setError] = useState("");
+  const [preview, setPreview] = useState<{ backup: unknown; adds: Record<string, number>; skipped: number; warnings: string[]; note: string } | null>(null);
+  const [done, setDone] = useState("");
+  return (
+    <div>
+      <label className="btn-secondary">Choose a backup file<input name="backup" type="file" accept="application/json,.json" hidden onChange={async (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        setError("");
+        setDone("");
+        setPreview(null);
+        if (!file) return;
+        try {
+          const backup = JSON.parse(await file.text()) as unknown;
+          const result = await api<{ adds: Record<string, number>; skipped: number; warnings: string[]; note: string }>(scoped(session.householdId, "/restore"), { method: "POST", body: JSON.stringify({ mode: "preview", backup }) });
+          setPreview({ backup, ...result });
+        } catch (caught) {
+          const reason = caught instanceof Error ? caught.message : "That file could not be read.";
+          setError(`${reason} Nothing was changed.`);
+        }
+      }} /></label>
+      {error ? <Notice kind="bad">{error}</Notice> : null}
+      {preview ? (
+        <div>
+          <p>{preview.note} This preview did not write anything. Would add {Object.entries(preview.adds).map(([name, count]) => `${name} ${count}`).join(", ") || "nothing"}. Skipped {preview.skipped}. {preview.warnings.join(" ")}</p>
+          <button className="btn" type="button" onClick={async () => {
+            setError("");
+            try {
+              await api(scoped(session.householdId, "/restore"), { method: "POST", body: JSON.stringify({ mode: "add-missing", backup: preview.backup }) });
+              setPreview(null);
+              setDone("Missing rows were added. Running the same file again does not create a second copy.");
+              session.bump();
+            } catch (caught) {
+              setError(caught instanceof Error ? caught.message : "The restore was rejected. Nothing was changed.");
+            }
+          }}>Add the missing rows</button>
+        </div>
+      ) : null}
+      {done ? <Notice>{done}</Notice> : null}
+    </div>
   );
 }
 

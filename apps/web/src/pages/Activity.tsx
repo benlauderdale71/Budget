@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { parseAmount, todayISO } from "../format.js";
@@ -6,44 +6,90 @@ import { scoped, useSession } from "../session.js";
 import type { Account, Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Modal, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
+const PAGE = 25;
+
 export function Activity() {
   const session = useSession();
   const [params, setParams] = useSearchParams();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Txn | null>(null);
-  const [limit, setLimit] = useState(50);
+  const [offset, setOffset] = useState(0);
   const [matchId, setMatchId] = useState("");
   const [note, setNote] = useState("");
+  const [viewName, setViewName] = useState("");
+  const [renaming, setRenaming] = useState("");
   const query = params.get("q") ?? "";
   const review = params.get("review") ?? "";
   const accountId = params.get("accountId") ?? "";
+  const bucketId = params.get("bucketId") ?? "";
+  const tag = params.get("tag") ?? "";
+  const ids = params.get("ids") ?? "";
+  const sort = params.get("sort") === "payee" ? "payee" : "date";
+  useEffect(() => { setOffset(0); }, [query, review, accountId, bucketId, tag, ids, sort]);
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const views = useLoad(() => api<{ views: { id: string; name: string; query: Record<string, string> }[] }>(scoped(session.householdId, "/views")), [session.householdId, session.tick]);
-  const list = useLoad(() => api<{ total: number; transactions: Txn[]; nextOffset: number | null }>(scoped(session.householdId, `/transactions?limit=${limit}&offset=0${query ? `&q=${encodeURIComponent(query)}` : ""}${review ? `&review=${encodeURIComponent(review)}` : ""}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query, review, accountId, limit]);
+  const list = useLoad(() => api<{ total: number; offset: number; transactions: Txn[]; nextOffset: number | null }>(scoped(session.householdId, `/transactions?limit=${PAGE}&offset=${offset}&sort=${sort}${query ? `&q=${encodeURIComponent(query)}` : ""}${review ? `&review=${encodeURIComponent(review)}` : ""}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}${bucketId ? `&bucketId=${encodeURIComponent(bucketId)}` : ""}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}${ids ? `&ids=${encodeURIComponent(ids)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query, review, accountId, bucketId, tag, ids, sort, offset]);
+  const purchases = useLoad(() => api<{ transactions: Txn[] }>(scoped(session.householdId, "/transactions?limit=200", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   if ((dash.loading || list.loading) && !list.data) return <Loading label="Loading activity" />;
   if (!dash.data || !list.data) return <ErrorNote message={dash.error || list.error || "Could not load activity"} onRetry={session.bump} />;
   const names = new Map(dash.data.accounts.map((account) => [account.id, account.name]));
+  const payees = new Map((purchases.data?.transactions ?? list.data.transactions).map((txn) => [txn.id, txn.payee]));
   const visible = list.data.transactions;
+  const currentQuery = { q: query, review, accountId, bucketId, tag, ids, sort };
+  function replaceFilters(next: URLSearchParams) {
+    setOffset(0);
+    setParams(next);
+  }
+  async function act(label: string, run: () => Promise<void>) {
+    try {
+      await run();
+      setNote(label);
+      session.bump();
+    } catch (caught) {
+      setNote(caught instanceof Error ? caught.message : "That change was not saved.");
+    }
+  }
   return (
-    <Page title="Activity" lede={query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" onClick={() => { setEditing(null); setOpen(true); }}>Add</button>}>
+    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" onClick={() => { setEditing(null); setOpen(true); }}>Add</button>}>
+      {ids ? <p><button className="btn-quiet" type="button" onClick={() => { const next = new URLSearchParams(params); next.delete("ids"); replaceFilters(next); }}>Show the whole register</button></p> : null}
       <div className="row">
         <label className="field">Account
-          <select value={accountId} onChange={(event) => { setLimit(50); const next = new URLSearchParams(params); if (event.target.value) next.set("accountId", event.target.value); else next.delete("accountId"); setParams(next); }}>
+          <select value={accountId} onChange={(event) => { const next = new URLSearchParams(params); if (event.target.value) next.set("accountId", event.target.value); else next.delete("accountId"); replaceFilters(next); }}>
             <option value="">All accounts</option>
             {dash.data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
           </select>
         </label>
-        <button className="btn-secondary" onClick={async () => {
-          const name = window.prompt("Name this view");
-          if (!name) return;
-          await api(scoped(session.householdId, "/views"), { method: "POST", body: JSON.stringify({ name, query: { q: query, review, accountId } }) });
-          session.bump();
-        }}>Save this view</button>
+        <label className="field">Sort
+          <select value={sort} onChange={(event) => { const next = new URLSearchParams(params); if (event.target.value === "payee") next.set("sort", "payee"); else next.delete("sort"); replaceFilters(next); }}>
+            <option value="date">Date</option>
+            <option value="payee">Payee</option>
+          </select>
+        </label>
+        <label className="field">View name
+          <input name="viewName" value={viewName} onChange={(event) => setViewName(event.target.value)} />
+        </label>
+        <button className="btn-secondary" onClick={() => act("Saved this view for your sign-in.", async () => {
+          if (!viewName.trim()) throw new Error("Name the view.");
+          await api(scoped(session.householdId, "/views"), { method: "POST", body: JSON.stringify({ name: viewName.trim(), query: currentQuery }) });
+          setViewName("");
+        })}>Save this view</button>
+      </div>
+      <div className="row">
         {views.data?.views.map((view) => (
-          <button key={view.id} className="chip" onClick={() => { setLimit(50); setParams(new URLSearchParams(Object.entries(view.query).filter(([, value]) => value))); }}>{view.name}</button>
+          <span key={view.id} className="chip">
+            <button type="button" onClick={() => { setOffset(0); setParams(new URLSearchParams(Object.entries(view.query).filter(([, value]) => value))); }}>{view.name}</button>
+            <button type="button" onClick={() => setRenaming(renaming === view.id ? "" : view.id)}>Rename</button>
+            <button type="button" onClick={() => act("Deleted that view.", () => api(scoped(session.householdId, `/views/${view.id}`), { method: "DELETE" }).then(() => undefined))}>Delete</button>
+            {renaming === view.id ? (
+              <form onSubmit={(event) => { event.preventDefault(); const name = String(new FormData(event.currentTarget).get("name") || ""); void act("Renamed that view.", async () => { await api(scoped(session.householdId, `/views/${view.id}`), { method: "PATCH", body: JSON.stringify({ name, query: view.query }) }); setRenaming(""); }); }}>
+                <input name="name" defaultValue={view.name} aria-label="New view name" />
+                <button type="submit">Save name</button>
+              </form>
+            ) : null}
+          </span>
         ))}
       </div>
-      <p className="muted">{list.data?.total ?? visible.length} in this view. Showing {visible.length}.</p>
+      <p className="muted">{list.data.total} in this view. Showing {visible.length === 0 ? "0" : `${(list.data.offset ?? offset) + 1}–${(list.data.offset ?? offset) + visible.length}`}.</p>
       {note ? <Notice>{note}</Notice> : null}
       {visible.length === 0 ? <p className="muted">No transactions match.</p> : (
         <div className="card" style={{ overflowX: "auto" }}>
@@ -53,26 +99,27 @@ export function Activity() {
               {visible.map((txn) => (
                 <tr key={txn.id}>
                   <td>{txn.date}</td>
-                  <td>{txn.payee}{txn.notes ? <div className="muted">{txn.notes}</div> : null}{txn.matchedArchivedId ? <div className="muted">Matched. The other copy is hidden.</div> : null}</td>
+                  <td>
+                    {txn.payee}
+                    {txn.notes ? <div className="muted">{txn.notes}</div> : null}
+                    {txn.tags?.length ? <div className="muted">Tags {txn.tags.join(", ")}</div> : null}
+                    {txn.providerTransactionId ? <div className="muted">Bank id {txn.providerTransactionId}</div> : null}
+                    {txn.attachmentCount ? <div className="muted">Receipt attached</div> : null}
+                    {txn.refundOfId ? <div className="muted">Refund of {payees.get(txn.refundOfId) ?? "a purchase"}</div> : null}
+                    {txn.matchedArchivedId ? <div className="muted">Matched. The other copy is hidden.</div> : null}
+                  </td>
                   <td>{names.get(txn.accountId) ?? "Account"}</td>
                   <td>{txn.reviewStatus === "needs_review" ? "Needs review" : txn.reconciled ? "Reconciled" : "Reviewed"}</td>
                   <td className="num"><Money minor={txn.amountMinor} /></td>
                   <td>
                     <button className="btn-quiet" onClick={() => { setEditing(txn); setOpen(true); }}>Edit</button>
-                    <button className="btn-quiet" onClick={async () => {
-                      await api(scoped(session.householdId, `/transactions/${txn.id}/duplicate`), { method: "POST" });
-                      setNote("A copy was added and marked for review. The original was not changed.");
-                      session.bump();
-                    }}>Duplicate</button>
+                    <button className="btn-quiet" onClick={() => act("A copy was added and marked for review. The original was not changed, and its bank id was not copied.", () => api(scoped(session.householdId, `/transactions/${txn.id}/duplicate`), { method: "POST" }).then(() => undefined))}>Duplicate</button>
                     <button className="btn-quiet" onClick={() => setMatchId(matchId === txn.id ? "" : txn.id)}>{matchId === txn.id ? "Selected to match" : "Match"}</button>
-                    {matchId && matchId !== txn.id ? <button className="btn-quiet" onClick={async () => {
+                    {matchId && matchId !== txn.id ? <button className="btn-quiet" onClick={() => act("Matched. Notes, tags, and review stayed on the first transaction. A bank id was copied only when the first record did not have one, and the second copy is no longer in the totals.", async () => {
                       await api(scoped(session.householdId, `/transactions/${matchId}/match`), { method: "POST", body: JSON.stringify({ otherId: txn.id }) });
-                      setMatchId(""); setNote("Matched. Notes stayed on the first transaction, and the second copy is no longer in the totals."); session.bump();
-                    }}>Match with selected</button> : null}
-                    {txn.matchedArchivedId ? <button className="btn-quiet" onClick={async () => {
-                      await api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" });
-                      setNote("The hidden record is back in the register."); session.bump();
-                    }}>Unmatch</button> : null}
+                      setMatchId("");
+                    })}>Match with selected</button> : null}
+                    {txn.matchedArchivedId ? <button className="btn-quiet" onClick={() => act("The hidden record is back in the register, and a receipt that moved comes back with it.", () => api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" }).then(() => undefined))}>Unmatch</button> : null}
                   </td>
                 </tr>
               ))}
@@ -80,13 +127,16 @@ export function Activity() {
           </table>
         </div>
       )}
-      {list.data.nextOffset != null ? <button className="btn-secondary" onClick={() => setLimit((current) => Math.min(200, current + 50))}>Load more</button> : null}
-      {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
+      <div className="row">
+        {offset > 0 ? <button className="btn-secondary" onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous page</button> : null}
+        {list.data.nextOffset != null ? <button className="btn-secondary" onClick={() => setOffset(list.data?.nextOffset ?? offset)}>Next page</button> : null}
+      </div>
+      {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
     </Page>
   );
 }
 
-function TxnForm({ accounts, buckets, currency, spaceId, existing, onClose }: { accounts: Account[]; buckets: Dashboard["buckets"]; currency: string; spaceId: string; existing: Txn | null; onClose: () => void }) {
+function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onClose }: { accounts: Account[]; buckets: Dashboard["buckets"]; expenses: Txn[]; currency: string; spaceId: string; existing: Txn | null; onClose: () => void }) {
   const session = useSession();
   const form = useFormError();
   const [type, setType] = useState(existing?.type ?? "expense");
@@ -110,6 +160,7 @@ function TxnForm({ accounts, buckets, currency, spaceId, existing, onClose }: { 
           amountMinor: signed, type, payee: data.get("payee"), notes: data.get("notes") || undefined,
           tags: String(data.get("tags") || "").split(",").map((tag) => tag.trim()).filter(Boolean),
           splits: splitRows, bankStatus: "posted", categoryLocked: true,
+          reviewStatus: data.get("reviewStatus") || undefined,
           refundOfId: type === "refund" || type === "reimbursement" ? String(data.get("refundOfId") || "") || undefined : undefined,
           version: existing?.version,
           reason: data.get("reason") || undefined,
@@ -137,7 +188,7 @@ function TxnForm({ accounts, buckets, currency, spaceId, existing, onClose }: { 
         <Field label="Payee"><input name="payee" required defaultValue={existing?.payee ?? ""} /></Field>
         <Field label="Amount"><input name="amount" required inputMode="decimal" defaultValue={existing ? (Math.abs(existing.amountMinor) / 100).toFixed(2) : ""} /></Field>
         <Field label="Account"><select name="accountId" required defaultValue={existing?.accountId ?? ""}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        {type === "transfer" || type === "cc_payment" ? <Field label="Other account"><select name="counterAccountId" required>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field> : null}
+        {type === "transfer" || type === "cc_payment" ? <Field label="Other account"><select name="counterAccountId" required defaultValue={existing?.counterAccountId ?? ""}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field> : null}
         {type !== "transfer" && type !== "cc_payment" ? (
           <fieldset>
             <legend>Splits</legend>
@@ -154,7 +205,15 @@ function TxnForm({ accounts, buckets, currency, spaceId, existing, onClose }: { 
             <button type="button" className="btn-secondary" onClick={() => setSplits([...splits, { bucketId: "", amount: "" }])}>Add split</button>
           </fieldset>
         ) : null}
-        {type === "refund" || type === "reimbursement" ? <Field label="Refund of transaction id"><input name="refundOfId" defaultValue={existing?.refundOfId ?? ""} placeholder="The original expense id" /></Field> : null}
+        {type === "refund" || type === "reimbursement" ? (
+          <Field label="Refund of">
+            <select name="refundOfId" defaultValue={existing?.refundOfId ?? ""}>
+              <option value="">Not linked</option>
+              {expenses.map((txn) => <option key={txn.id} value={txn.id}>{txn.date} {txn.payee}</option>)}
+            </select>
+          </Field>
+        ) : null}
+        <Field label="Review"><select name="reviewStatus" defaultValue={existing?.reviewStatus ?? "needs_review"}><option value="needs_review">Needs review</option><option value="reviewed">Reviewed</option></select></Field>
         <Field label="Tags"><input name="tags" placeholder="trip, reimbursable" defaultValue={existing?.tags?.join(", ") ?? ""} /></Field>
         <Field label="Note"><textarea name="notes" defaultValue={existing?.notes ?? ""} /></Field>
         {existing?.reconciled ? <Field label="Reason for changing a reconciled amount"><input name="reason" /></Field> : null}

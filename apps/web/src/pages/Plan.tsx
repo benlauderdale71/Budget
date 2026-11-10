@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api.js";
-import { minorToInput, monthLabel, parseAmount, percentBpsFromInput, todayISO } from "../format.js";
+import { formatMoney, minorToInput, monthLabel, parseAmount, percentBpsFromInput, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import type { Bucket, Dashboard } from "../types.js";
 import { ErrorNote, Field, Loading, Modal, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
@@ -303,96 +303,154 @@ function ArchivedCategories({ buckets }: { buckets: Bucket[] }) {
   );
 }
 
+const FILL_CADENCES: [string, string][] = [
+  ["once", "Once"],
+  ["weekly", "Weekly"],
+  ["biweekly", "Every two weeks"],
+  ["twice_monthly", "Twice a month"],
+  ["monthly", "Monthly"],
+  ["every_2_months", "Every two months"],
+  ["every_3_months", "Every three months"],
+  ["every_6_months", "Every six months"],
+  ["annual", "Annual"],
+  ["custom", "Custom"],
+];
+
 function Fills({ dash }: { dash: Dashboard }) {
   const session = useSession();
-  const form = useFormError();
-  const [preview, setPreview] = useState("");
+  const [editing, setEditing] = useState<FillRow | null>(null);
+  const [draftKey, setDraftKey] = useState(0);
   const choices = dash.buckets.filter((bucket) => !bucket.systemRole && !bucket.archived && bucket.kind === "expense");
   const state = useLoad(() => api<{ note: string; fills: FillRow[] }>(scoped(session.householdId, "/fills")), [session.householdId, session.tick]);
-  async function linePayload(data: FormData) {
-    const lines = [0, 1].flatMap((index) => {
-      const bucketId = String(data.get(`bucket${index}`) || "");
-      if (!bucketId) return [];
-      const mode = String(data.get(`mode${index}`) || "add");
-      return [{
-        bucketId,
-        mode,
-        amountMinor: mode === "shortfall" || mode === "percent" ? null : parseAmount(String(data.get(`amount${index}`) || "0"), dash.household.currency),
-        percentBps: mode === "percent" ? percentBpsFromInput(String(data.get(`percent${index}`) || "")) : null,
-        priority: Number(data.get(`priority${index}`) || index + 1),
-        sourceBucketId: String(data.get(`source${index}`) || "") || null,
-      }];
-    });
-    return {
-      spaceId: dash.spaceId,
-      name: String(data.get("name") || ""),
-      cadence: String(data.get("cadence") || "monthly"),
-      customDays: String(data.get("cadence")) === "custom" ? Number(data.get("customDays") || 0) : null,
-      startDate: String(data.get("startDate") || todayISO()),
-      endDate: String(data.get("endDate") || "") || null,
-      shortfallPolicy: String(data.get("policy") || "partial"),
-      sweepBucketId: String(data.get("sweep") || "") || null,
-      lines,
-    };
-  }
   return (
     <section id="fills" style={{ marginTop: 24 }}>
       <h2>Envelope fills</h2>
-      <p className="muted">A fill gives a job to cash that is already in Ready to Assign. It is not a bank transfer, and a saved schedule is not an applied fill until it runs.</p>
+      <p className="muted">A fill gives a job to cash that is already in Ready to Assign. It is not a bank transfer. Saved and Scheduled are not applied fills.</p>
       {state.data?.note ? <p className="muted">{state.data.note}</p> : null}
-      <form className="card" onSubmit={(event) => form.run(event, async () => {
-        await api(scoped(session.householdId, "/fills"), { method: "POST", body: JSON.stringify(await linePayload(new FormData(event.currentTarget))) });
-        setPreview("Saved. It is scheduled and has not moved any money.");
-        session.bump();
-      })}>
-        <Field label="Name"><input name="name" required defaultValue="Payday fill" /></Field>
-        <Field label="Schedule"><select name="cadence" defaultValue="monthly"><option value="once">Once</option><option value="weekly">Weekly</option><option value="biweekly">Every two weeks</option><option value="twice_monthly">Twice a month</option><option value="monthly">Monthly</option><option value="annual">Annual</option><option value="custom">Custom</option></select></Field>
-        <Field label="Custom days"><input name="customDays" inputMode="numeric" placeholder="Only for a custom schedule" /></Field>
-        <Field label="Start"><input name="startDate" type="date" required defaultValue={todayISO()} /></Field>
-        <Field label="End"><input name="endDate" type="date" /></Field>
-        <Field label="If there is not enough cash"><select name="policy" defaultValue="partial"><option value="partial">Fund in priority order, then stop</option><option value="skip">Skip the whole occurrence</option></select></Field>
-        <Field label="Sweep leftover Ready to Assign into"><select name="sweep"><option value="">Do not sweep</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
-        {[0, 1].map((index) => (
-          <fieldset key={index}>
-            <legend>{index === 0 ? "First envelope" : "Second envelope, optional"}</legend>
-            <Field label="Envelope"><select name={`bucket${index}`} defaultValue={index === 0 ? choices[0]?.id ?? "" : ""}><option value="">None</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
-            <Field label="What to add"><select name={`mode${index}`} defaultValue="add"><option value="add">Add a fixed amount</option><option value="top_up">Top up the available balance</option><option value="shortfall">Fund the target shortfall</option><option value="percent">Percent of eligible posted income</option></select></Field>
-            <Field label="Amount or desired balance"><input name={`amount${index}`} inputMode="decimal" defaultValue={index === 0 ? "0.00" : ""} /></Field>
-            <Field label="Percent"><input name={`percent${index}`} inputMode="decimal" placeholder="10.50" /></Field>
-            <Field label="Priority"><input name={`priority${index}`} inputMode="numeric" defaultValue={index + 1} /></Field>
-            <Field label="Take the money from"><select name={`source${index}`}><option value="">Ready to Assign</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
-          </fieldset>
-        ))}
-        {preview ? <Notice>{preview}</Notice> : null}
-        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-        <div className="row">
-          <button className="btn-secondary" type="button" onClick={async (event) => {
-            try {
-              const result = await api<{ note: string; policyText: string; statusLabel: string; plan: { totalAllocatedMinor: number; readyBeforeMinor: number; readyAfterMinor: number; shortfallMinor: number; explanation: string; allocations: { bucketId: string; requestedMinor: number; allocatedMinor: number }[] } | null }>(scoped(session.householdId, "/fills/preview"), { method: "POST", body: JSON.stringify(await linePayload(new FormData(event.currentTarget.form as HTMLFormElement))) });
-              const plan = result.plan;
-              setPreview(plan ? `${result.note} ${result.policyText} Preview is ${result.statusLabel}. Ready to Assign ${plan.readyBeforeMinor} becomes ${plan.readyAfterMinor}. Allocated ${plan.totalAllocatedMinor}. Short ${plan.shortfallMinor}. ${plan.explanation}` : result.note);
-            } catch (caught) {
-              setPreview(caught instanceof Error ? caught.message : "Could not preview.");
-            }
-          }}>Preview</button>
-          <button className="btn" type="submit">Save fill</button>
-        </div>
-      </form>
-      {(state.data?.fills ?? []).map((fill) => <FillCard key={fill.id} fill={fill} />)}
+      <FillEditor key={editing?.id ?? `new-${draftKey}`} dash={dash} choices={choices} existing={editing} onDone={() => { setEditing(null); setDraftKey((value) => value + 1); }} />
+      {(state.data?.fills ?? []).map((fill) => <FillCard key={fill.id} fill={fill} onEdit={() => setEditing(fill)} />)}
     </section>
   );
 }
 
-function FillCard({ fill }: { fill: FillRow }) {
+function FillEditor({ dash, choices, existing, onDone }: { dash: Dashboard; choices: Bucket[]; existing: FillRow | null; onDone: () => void }) {
   const session = useSession();
-  const [history, setHistory] = useState<string>("");
+  const form = useFormError();
+  const [preview, setPreview] = useState("");
+  const [name, setName] = useState(existing?.name ?? "Payday fill");
+  const [cadence, setCadence] = useState(existing?.cadence ?? "monthly");
+  const [customDays, setCustomDays] = useState(existing?.customDays ? String(existing.customDays) : "");
+  const [startDate, setStartDate] = useState(existing?.startDate ?? todayISO());
+  const [endDate, setEndDate] = useState(existing?.endDate ?? "");
+  const [policy, setPolicy] = useState(existing?.shortfallPolicy ?? "partial");
+  const [sweep, setSweep] = useState(existing?.sweepBucketId ?? "");
+  const [paused, setPaused] = useState(!!existing?.paused);
+  const [lines, setLines] = useState<LineDraft[]>(() => existing?.lines.length ? existing.lines.map((line) => ({
+    bucketId: line.bucketId,
+    mode: line.mode,
+    amount: line.amountMinor == null ? "" : minorToInput(line.amountMinor, dash.household.currency),
+    percent: line.percentBps == null ? "" : (line.percentBps / 100).toFixed(2),
+    priority: String(line.priority),
+    sourceBucketId: line.sourceBucketId ?? "",
+  })) : [{ bucketId: choices[0]?.id ?? "", mode: "add", amount: "0.00", percent: "", priority: "1", sourceBucketId: "" }]);
+  function moneyText(minor: number) {
+    return formatMoney(minor, dash.household.currency, !!session.user?.privacyMode);
+  }
+  function payload() {
+    return {
+      version: existing?.version,
+      spaceId: dash.spaceId,
+      name,
+      cadence,
+      customDays: cadence === "custom" ? Number(customDays) : null,
+      startDate,
+      endDate: endDate || null,
+      paused,
+      shortfallPolicy: policy,
+      sweepBucketId: sweep || null,
+      lines: lines.filter((line) => line.bucketId).map((line, index) => ({
+        bucketId: line.bucketId,
+        mode: line.mode,
+        amountMinor: line.mode === "shortfall" || line.mode === "percent" ? null : parseAmount(line.amount || "0", dash.household.currency),
+        percentBps: line.mode === "percent" ? percentBpsFromInput(line.percent || "0") : null,
+        priority: Number(line.priority || index + 1),
+        sourceBucketId: line.sourceBucketId || null,
+      })),
+    };
+  }
+  function moveLine(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= lines.length) return;
+    const next = [...lines];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item!);
+    setLines(next.map((line, lineIndex) => ({ ...line, priority: String(lineIndex + 1) })));
+  }
+  return (
+    <form id={existing ? "fill-edit" : "fill-create"} className="card" onSubmit={(event) => form.run(event, async () => {
+      const body = payload();
+      if (existing) await api(scoped(session.householdId, `/fills/${existing.id}`), { method: "PATCH", body: JSON.stringify(body) });
+      else await api(scoped(session.householdId, "/fills"), { method: "POST", body: JSON.stringify(body) });
+      setPreview(existing ? "Saved the edit. Past results were kept, and no money moved." : "Saved. It is scheduled and has not moved any money.");
+      session.bump();
+      onDone();
+    })}>
+      <h3>{existing ? `Edit ${existing.name}` : "New fill"}</h3>
+      <p className="muted">Saving does not move money and does not rerun a date that already has a result. If this fill has never run, the next date becomes the start date. If it has run, the next date stays unless it is earlier than the new start date. A cadence change takes effect after that next date.</p>
+      <Field label="Name"><input name="name" required value={name} onChange={(event) => setName(event.target.value)} /></Field>
+      <Field label="Schedule"><select name="cadence" value={cadence} onChange={(event) => setCadence(event.target.value)}>{FILL_CADENCES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+      {cadence === "custom" ? <Field label="Custom days"><input name="customDays" inputMode="numeric" required value={customDays} onChange={(event) => setCustomDays(event.target.value)} /></Field> : null}
+      <Field label="Start"><input name="startDate" type="date" required value={startDate} onChange={(event) => setStartDate(event.target.value)} /></Field>
+      <Field label="End"><input name="endDate" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></Field>
+      <Field label="If there is not enough cash"><select name="policy" value={policy} onChange={(event) => setPolicy(event.target.value)}><option value="partial">Fund in priority order, then stop</option><option value="skip">Skip the whole occurrence</option></select></Field>
+      <Field label="Sweep leftover Ready to Assign into"><select name="sweep" value={sweep} onChange={(event) => setSweep(event.target.value)}><option value="">Do not sweep</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+      <label className="field"><span><input type="checkbox" checked={paused} onChange={(event) => setPaused(event.target.checked)} /> Paused</span></label>
+      {lines.map((line, index) => (
+        <fieldset key={index}>
+          <legend>Envelope {index + 1}</legend>
+          <Field label="Envelope"><select aria-label={`Envelope ${index + 1}`} value={line.bucketId} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, bucketId: event.target.value } : item))}><option value="">Choose</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+          <Field label="What to add"><select aria-label={`Mode ${index + 1}`} value={line.mode} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, mode: event.target.value } : item))}><option value="add">Add a fixed amount</option><option value="top_up">Top up the available balance</option><option value="shortfall">Fund the target shortfall</option><option value="percent">Percent of eligible posted income</option></select></Field>
+          {line.mode === "percent" ? <Field label="Percent"><input aria-label={`Percent ${index + 1}`} inputMode="decimal" value={line.percent} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, percent: event.target.value } : item))} /></Field> : line.mode === "shortfall" ? null : <Field label="Amount or desired balance"><input aria-label={`Amount ${index + 1}`} inputMode="decimal" value={line.amount} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} /></Field>}
+          <Field label="Priority"><input aria-label={`Priority ${index + 1}`} inputMode="numeric" value={line.priority} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, priority: event.target.value } : item))} /></Field>
+          <Field label="Take the money from"><select aria-label={`Source ${index + 1}`} value={line.sourceBucketId} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, sourceBucketId: event.target.value } : item))}><option value="">Ready to Assign</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+          <div className="row">
+            <button className="btn-quiet" type="button" onClick={() => moveLine(index, -1)}>Move up</button>
+            <button className="btn-quiet" type="button" onClick={() => moveLine(index, 1)}>Move down</button>
+            <button className="btn-quiet" type="button" onClick={() => setLines(lines.filter((_, itemIndex) => itemIndex !== index).map((item, itemIndex) => ({ ...item, priority: String(itemIndex + 1) })))}>Remove envelope</button>
+          </div>
+        </fieldset>
+      ))}
+      <button className="btn-secondary" type="button" onClick={() => setLines([...lines, { bucketId: "", mode: "add", amount: "", percent: "", priority: String(lines.length + 1), sourceBucketId: "" }])}>Add envelope</button>
+      {preview ? <Notice>{preview}</Notice> : null}
+      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+      <div className="row">
+        <button className="btn-secondary" type="button" onClick={async () => {
+          try {
+            const result = await api<{ note: string; policyText: string; statusLabel: string; plan: { totalAllocatedMinor: number; readyBeforeMinor: number; readyAfterMinor: number; shortfallMinor: number; explanation: string } | null }>(scoped(session.householdId, "/fills/preview"), { method: "POST", body: JSON.stringify(payload()) });
+            const plan = result.plan;
+            setPreview(plan ? `${result.note} ${result.policyText} This is a preview, not an applied fill. Ready to Assign ${moneyText(plan.readyBeforeMinor)} becomes ${moneyText(plan.readyAfterMinor)}. Allocated ${moneyText(plan.totalAllocatedMinor)}. Short ${moneyText(plan.shortfallMinor)}. ${plan.explanation}` : result.note);
+          } catch (caught) {
+            setPreview(caught instanceof Error ? caught.message : "Could not preview.");
+          }
+        }}>Preview</button>
+        <button className="btn" type="submit">{existing ? "Save edit" : "Save fill"}</button>
+        {existing ? <button className="btn-quiet" type="button" onClick={onDone}>Cancel edit</button> : null}
+      </div>
+    </form>
+  );
+}
+
+function FillCard({ fill, onEdit }: { fill: FillRow; onEdit: () => void }) {
+  const session = useSession();
+  const [message, setMessage] = useState("");
+  const [history, setHistory] = useState<HistoryRow[] | null>(null);
   async function act(path: string, label: string) {
     try {
       const result = await api<{ statusLabel?: string; note?: string; explanation?: string }>(scoped(session.householdId, path), { method: "POST" });
-      setHistory(`${label}: ${result.statusLabel ?? ""} ${result.explanation ?? result.note ?? ""}`.trim());
+      setMessage(`${label}: ${result.statusLabel ?? ""} ${result.explanation ?? result.note ?? ""}`.trim());
       session.bump();
     } catch (caught) {
-      setHistory(caught instanceof Error ? caught.message : "Could not update the fill.");
+      setMessage(caught instanceof Error ? caught.message : "Could not update the fill.");
     }
   }
   return (
@@ -406,28 +464,73 @@ function FillCard({ fill }: { fill: FillRow }) {
         {fill.statusLabel === "Paused"
           ? <button className="btn-secondary" type="button" onClick={() => act(`/fills/${fill.id}/resume`, "Resume")}>Resume</button>
           : <button className="btn-secondary" type="button" onClick={() => act(`/fills/${fill.id}/pause`, "Pause")}>Pause</button>}
+        <button className="btn-secondary" type="button" onClick={onEdit}>Edit</button>
         <button className="btn-secondary" type="button" onClick={async () => {
-          const rows = await api<{ history: { date: string; statusLabel: string; allocatedMinor: number; shortfallMinor: number; detail?: { explanation?: string } }[] }>(scoped(session.householdId, `/fills/${fill.id}/history`));
-          setHistory(rows.history.map((row) => `${row.date} ${row.statusLabel} allocated ${row.allocatedMinor} short ${row.shortfallMinor}. ${row.detail?.explanation ?? ""}`).join(" ") || "No history yet.");
+          const rows = await api<{ history: HistoryRow[] }>(scoped(session.householdId, `/fills/${fill.id}/history`));
+          setHistory(rows.history);
         }}>History</button>
         <button className="btn-secondary" type="button" onClick={async () => {
           await api(scoped(session.householdId, `/fills/${fill.id}`), { method: "DELETE" });
           session.bump();
         }}>Delete</button>
       </div>
-      {history ? <p>{history}</p> : null}
+      {message ? <p>{message}</p> : null}
+      {history ? (
+        history.length === 0 ? <p>No history yet.</p> : (
+          <ul>
+            {history.map((row) => (
+              <li key={row.id}>{row.date} {row.statusLabel}. Allocated <Money minor={row.allocatedMinor} />. Short <Money minor={row.shortfallMinor} />. {row.detail?.explanation ?? row.error ?? ""}</li>
+            ))}
+          </ul>
+        )
+      ) : null}
     </article>
   );
+}
+
+interface HistoryRow {
+  id: string;
+  date: string;
+  statusLabel: string;
+  allocatedMinor: number;
+  shortfallMinor: number;
+  error?: string | null;
+  detail?: { explanation?: string };
+}
+
+interface FillLine {
+  bucketId: string;
+  mode: string;
+  amountMinor?: number | null;
+  percentBps?: number | null;
+  priority: number;
+  sourceBucketId?: string | null;
 }
 
 interface FillRow {
   id: string;
   name: string;
+  version: number;
   cadence: string;
+  customDays?: number | null;
+  startDate: string;
+  endDate?: string | null;
+  paused?: boolean;
   nextDate: string | null;
   statusLabel: string;
   shortfallPolicy: string;
+  sweepBucketId?: string | null;
+  lines: FillLine[];
   lastOutcome: { statusLabel: string; allocatedMinor: number; date?: string } | null;
+}
+
+interface LineDraft {
+  bucketId: string;
+  mode: string;
+  amount: string;
+  percent: string;
+  priority: string;
+  sourceBucketId: string;
 }
 
 function IncomePlan({ currency, buckets }: { currency: string; buckets: Bucket[] }) {

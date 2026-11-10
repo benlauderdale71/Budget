@@ -181,7 +181,7 @@ export function useLoad<T>(loader: () => Promise<T>, deps: unknown[]) {
   const [state, setState] = useState<{ data?: T; error?: string; loading: boolean }>({ loading: true });
   useEffect(() => {
     let live = true;
-    setState({ loading: true });
+    setState((current) => ({ ...current, loading: true }));
     loader()
       .then((data) => { if (live) setState({ loading: false, data }); })
       .catch((error: unknown) => { if (live) setState({ loading: false, error: error instanceof Error ? error.message : "Could not load." }); });

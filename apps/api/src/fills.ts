@@ -51,6 +51,61 @@ export function fillStatusLabel(status: string): string {
   return "Saved";
 }
 
+export interface FillPollRecord {
+  at: string;
+  applied: number;
+  skipped: number;
+  failed: number;
+  error: string | null;
+}
+
+let lastFillPoll: FillPollRecord | null = null;
+
+export function recordFillPoll(result: { applied: number; skipped: number; failed: number } | null, error?: string) {
+  lastFillPoll = {
+    at: nowIso(),
+    applied: result?.applied ?? 0,
+    skipped: result?.skipped ?? 0,
+    failed: result?.failed ?? 0,
+    error: error ?? null,
+  };
+}
+
+/** What this process will do about due fills. Production can poll here or call the due route from cron. */
+export function fillSchedulerStatus() {
+  const raw = process.env.BUDGETCENTS_FILL_POLL_MS;
+  const base = { lastRun: lastFillPoll };
+  if (raw == null || raw.trim() === "" || Number(raw) === 0) {
+    return {
+      ...base,
+      mode: "disabled" as const,
+      intervalMs: 0,
+      healthy: true,
+      note: "Automatic fills are off. Run now still works, and an owner can call POST /api/households/:id/fills/due. Set BUDGETCENTS_FILL_POLL_MS to at least 1000 to poll inside this process.",
+    };
+  }
+  const intervalMs = Number(raw);
+  if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
+    return {
+      ...base,
+      mode: "unhealthy" as const,
+      intervalMs: Number.isFinite(intervalMs) ? intervalMs : 0,
+      healthy: false,
+      note: "BUDGETCENTS_FILL_POLL_MS must be at least 1000. Automatic fills were not started.",
+    };
+  }
+  if (lastFillPoll?.error) {
+    return { ...base, mode: "unhealthy" as const, intervalMs, healthy: false, note: `The last scheduled pass failed: ${lastFillPoll.error}` };
+  }
+  return {
+    ...base,
+    mode: "poll" as const,
+    intervalMs,
+    healthy: true,
+    note: `Automatic fills poll every ${intervalMs} ms in this process. Each occurrence key is unique, so a second worker cannot apply the same date twice.`,
+  };
+}
+
 export async function listFills(db: Database, actor: Actor, householdId: string) {
   await requireMember(db, actor.id, householdId);
   const templates = await db.query(`SELECT * FROM fill_templates WHERE household_id = $1 AND archived = 0 ORDER BY name`, [householdId]);
@@ -58,7 +113,8 @@ export async function listFills(db: Database, actor: Actor, householdId: string)
   for (const template of templates) {
     out.push(await presentTemplate(db, template));
   }
-  return { fills: out, note: "A fill assigns cash that is already in the budget. It is not a bank transfer and it does not run until you use Run now or the scheduler reaches its date." };
+  const scheduler = fillSchedulerStatus();
+  return { fills: out, scheduler, note: `A fill assigns cash that is already in the budget. It is not a bank transfer, and saving or editing a schedule does not move money. ${scheduler.note}` };
 }
 
 export async function saveFillTemplate(db: Database, actor: Actor, householdId: string, templateId: string | null, body: FillTemplateInput) {

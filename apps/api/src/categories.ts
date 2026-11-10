@@ -153,9 +153,7 @@ function diff(before: BudgetResult, after: BudgetResult, bucketId: string) {
 function effectText(body: CategoryEdit, rolloverChanged: boolean, before: { current: BudgetResult; next: BudgetResult }, after: { current: BudgetResult; next: BudgetResult }) {
   if (!rolloverChanged) return "The name, target, and other details were saved. No money moved, and the rollover rule is unchanged.";
   if (body.recalculate) {
-    const delta = after.current.readyToAssignMinor - before.current.readyToAssignMinor;
-    return `Earlier months were recalculated with this rollover rule. Ready to Assign in ${body.effectivePeriod} changes by ${delta} minor units. Transactions and assignments were not rewritten.`;
+    return `Earlier months were recalculated with this rollover rule. The Ready to Assign change for ${body.effectivePeriod} is shown with this preview. Transactions and assignments were not rewritten.`;
   }
-  const delta = after.next.readyToAssignMinor - before.next.readyToAssignMinor;
-  return `This rollover rule applies when ${body.effectivePeriod} closes. Earlier months stay as they were. Ready to Assign in the following month changes by ${delta} minor units. This edit does not assign or spend money.`;
+  return `This rollover rule applies when ${body.effectivePeriod} closes. Earlier months stay as they were. The following month's Ready to Assign change is shown with this preview. This edit does not assign or spend money.`;
 }

@@ -10,6 +10,13 @@ internal fun money(minor: Long, hidden: Boolean): String {
     return "$sign$${abs / 100}.${(abs % 100).toString().padStart(2, '0')}"
 }
 
+/** Editable amount. Privacy masking applies to displayed results, not to a field the person is changing. */
+internal fun amountField(minor: Long): String {
+    val sign = if (minor < 0) "-" else ""
+    val abs = kotlin.math.abs(minor)
+    return "$sign${abs / 100}.${(abs % 100).toString().padStart(2, '0')}"
+}
+
 internal fun percentBps(text: String): Int {
     val trimmed = text.trim()
     if (!Regex("""\d+(\.\d{1,2})?""").matches(trimmed)) throw IllegalArgumentException("Enter a percent from 0 to 100 with at most two decimal places.")

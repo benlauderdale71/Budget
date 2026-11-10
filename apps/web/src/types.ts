@@ -139,6 +139,8 @@ export interface Txn {
   version?: number;
   matchedArchivedId?: string | null;
   refundOfId?: string;
+  providerTransactionId?: string;
+  attachmentCount?: number;
 }
 
 export interface Dashboard {

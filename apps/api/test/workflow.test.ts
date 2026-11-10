@@ -266,6 +266,16 @@ describe("transaction workflow", () => {
     expect(retry.body.duplicate).toBe(true);
     expect(list.body.transactions.filter((txn: { payee: string }) => txn.payee === "Lost response")).toHaveLength(1);
     expect(after.body.totalMinor).toBe(spending.body.totalMinor);
+    const row = spending.body.rows.find((item: { transactionIds: string[] }) => item.transactionIds.includes(first.body.id));
+    const drilled = await json(await api.request(`/api/households/${home.hid}/transactions?ids=${row.transactionIds.join(",")}`, { headers: auth(home.token) }));
+    expect(drilled.body.transactions.map((txn: { id: string }) => txn.id)).toEqual(row.transactionIds);
+    const other = await json(await api.request(`/api/households/${home.hid}/transactions`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ date: "2026-11-09", accountId: account.body.id, amountMinor: -100, type: "expense", payee: "Not in the row", bankStatus: "posted", splits: [] }),
+    }));
+    const still = await json(await api.request(`/api/households/${home.hid}/transactions?ids=${first.body.id}`, { headers: auth(home.token) }));
+    expect(still.body.transactions.map((txn: { payee: string }) => txn.payee)).toEqual(["Lost response"]);
+    expect(other.status).toBe(201);
   });
 
   it("saves a dashboard layout on the user", async () => {
@@ -279,5 +289,57 @@ describe("transaction workflow", () => {
     expect(saved.body.user.onboardingStep).toBe("family");
     const reset = await json(await api.request("/api/me", { method: "PATCH", headers: auth(home.token), body: JSON.stringify({ dashboardLayout: [] }) }));
     expect(reset.body.user.dashboardLayout).toEqual([]);
+  });
+
+  it("keeps a renamed view on that user and does not treat an equal amount as the same bank record", async () => {
+    const api = await app();
+    const home = await household(api, "pages@example.com");
+    const account = await json(await api.request(`/api/households/${home.hid}/accounts`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ spaceId: home.spaceId, name: "Checking", kind: "checking", onBudget: true, openingBalanceMinor: 50000, openingDate: "2026-11-01" }),
+    }));
+    await api.request(`/api/households/${home.hid}/transactions`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ date: "2026-11-02", accountId: account.body.id, amountMinor: -800, type: "expense", payee: "Cafe", bankStatus: "posted", splits: [] }),
+    });
+    await api.request(`/api/households/${home.hid}/transactions`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ date: "2026-11-03", accountId: account.body.id, amountMinor: -800, type: "expense", payee: "Bookstore", bankStatus: "posted", splits: [] }),
+    });
+    const saved = await json(await api.request(`/api/households/${home.hid}/views`, {
+      method: "POST", headers: auth(home.token), body: JSON.stringify({ name: "Checking", query: { accountId: account.body.id, sort: "date" } }),
+    }));
+    const renamed = await json(await api.request(`/api/households/${home.hid}/views/${saved.body.id}`, {
+      method: "PATCH", headers: auth(home.token), body: JSON.stringify({ name: "Cafe watch", query: { q: "Cafe", sort: "payee" } }),
+    }));
+    expect(renamed.status).toBe(200);
+    const mine = await json(await api.request(`/api/households/${home.hid}/views`, { headers: auth(home.token) }));
+    expect(mine.body.views[0].name).toBe("Cafe watch");
+    const other = await household(api, "pages-other@example.com");
+    const hidden = await json(await api.request(`/api/households/${home.hid}/views/${saved.body.id}`, {
+      method: "PATCH", headers: auth(other.token), body: JSON.stringify({ name: "Stolen", query: {} }),
+    }));
+    expect(hidden.status).toBe(404);
+    const ofx = "<OFX><STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261102<TRNAMT>-8.00<FITID>bank-cafe-1<NAME>Cafe</STMTTRN><STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20261104<TRNAMT>-8.00<FITID>bank-diner-1<NAME>Diner</STMTTRN></OFX>";
+    const preview = await json(await api.request(`/api/households/${home.hid}/import/preview`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ spaceId: home.spaceId, format: "ofx", text: ofx }),
+    }));
+    const cafe = preview.body.rows.find((row: { payee: string }) => row.payee === "Cafe");
+    const diner = preview.body.rows.find((row: { payee: string }) => row.payee === "Diner");
+    expect(cafe.possibleMatch).toBe(true);
+    expect(cafe.duplicate).toBe(false);
+    expect(diner.possibleMatch).toBe(false);
+    const committed = await json(await api.request(`/api/households/${home.hid}/import/${preview.body.batchId}/commit`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ accountId: account.body.id, rowNumbers: [cafe.rowNumber, diner.rowNumber] }),
+    }));
+    expect(committed.body.created).toBe(2);
+    const list = await json(await api.request(`/api/households/${home.hid}/transactions?sort=payee`, { headers: auth(home.token) }));
+    const imported = list.body.transactions.find((txn: { payee: string; providerTransactionId?: string }) => txn.payee === "Cafe" && txn.providerTransactionId);
+    expect(imported.providerTransactionId).toBe("bank-cafe-1");
+    const byDate = await json(await api.request(`/api/households/${home.hid}/transactions?sort=date&limit=100`, { headers: auth(home.token) }));
+    const ids = (rows: { id: string }[]) => rows.map((row) => row.id).sort();
+    expect(ids(list.body.transactions)).toEqual(ids(byDate.body.transactions));
   });
 });

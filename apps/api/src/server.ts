@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runDueFills } from "./fills.js";
+import { recordFillPoll, runDueFills } from "./fills.js";
 import { createApp, demoLoginAllowed } from "./http.js";
 import { openDatabase } from "./db.js";
 import { ensureDemo } from "./seed.js";
@@ -47,10 +47,18 @@ serve({ fetch: app.fetch, port }, () => {
   console.log(`BudgetCents API listening on http://127.0.0.1:${port}`);
   console.log(`Serving the web build from ${webRoot}`);
   if (demoLoginAllowed()) console.log("Sample household login is enabled for this environment.");
-  if (Number.isFinite(fillPollMs) && fillPollMs > 0) {
+  if (Number.isFinite(fillPollMs) && fillPollMs >= 1000) {
     setInterval(() => {
-      runDueFills(db).catch((error) => console.error("Scheduled fill failed", error));
+      runDueFills(db)
+        .then((result) => recordFillPoll(result))
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : "Scheduled fill failed";
+          recordFillPoll(null, message);
+          console.error("Scheduled fill failed", error);
+        });
     }, fillPollMs);
     console.log(`Scheduled envelope fills poll every ${fillPollMs} ms. Unset BUDGETCENTS_FILL_POLL_MS to leave fills for Run now or an operator call.`);
+  } else if (process.env.BUDGETCENTS_FILL_POLL_MS && Number(process.env.BUDGETCENTS_FILL_POLL_MS) !== 0) {
+    console.error("BUDGETCENTS_FILL_POLL_MS must be at least 1000. Automatic fills were not started.");
   }
 });

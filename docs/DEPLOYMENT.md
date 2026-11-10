@@ -40,7 +40,11 @@ Dates use the household time zone's calendar day. Weekly and custom schedules ad
 
 Missed dates are recorded as Skipped and allocate nothing. A restart does not apply a backlog. At most the occurrence dated today is applied. If a schedule is more than 36 dates behind, it is paused after those skips. Pause and resume do not move money. Resume skips dates that already passed.
 
-Development runs a fill when someone uses Run now. The API also accepts `POST /api/households/:id/fills/due` for an owner or admin. Production can set `BUDGETCENTS_FILL_POLL_MS` to a positive number of milliseconds and the server process will call the same due-fill function on that interval. Leave it unset when an external cron calls the due route instead. The poll is off by default so tests and a normal `npm start` do not move money in the background.
+Development runs a fill when someone uses Run now. An owner or admin can also call `POST /api/households/:id/fills/due`. That route accepts `today=YYYY-MM-DD` for a controlled check. Saving or editing a template does not call it.
+
+Automatic scheduling is off unless `BUDGETCENTS_FILL_POLL_MS` is an integer of at least 1000. The process then polls on that interval. `GET /api/health` reports `fills.mode` as `disabled`, `poll`, or `unhealthy`, with `healthy` and the last run. The plan page repeats that note. Unset, empty, or `0` is disabled and healthy: Run now and the due route still work. A value below 1000 is unhealthy and the poll does not start. A poll that throws is unhealthy until a later poll succeeds. Leave the variable unset when an external scheduler calls the due route instead. Two workers are safe because the occurrence key is unique and the household row is locked for the apply. The embedded database used in development runs one transaction at a time; the uniqueness check in tests is sequential. Postgres holds the row lock across the transaction.
+
+The poll is off by default so tests and a normal `npm start` do not move money in the background. A fill still does not change an account balance, net worth, income, spending, or the bank-transaction count. It only assigns cash that is already in the budget.
 
 ## Demo
 

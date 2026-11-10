@@ -6,7 +6,7 @@ The project is `android/`. Application id `com.budgetcents.app`. Version `1.0.0`
 
 Checked against Google Play’s target API page on November 10, 2026: new phone and tablet apps must target Android 16 (API 36). The extension window cited on that page ended November 1, 2026. This project sets `compileSdk` and `targetSdk` to 36 and `minSdk` to 26.
 
-The release built on November 10, 2026 with Android Gradle Plugin 8.13.0, Gradle 8.13, and Kotlin 2.0.21. That plugin release supports API 36. The command `./gradlew assembleRelease bundleRelease` completed with exit code 0 against the installed Android 36 platform. The log for that run did not print the older warning that plugin 8.7.3 was tested only through compile SDK 35. No emulator or device was available in the build environment, so the release binary was not launched.
+The project builds with Android Gradle Plugin 8.13.0, Gradle 8.13, and Kotlin 2.0.21. That plugin release supports API 36. No emulator or `adb` binary was available, so no Android screen was launched.
 
 ## Artifacts
 
@@ -14,7 +14,7 @@ The release built on November 10, 2026 with Android Gradle Plugin 8.13.0, Gradle
 
 `./gradlew bundleRelease` writes `android/app/build/outputs/bundle/release/app-release.aab`.
 
-Both are signed with the keystore from `BUDGETCENTS_KEYSTORE` or `~/budgetcents-release.jks`, alias `budgetcents`. The keystore used for the build in this workspace is a development key. It is not in git. Replace it with the key you will enroll in Play App Signing before you upload. These files are not published to Google Play.
+Those production tasks require `BUDGETCENTS_KEYSTORE`, `BUDGETCENTS_STORE_PASSWORD`, `BUDGETCENTS_KEY_ALIAS`, and `BUDGETCENTS_KEY_PASSWORD`. They do not fall back to a development keystore. Without all four, the build stops before it signs. `./gradlew assembleDevRelease` and `./gradlew bundleDevRelease` are the explicit development-signed builds. They use `BUDGETCENTS_DEV_KEYSTORE` or `~/budgetcents-release.jks`, alias `budgetcents`, unless `BUDGETCENTS_DEV_STORE_PASSWORD`, `BUDGETCENTS_DEV_KEY_ALIAS`, and `BUDGETCENTS_DEV_KEY_PASSWORD` override the local defaults. That development key is not a Play upload key, it is not in git, and this app is not published.
 
 ## What the app does
 

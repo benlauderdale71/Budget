@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
-import { deleteFill, fillHistory, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
+import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { planRestore } from "./restore.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, totp, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
@@ -152,7 +152,7 @@ export function createApp(db: Database) {
     return mapUser(rows[0]);
   }
 
-  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0" }));
+  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus() }));
 
   app.post("/api/auth/register", async (c) => {
     const body = z.object({
@@ -484,7 +484,11 @@ export function createApp(db: Database) {
     const q = (c.req.query("q") ?? "").toLowerCase();
     const min = c.req.query("min") ? Number(c.req.query("min")) : null;
     const max = c.req.query("max") ? Number(c.req.query("max")) : null;
+    const idFilter = c.req.query("ids");
+    const idSet = idFilter ? new Set(idFilter.split(",").map((item) => item.trim()).filter(Boolean)) : null;
+    if (idSet && idSet.size > 200) throw new ApiError(400, "Choose a smaller set of transactions.");
     let rows = loaded.input.transactions.filter((txn) => {
+      if (idSet && !idSet.has(txn.id)) return false;
       if (q && !`${txn.payee} ${txn.notes ?? ""} ${txn.originalDescription ?? ""} ${txn.checkNumber ?? ""}`.toLowerCase().includes(q)) return false;
       if (c.req.query("accountId") && txn.accountId !== c.req.query("accountId") && txn.counterAccountId !== c.req.query("accountId")) return false;
       if (c.req.query("bucketId") && !txn.splits.some((split) => split.bucketId === c.req.query("bucketId"))) return false;
@@ -498,19 +502,29 @@ export function createApp(db: Database) {
       if (max != null && abs > max) return false;
       return true;
     });
-    rows = rows.sort((a, b) => (a.date === b.date ? b.id.localeCompare(a.id) : a.date < b.date ? 1 : -1));
+    const sort = c.req.query("sort") === "payee" ? "payee" : "date";
+    rows = rows.sort((a, b) => {
+      if (sort === "payee") {
+        const payee = a.payee.localeCompare(b.payee);
+        if (payee !== 0) return payee;
+      }
+      return a.date === b.date ? b.id.localeCompare(a.id) : a.date < b.date ? 1 : -1;
+    });
     const offset = Math.max(0, Number(c.req.query("offset") ?? 0) || 0);
     const limitN = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 50) || 50));
     const page = rows.slice(offset, offset + limitN);
     const links = await db.query(`SELECT keeper_id, archived_id FROM transaction_matches WHERE household_id = $1`, [loaded.member.householdId]);
     const matched = new Map(links.map((link) => [String(link.keeper_id), String(link.archived_id)]));
+    const receipts = await db.query(`SELECT transaction_id, count(*) AS n FROM attachments WHERE household_id = $1 AND transaction_id IS NOT NULL GROUP BY transaction_id`, [loaded.member.householdId]);
+    const receiptCount = new Map(receipts.map((row) => [String(row.transaction_id), num(row.n)]));
     const nextOffset = offset + page.length < rows.length ? offset + page.length : null;
     return c.json({
       total: rows.length,
       offset,
       limit: limitN,
+      sort,
       nextOffset,
-      transactions: page.map((txn) => ({ ...txn, matchedArchivedId: matched.get(txn.id) ?? null })),
+      transactions: page.map((txn) => ({ ...txn, matchedArchivedId: matched.get(txn.id) ?? null, attachmentCount: receiptCount.get(txn.id) ?? 0 })),
     });
   });
 
@@ -762,11 +776,36 @@ export function createApp(db: Database) {
         tag: z.string().optional(),
         from: z.string().optional(),
         to: z.string().optional(),
+        sort: z.string().optional(),
       }),
     }).parse(await c.req.json());
     const viewId = id();
     await db.query(`INSERT INTO saved_views (id, household_id, user_id, name, query_json, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [viewId, member.householdId, me.id, body.name, JSON.stringify(body.query), nowIso()]);
     return c.json({ id: viewId }, 201);
+  });
+
+  app.patch("/api/households/:hid/views/:id", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const body = z.object({
+      name: z.string().min(1).max(80),
+      query: z.object({
+        q: z.string().optional(),
+        accountId: z.string().optional(),
+        bucketId: z.string().optional(),
+        review: z.string().optional(),
+        tag: z.string().optional(),
+        from: z.string().optional(),
+        to: z.string().optional(),
+        sort: z.string().optional(),
+      }),
+    }).parse(await c.req.json());
+    const updated = await db.query(
+      `UPDATE saved_views SET name = $1, query_json = $2 WHERE id = $3 AND household_id = $4 AND user_id = $5 RETURNING id`,
+      [body.name, JSON.stringify(body.query), c.req.param("id"), member.householdId, me.id],
+    );
+    if (!updated.length) throw new ApiError(404, "Not found");
+    return c.json({ ok: true });
   });
 
   app.delete("/api/households/:hid/views/:id", async (c) => {
@@ -1183,6 +1222,7 @@ export function createApp(db: Database) {
     const csv = toCsv(loaded.input.transactions.map((txn) => ({
       Date: txn.date, Payee: txn.payee, Amount: (txn.amountMinor / 100).toFixed(2), Account: txn.accountId,
       Category: txn.splits.map((split) => split.bucketId ?? "").join("|"), Check: txn.checkNumber ?? "", Notes: txn.notes ?? "",
+      RefundOf: txn.refundOfId ?? "",
     })));
     return new Response(csv, { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": "attachment; filename=budgetcents-transactions.csv" } });
   });
@@ -1264,14 +1304,19 @@ export function createApp(db: Database) {
     assertWrite(member);
     const body = z.object({ spaceId: z.string(), profile: z.string().optional(), format: z.enum(["csv", "ofx", "qif"]), text: z.string().max(2_000_000), mapping: z.record(z.string()).optional() }).parse(await c.req.json());
     const profile = IMPORT_PROFILES.find((item) => item.id === body.profile);
-    let rows: { rowNumber: number; date?: string; amountMinor?: number; payee?: string; errors: string[]; duplicateKey?: string }[] = [];
+    let rows: { rowNumber: number; date?: string; amountMinor?: number; payee?: string; fitId?: string; errors: string[]; duplicateKey?: string }[] = [];
     if (body.format === "csv") rows = mapCsv(body.text, { ...(profile?.map ?? {}), ...body.mapping, date: body.mapping?.date ?? profile?.map.date ?? "Date", amount: body.mapping?.amount ?? profile?.map.amount ?? "Amount", payee: body.mapping?.payee ?? profile?.map.payee ?? "Payee" });
     if (body.format === "ofx") rows = parseOfx(body.text).map((txn, index) => ({ rowNumber: index + 1, ...txn, errors: txn.date ? [] : ["Missing date"], duplicateKey: duplicateKey({ date: txn.date, amountMinor: txn.amountMinor, description: txn.payee, account: "" }) }));
     if (body.format === "qif") rows = parseQif(body.text).map((txn, index) => ({ rowNumber: index + 1, ...txn, errors: [], duplicateKey: duplicateKey({ date: txn.date, amountMinor: txn.amountMinor, description: txn.payee, account: "" }) }));
-    const existing = await db.query(`SELECT date, amount_minor, payee, account_id FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId]);
+    const existing = await db.query(`SELECT date, amount_minor, payee, provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId]);
     const keys = new Set(existing.map((txn) => duplicateKey({ date: String(txn.date), amountMinor: num(txn.amount_minor), description: String(txn.payee), account: "" })));
+    const providerIds = new Set(existing.map((txn) => str(txn.provider_transaction_id)).filter((value): value is string => !!value));
     await assertSpace(me.id, member.householdId, body.spaceId);
-    const preview = rows.map((row) => ({ ...row, duplicate: row.duplicateKey ? keys.has(row.duplicateKey) : false }));
+    const preview = rows.map((row) => {
+      const sameProvider = !!row.fitId && providerIds.has(row.fitId);
+      const sameLine = row.duplicateKey ? keys.has(row.duplicateKey) : false;
+      return { ...row, duplicate: sameProvider, possibleMatch: !sameProvider && sameLine };
+    });
     const batchId = id();
     await db.query(`INSERT INTO import_batches (id, household_id, space_id, source, status, preview_json, created_at) VALUES ($1,$2,$3,$4,'preview',$5,$6)`, [batchId, member.householdId, body.spaceId, body.profile ?? body.format, JSON.stringify(preview), nowIso()]);
     return c.json({ batchId, rows: preview, missing: profile?.missing ?? ["Map the columns you have. Fields that are not in the file are left blank and are not invented."], profiles: IMPORT_PROFILES.map((item) => ({ id: item.id, label: item.label, missing: item.missing })) });
@@ -1287,7 +1332,7 @@ export function createApp(db: Database) {
     if (!batches.length) throw new ApiError(404, "Not found");
     await assertSpace(me.id, member.householdId, String(batches[0].space_id));
     if (String(account.space_id) !== String(batches[0].space_id)) throw new ApiError(400, "Choose an account in the same space as the import.");
-    const rows = JSON.parse(String(batches[0].preview_json)) as { rowNumber: number; date?: string; amountMinor?: number; payee?: string; errors: string[]; duplicate?: boolean }[];
+    const rows = JSON.parse(String(batches[0].preview_json)) as { rowNumber: number; date?: string; amountMinor?: number; payee?: string; fitId?: string; errors: string[]; duplicate?: boolean }[];
     let created = 0;
     await db.tx(async () => {
       for (const row of rows) {
@@ -1295,7 +1340,7 @@ export function createApp(db: Database) {
         const saved = await insertTransaction(me, member.householdId, {
           spaceId: String(batches[0].space_id), date: row.date, accountId: body.accountId, amountMinor: row.amountMinor,
           type: row.amountMinor >= 0 ? "income" : "expense", payee: row.payee || "Imported", splits: [], bankStatus: "posted", importBatchId: String(batches[0].id), reviewStatus: "needs_review",
-          opId: `import:${batches[0].id}:${row.rowNumber}`,
+          providerTransactionId: row.fitId, opId: `import:${batches[0].id}:${row.rowNumber}`,
         });
         if (!saved.duplicate) created += 1;
       }

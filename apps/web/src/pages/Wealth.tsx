@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, downloadFile } from "../api.js";
 import { parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -114,7 +115,7 @@ export function Reports() {
   const session = useSession();
   const [by, setBy] = useState("bucket");
   const [payee, setPayee] = useState("");
-  const spending = useLoad(() => api<{ rows: { label: string; amountMinor: number }[]; totalMinor: number; formula: string; from: string; to: string }>(scoped(session.householdId, `/reports/spending?by=${by}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, by]);
+  const spending = useLoad(() => api<{ rows: { key: string; label: string; amountMinor: number; transactionIds: string[] }[]; totalMinor: number; formula: string; from: string; to: string }>(scoped(session.householdId, `/reports/spending?by=${by}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, by]);
   const rate = useLoad(() => api<{ rateBps: number | null; formula: string; incomeMinor: number; spendingMinor: number }>(scoped(session.householdId, "/reports/savings-rate", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const watch = useLoad(() => payee ? api<{ actualMinor: number; formula: string }>(scoped(session.householdId, `/reports/watchlist?payee=${encodeURIComponent(payee)}`, session.spaceId)) : Promise.resolve(null), [payee, session.householdId, session.spaceId]);
   const flow = useLoad(() => api<{ links: { source: string; target: string; amountMinor: number }[] }>(scoped(session.householdId, "/reports/sankey", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
@@ -130,7 +131,7 @@ export function Reports() {
       </div>
       <p>Total <Money minor={spending.data.totalMinor} /> from {spending.data.from} to {spending.data.to}.</p>
       <ul className="list">{spending.data.rows.map((row) => (
-        <li key={row.label}><span style={{ flex: 1 }}>{row.label}<span className="bar" style={{ marginTop: 6 }}><span style={{ width: `${Math.abs(row.amountMinor) / max * 100}%` }} /></span></span><Money minor={row.amountMinor} /></li>
+        <li key={row.key || row.label}><span style={{ flex: 1 }}>{row.transactionIds.length ? <Link to={`/activity?ids=${encodeURIComponent(row.transactionIds.join(","))}`}>{row.label}</Link> : row.label}<span className="bar" style={{ marginTop: 6 }}><span style={{ width: `${Math.abs(row.amountMinor) / max * 100}%` }} /></span></span><Money minor={row.amountMinor} /></li>
       ))}</ul>
       <article className="card"><h2>Savings rate</h2><p>{rate.data.rateBps == null ? "Needs income in the period." : `${(rate.data.rateBps / 100).toFixed(1)}%`}</p><p className="formula">{rate.data.formula}</p></article>
       <article className="card"><h2>Cash flow</h2><p className="muted">Income flows into spending, then into category groups. Transfers and card payments are not a second expense.</p>{flow.data ? <SankeyChart links={flow.data.links} /> : <p className="muted">{flow.error ?? "Loading cash flow…"}</p>}</article>

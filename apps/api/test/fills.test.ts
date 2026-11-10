@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/http.js";
-import { runDueFills } from "../src/fills.js";
+import { fillSchedulerStatus, runDueFills } from "../src/fills.js";
 import { openMemoryDatabase, type Database } from "../src/db.js";
 
 let db: Database;
 
 afterEach(async () => {
-  await db?.close();
+  const current = db as Database | undefined;
+  db = undefined as unknown as Database;
+  await current?.close();
 });
 
 async function app() {
@@ -371,5 +373,61 @@ describe("scheduled fills", () => {
     const dash = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
     expect(dash.body.budget.buckets.find((item: { bucketId: string }) => item.bucketId === groceries.id).availableMinor).toBe(4000);
     expect(dash.body.budget.readyToAssignMinor).toBe(1000);
+  });
+
+  it("edits a template without moving money, then a second scheduler pass does not allocate again", async () => {
+    const api = await app();
+    const home = await household(api, "edit-fill@example.com");
+    const groceries = home.bucket("Groceries");
+    await api.request(`/api/households/${home.hid}/accounts`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ spaceId: home.spaceId, name: "Checking", kind: "checking", onBudget: true, openingBalanceMinor: 10000, openingDate: "2026-11-01" }),
+    });
+    const before = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
+    const created = await json(await api.request(`/api/households/${home.hid}/fills`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ spaceId: home.spaceId, name: "Payday", cadence: "monthly", startDate: "2026-11-10", shortfallPolicy: "partial", lines: [{ bucketId: groceries.id, mode: "add", amountMinor: 1000, priority: 1 }] }),
+    }));
+    const edited = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}`, {
+      method: "PATCH", headers: auth(home.token),
+      body: JSON.stringify({ ...created.body, name: "Payday plus", lines: [{ bucketId: groceries.id, mode: "add", amountMinor: 1500, priority: 1 }] }),
+    }));
+    expect(edited.status).toBe(200);
+    expect(edited.body.version).toBe(2);
+    expect(edited.body.name).toBe("Payday plus");
+    const stale = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}`, {
+      method: "PATCH", headers: auth(home.token),
+      body: JSON.stringify({ ...created.body, version: 1, name: "Old screen" }),
+    }));
+    expect(stale.status).toBe(409);
+    const mid = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
+    expect(mid.body.budget.readyToAssignMinor).toBe(before.body.budget.readyToAssignMinor);
+    expect(await db.query(`SELECT id FROM fill_occurrences WHERE template_id = $1`, [created.body.id])).toHaveLength(0);
+    const txns = await db.query(`SELECT id FROM transactions WHERE household_id = $1`, [home.hid]);
+    const first = await runDueFills(db, { today: "2026-11-10", householdId: home.hid });
+    const second = await runDueFills(db, { today: "2026-11-10", householdId: home.hid });
+    expect(first.applied).toBe(1);
+    expect(second.applied).toBe(0);
+    expect(await db.query(`SELECT id FROM fill_occurrences WHERE template_id = $1 AND status = 'applied'`, [created.body.id])).toHaveLength(1);
+    expect(await db.query(`SELECT id FROM transactions WHERE household_id = $1`, [home.hid])).toHaveLength(txns.length);
+    const after = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
+    expect(after.body.budget.readyToAssignMinor).toBe(before.body.budget.readyToAssignMinor - 1500);
+    expect(after.body.budget.cashPoolMinor).toBe(before.body.budget.cashPoolMinor);
+    expect(after.body.netWorth.netMinor).toBe(before.body.netWorth.netMinor);
+  });
+});
+
+describe("fill scheduler status", () => {
+  it("stays disabled until the poll interval is at least one second", () => {
+    const previous = process.env.BUDGETCENTS_FILL_POLL_MS;
+    delete process.env.BUDGETCENTS_FILL_POLL_MS;
+    expect(fillSchedulerStatus().mode).toBe("disabled");
+    expect(fillSchedulerStatus().healthy).toBe(true);
+    process.env.BUDGETCENTS_FILL_POLL_MS = "50";
+    expect(fillSchedulerStatus().mode).toBe("unhealthy");
+    process.env.BUDGETCENTS_FILL_POLL_MS = "60000";
+    expect(fillSchedulerStatus()).toMatchObject({ mode: "poll", healthy: true, intervalMs: 60000 });
+    if (previous == null) delete process.env.BUDGETCENTS_FILL_POLL_MS;
+    else process.env.BUDGETCENTS_FILL_POLL_MS = previous;
   });
 });

@@ -72,30 +72,68 @@ export function Accounts() {
 
 function Reconcile({ accounts, currency, selected, onSelect }: { accounts: Dashboard["accounts"]; currency: string; selected: string; onSelect: (id: string) => void }) {
   const session = useSession();
-  const [result, setResult] = useState("");
+  const [result, setResult] = useState<{ differenceMinor: number; locked: boolean; formula: string; clearedBalanceMinor: number } | null>(null);
+  const [adjustNote, setAdjustNote] = useState("");
   const txns = useLoad(() => selected ? api<{ transactions: Txn[] }>(scoped(session.householdId, `/transactions?accountId=${selected}&limit=100`, session.spaceId)) : Promise.resolve({ transactions: [] as Txn[] }), [selected, session.tick, session.householdId]);
   const form = useFormError();
+  const adjust = useFormError();
+  const reconciled = txns.data?.transactions.filter((txn) => txn.reconciled) ?? [];
   return (
-    <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
-      const data = new FormData(event.currentTarget);
-      const clearedIds = txns.data?.transactions.filter((txn) => data.get(`clear-${txn.id}`) === "on").map((txn) => txn.id) ?? [];
-      const response = await api<{ differenceMinor: number; locked: boolean; formula: string }>(scoped(session.householdId, "/reconcile"), { method: "POST", body: JSON.stringify({
-        accountId: data.get("accountId"), statementDate: data.get("date"), statementBalanceMinor: parseAmount(String(data.get("balance")), currency), clearedIds, lock: data.get("lock") === "on",
-      }) });
-      setResult(`${response.formula} Difference ${response.differenceMinor}. ${response.locked ? "Locked." : "Not locked."}`);
-      session.bump();
-    })}>
-      <h2>Reconcile</h2>
-      <Field label="Account"><select name="accountId" value={selected} onChange={(event) => onSelect(event.target.value)} required><option value="">Choose</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-      <Field label="Statement date"><input name="date" type="date" required defaultValue={todayISO()} /></Field>
-      <Field label="Statement balance"><input name="balance" required inputMode="decimal" /></Field>
-      {txns.data?.transactions.map((txn) => (
-        <label key={txn.id} className="link-row"><span><input type="checkbox" name={`clear-${txn.id}`} defaultChecked={txn.cleared} /> {txn.date} {txn.payee}</span><Money minor={txn.amountMinor} /></label>
-      ))}
-      <label className="field"><span><input type="checkbox" name="lock" /> Lock when the difference is zero</span></label>
-      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-      {result ? <Notice>{result}</Notice> : null}
-      <button className="btn" type="submit" disabled={!selected}>Compare</button>
-    </form>
+    <div className="card" style={{ marginTop: 16 }}>
+      <form onSubmit={(event) => form.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        const clearedIds = txns.data?.transactions.filter((txn) => data.get(`clear-${txn.id}`) === "on").map((txn) => txn.id) ?? [];
+        const response = await api<{ differenceMinor: number; locked: boolean; formula: string; clearedBalanceMinor: number }>(scoped(session.householdId, "/reconcile"), { method: "POST", body: JSON.stringify({
+          accountId: data.get("accountId"), statementDate: data.get("date"), statementBalanceMinor: parseAmount(String(data.get("balance")), currency), clearedIds, lock: data.get("lock") === "on",
+        }) });
+        setResult(response);
+        setAdjustNote("");
+        session.bump();
+      })}>
+        <h2>Reconcile</h2>
+        <p className="muted">A transaction from another account is rejected. Locking is allowed only when the difference is zero. Changing a locked amount later asks for a reason.</p>
+        <Field label="Account"><select name="accountId" value={selected} onChange={(event) => onSelect(event.target.value)} required><option value="">Choose</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        <Field label="Statement date"><input name="date" type="date" required defaultValue={todayISO()} /></Field>
+        <Field label="Statement balance"><input name="balance" required inputMode="decimal" /></Field>
+        {txns.data?.transactions.map((txn) => (
+          <label key={txn.id} className="link-row"><span><input type="checkbox" name={`clear-${txn.id}`} defaultChecked={txn.cleared || txn.reconciled} /> {txn.date} {txn.payee} · {txn.reconciled ? "Reconciled" : txn.cleared ? "Cleared" : "Not cleared"}</span><Money minor={txn.amountMinor} /></label>
+        ))}
+        <label className="field"><span><input type="checkbox" name="lock" /> Lock when the difference is zero</span></label>
+        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+        {result ? <Notice>{result.formula} Cleared balance <Money minor={result.clearedBalanceMinor} />. Difference <Money minor={result.differenceMinor} />. {result.locked ? "Locked." : "Not locked."}</Notice> : null}
+        <button className="btn" type="submit" disabled={!selected}>Compare</button>
+      </form>
+      {result && result.differenceMinor !== 0 ? (
+        <form style={{ marginTop: 12 }} onSubmit={(event) => adjust.run(event, async () => {
+          const data = new FormData(event.currentTarget);
+          const response = await api<{ note: string }>(scoped(session.householdId, "/reconcile/adjustment"), { method: "POST", body: JSON.stringify({
+            accountId: selected, date: data.get("date"), amountMinor: parseAmount(String(data.get("amount")), currency), payee: data.get("payee") || "Reconciliation adjustment",
+          }) });
+          setAdjustNote(response.note);
+          setResult(null);
+          session.bump();
+        })}>
+          <h3>Correct the difference</h3>
+          <p className="muted">This adds a visible register entry for the difference. It does not hide the gap inside the reconciliation.</p>
+          <Field label="Date"><input name="date" type="date" required defaultValue={todayISO()} /></Field>
+          <Field label="Adjustment amount"><input name="amount" required inputMode="decimal" defaultValue={(result.differenceMinor / 100).toFixed(2)} /></Field>
+          <Field label="Payee"><input name="payee" defaultValue="Reconciliation adjustment" /></Field>
+          {adjust.error ? <Notice kind="bad">{adjust.error}</Notice> : null}
+          <button className="btn-secondary" type="submit">Add adjustment</button>
+        </form>
+      ) : null}
+      {adjustNote ? <Notice>{adjustNote}</Notice> : null}
+      {reconciled.length ? (
+        <div style={{ marginTop: 12 }}>
+          <h3>Unlock</h3>
+          <p className="muted">Unlocking lets those amounts be edited again. It does not change the balance.</p>
+          <button className="btn-secondary" type="button" onClick={async () => {
+            await api(scoped(session.householdId, "/reconcile/unlock"), { method: "POST", body: JSON.stringify({ accountId: selected, transactionIds: reconciled.map((txn) => txn.id) }) });
+            setAdjustNote("Those transactions can be edited again.");
+            session.bump();
+          }}>Unlock reconciled transactions</button>
+        </div>
+      ) : null}
+    </div>
   );
 }
