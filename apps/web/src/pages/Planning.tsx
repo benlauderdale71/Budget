@@ -140,7 +140,7 @@ export function Debts() {
 export function Goals() {
   const session = useSession();
   const state = useLoad(() => api<{ goals: { id: string; name: string; target_minor: number; availableMinor: number; target_date: string | null }[]; spaceId: string; buckets: { id: string; name: string; systemRole?: string | null }[]; budget: { buckets: { bucketId: string; availableMinor: number }[] } }>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
-  const roadmap = useLoad(() => api<{ milestones: { id: string; label: string; complete: boolean; detail: string }[]; emergency: { gapMinor: number; formula: string } }>(scoped(session.householdId, "/roadmap", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  const roadmap = useLoad(() => api<{ milestones: { id: string; label: string; complete: boolean; detail: string }[]; emergency: { gapMinor: number; formula: string }; essential: { amountMinor: number; formula: string; sources: { name: string; monthlyMinor: number }[] } }>(scoped(session.householdId, "/roadmap", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const form = useFormError();
   if (!state.data) return state.loading ? <Loading /> : <ErrorNote message={state.error ?? "No goals"} />;
   return (
@@ -148,7 +148,7 @@ export function Goals() {
       <ul className="list">{state.data.goals.map((goal) => (
         <li key={goal.id}><span>{goal.name}{goal.target_date ? ` · ${goal.target_date}` : ""}</span><span><Money minor={goal.availableMinor} /> / <Money minor={Number(goal.target_minor)} /></span></li>
       ))}</ul>
-      {roadmap.data ? <article className="card"><h2>Roadmap</h2><ul>{roadmap.data.milestones.map((item) => <li key={item.id}>{item.complete ? "Done" : "Open"} · {item.label} · {item.detail}</li>)}</ul><p className="muted">{roadmap.data.emergency.formula} Gap <Money minor={roadmap.data.emergency.gapMinor} />. The essential-spending input is still a placeholder of $2,000 until that figure is taken from your fixed bills.</p></article> : null}
+      {roadmap.data ? <article className="card"><h2>Roadmap</h2><ul>{roadmap.data.milestones.map((item) => <li key={item.id}>{item.complete ? "Done" : "Open"} · {item.label} · {item.detail}</li>)}</ul><p>Essential monthly spending <Money minor={roadmap.data.essential.amountMinor} />.</p><p className="muted">{roadmap.data.essential.formula}</p>{roadmap.data.essential.sources.length ? <ul className="list">{roadmap.data.essential.sources.map((source) => <li key={source.name}><span>{source.name}</span><Money minor={source.monthlyMinor} /></li>)}</ul> : null}<p className="muted">{roadmap.data.emergency.formula} Gap <Money minor={roadmap.data.emergency.gapMinor} />.</p></article> : null}
       <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         await api(scoped(session.householdId, "/goals"), { method: "POST", body: JSON.stringify({ spaceId: state.data!.spaceId, name: data.get("name"), bucketId: data.get("bucketId"), targetMinor: parseAmount(String(data.get("target")), session.currency), targetDate: data.get("date") || undefined, purpose: "goal" }) });

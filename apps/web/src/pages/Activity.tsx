@@ -11,13 +11,14 @@ export function Activity() {
   const [params] = useSearchParams();
   const [open, setOpen] = useState(false);
   const query = params.get("q") ?? "";
+  const review = params.get("review") ?? "";
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
-  const list = useLoad(() => api<{ total: number; transactions: Txn[] }>(scoped(session.householdId, `/transactions?limit=80${query ? `&q=${encodeURIComponent(query)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query]);
+  const list = useLoad(() => api<{ total: number; transactions: Txn[] }>(scoped(session.householdId, `/transactions?limit=80${query ? `&q=${encodeURIComponent(query)}` : ""}${review ? `&review=${encodeURIComponent(review)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query, review]);
   if ((dash.loading || list.loading) && !list.data) return <Loading label="Loading activity" />;
   if (!dash.data || !list.data) return <ErrorNote message={dash.error || list.error || "Could not load activity"} onRetry={session.bump} />;
   const names = new Map(dash.data.accounts.map((account) => [account.id, account.name]));
   return (
-    <Page title="Activity" lede={query ? `Matches for “${query}”.` : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" onClick={() => setOpen(true)}>Add</button>}>
+    <Page title="Activity" lede={query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" onClick={() => setOpen(true)}>Add</button>}>
       <p className="muted">{list.data.total} in this view</p>
       {list.data.transactions.length === 0 ? <p className="muted">No transactions match.</p> : (
         <div className="card" style={{ overflowX: "auto" }}>
@@ -54,9 +55,13 @@ function TxnForm({ accounts, buckets, currency, spaceId, onClose }: { accounts: 
         const data = new FormData(event.currentTarget);
         const magnitude = Math.abs(parseAmount(String(data.get("amount")), currency));
         const signed = type === "income" || type === "refund" ? magnitude : -magnitude;
-        const splitRows = splits.filter((split) => split.bucketId && split.amount).map((split) => ({
-          bucketId: split.bucketId, amountMinor: Math.abs(parseAmount(split.amount, currency)), role: type === "income" ? "income" : type === "refund" ? "refund" : "expense",
+        const splitRows = splits.filter((split) => split.amount).map((split) => ({
+          bucketId: split.bucketId || null, amountMinor: Math.abs(parseAmount(split.amount, currency)), role: type === "income" ? "income" as const : type === "refund" ? "refund" as const : "expense" as const,
         }));
+        if (splitRows.length) {
+          const sum = splitRows.reduce((total, split) => total + split.amountMinor, 0);
+          if (sum !== magnitude) throw new Error("Split amounts have to add up to the transaction total. Nothing was saved.");
+        }
         const created = await api<{ id: string }>(scoped(session.householdId, "/transactions"), { method: "POST", body: JSON.stringify({
           spaceId, date: data.get("date"), accountId: data.get("accountId"), counterAccountId: data.get("counterAccountId") || undefined,
           amountMinor: signed, type, payee: data.get("payee"), notes: data.get("notes") || undefined,

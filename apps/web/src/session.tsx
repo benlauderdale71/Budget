@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, flushQueue, queuedCount } from "./api.js";
+import { api, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import type { HouseholdRow, User } from "./types.js";
 
 interface SessionValue {
@@ -42,7 +42,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const data = await api<{ user: User; households: HouseholdRow[] }>("/api/me");
     setUser(data.user);
     setHouseholds(data.households);
+    setQueueOwner(data.user.id);
     applyTheme(data.user.theme);
+    const sent = await flushQueue();
+    setQueued(queuedCount());
+    if (sent) setTick((item) => item + 1);
     const stored = localStorage.getItem("budgetcents.household");
     const next = data.households.find((item) => item.id === stored)?.id ?? data.households[0]?.id ?? "";
     setHouseholdId(next);
@@ -64,15 +68,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const onOff = () => setOffline(true);
     const onOn = () => {
       setOffline(false);
-      flushQueue().then(() => setQueued(queuedCount()));
+      flushQueue().then((sent) => {
+        setQueued(queuedCount());
+        if (sent) setTick((item) => item + 1);
+      });
     };
+    const onQueue = () => setQueued(queuedCount());
     window.addEventListener("budgetcents-unauthorized", onAuth);
     window.addEventListener("offline", onOff);
     window.addEventListener("online", onOn);
+    window.addEventListener("budgetcents-queue", onQueue);
     return () => {
       window.removeEventListener("budgetcents-unauthorized", onAuth);
       window.removeEventListener("offline", onOff);
       window.removeEventListener("online", onOn);
+      window.removeEventListener("budgetcents-queue", onQueue);
     };
   }, []);
 

@@ -8,6 +8,7 @@ import { Accounts } from "./pages/Accounts.js";
 import { Bills, Debts, Forecast, Goals } from "./pages/Planning.js";
 import { Investments, Reports, Retirement, Wealth } from "./pages/Wealth.js";
 import { Assistant, Cases, Checklists, Credit, Household, ImportPage, Learn, More, Providers, Rules, Settings } from "./pages/Tools.js";
+import { AccountDeletion, PrivacyPolicy } from "./pages/Legal.js";
 
 const primary = [
   ["/", "Home"],
@@ -83,6 +84,8 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<Auth />} />
+      <Route path="/privacy" element={<PrivacyPolicy />} />
+      <Route path="/delete-account" element={<AccountDeletion />} />
       <Route path="/invite/:token" element={<Invite />} />
       <Route path="*" element={<Shell><Routes>
         <Route path="/" element={<Home />} />

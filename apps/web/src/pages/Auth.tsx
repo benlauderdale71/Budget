@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { useSession } from "../session.js";
 import { Field, Notice } from "../ui.js";
@@ -103,6 +103,7 @@ export function Auth() {
           <button className="btn-secondary" type="submit">Open the sample household</button>
           <p className="muted">Alex Rivera’s numbers are sample data, not a live bank connection.</p>
         </form>
+        <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link></p>
       </section>
     </div>
   );

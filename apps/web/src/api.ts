@@ -1,3 +1,5 @@
+import { partitionQueue, withStableOpId, type QueuedOp } from "./queue.js";
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -8,65 +10,86 @@ export class ApiError extends Error {
 }
 
 const QUEUE = "budgetcents.queue";
+const OWNER = "budgetcents.userId";
 
-interface Queued {
-  path: string;
-  method: string;
-  body?: string;
-  at: number;
-}
-
-function readQueue(): Queued[] {
+function readQueue(): QueuedOp[] {
   try {
-    return JSON.parse(localStorage.getItem(QUEUE) || "[]") as Queued[];
+    const parsed = JSON.parse(localStorage.getItem(QUEUE) || "[]") as QueuedOp[];
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
-function remember(path: string, init: RequestInit) {
-  const method = (init.method ?? "GET").toUpperCase();
-  if (method === "GET" || !path.includes("/transactions")) return;
-  const queue = readQueue();
-  queue.push({ path, method, body: typeof init.body === "string" ? init.body : undefined, at: Date.now() });
+function writeQueue(queue: QueuedOp[]) {
   localStorage.setItem(QUEUE, JSON.stringify(queue.slice(-40)));
+  window.dispatchEvent(new Event("budgetcents-queue"));
+}
+
+export function setQueueOwner(userId: string | null) {
+  if (userId) localStorage.setItem(OWNER, userId);
+}
+
+function currentOwner(): string | null {
+  return localStorage.getItem(OWNER);
+}
+
+function remember(path: string, method: string, body: string | undefined, opId?: string) {
+  const ownerId = currentOwner();
+  if (!ownerId || method === "GET" || !path.includes("/transactions")) return;
+  const queue = readQueue();
+  if (opId && queue.some((item) => item.opId === opId && item.ownerId === ownerId && item.path === path)) return;
+  queue.push({ path, method, body, at: Date.now(), ownerId, opId });
+  writeQueue(queue);
 }
 
 export function queuedCount(): number {
-  return readQueue().length;
+  const ownerId = currentOwner();
+  return readQueue().filter((item) => ownerId && item.ownerId === ownerId).length;
 }
 
 export async function flushQueue(): Promise<number> {
+  const token = localStorage.getItem("budgetcents.token");
+  const ownerId = currentOwner();
   const queue = readQueue();
-  if (!queue.length) return 0;
-  const left: Queued[] = [];
+  if (!token || !ownerId) return 0;
+  const { send, keep } = partitionQueue(queue, ownerId);
+  const left: QueuedOp[] = [...keep];
   let sent = 0;
-  for (const item of queue) {
+  for (const item of send) {
     try {
-      await api(item.path, { method: item.method, body: item.body });
+      await api(item.path, { method: item.method, body: item.body }, { queue: false });
       sent += 1;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 0) left.push(item);
+      if (error instanceof ApiError && (error.status === 0 || error.status === 401 || error.status >= 500)) left.push(item);
     }
   }
-  localStorage.setItem(QUEUE, JSON.stringify(left));
+  writeQueue(left);
   return sent;
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+export async function api<T>(path: string, init: RequestInit = {}, options: { queue?: boolean } = {}): Promise<T> {
   const token = localStorage.getItem("budgetcents.token");
+  const method = (init.method ?? "GET").toUpperCase();
+  const stamped = typeof init.body === "string" ? withStableOpId(path, method, init.body, () => crypto.randomUUID()) : { body: undefined as string | undefined };
+  const body = typeof init.body === "string" ? stamped.body : init.body;
   const headers = new Headers(init.headers);
-  if (init.body && typeof init.body === "string" && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (body && typeof body === "string" && !headers.has("content-type")) headers.set("content-type", "application/json");
   if (token) headers.set("authorization", `Bearer ${token}`);
   let response: Response;
   try {
-    response = await fetch(path, { ...init, headers });
+    response = await fetch(path, { ...init, method, body, headers });
   } catch {
-    remember(path, init);
+    if (options.queue !== false) remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
     throw new ApiError(0, "You are offline. A transaction entry was kept on this device and will send when the connection returns.");
   }
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: { error?: string } | null = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
   if (response.status === 401) {
     localStorage.removeItem("budgetcents.token");
     window.dispatchEvent(new Event("budgetcents-unauthorized"));

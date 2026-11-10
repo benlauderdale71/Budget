@@ -3,7 +3,7 @@ import { api, downloadFile } from "../api.js";
 import { parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
-import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
+import { ErrorNote, Field, Loading, Money, Notice, Page, SankeyChart, useFormError, useLoad } from "../ui.js";
 
 export function Wealth() {
   const session = useSession();
@@ -116,7 +116,8 @@ export function Reports() {
   const [payee, setPayee] = useState("");
   const spending = useLoad(() => api<{ rows: { label: string; amountMinor: number }[]; totalMinor: number; formula: string; from: string; to: string }>(scoped(session.householdId, `/reports/spending?by=${by}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, by]);
   const rate = useLoad(() => api<{ rateBps: number | null; formula: string; incomeMinor: number; spendingMinor: number }>(scoped(session.householdId, "/reports/savings-rate", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
-  const watch = useLoad(() => payee ? api<{ totalMinor: number; formula: string }>(scoped(session.householdId, `/reports/watchlist?payee=${encodeURIComponent(payee)}`, session.spaceId)) : Promise.resolve(null), [payee, session.householdId, session.spaceId]);
+  const watch = useLoad(() => payee ? api<{ actualMinor: number; formula: string }>(scoped(session.householdId, `/reports/watchlist?payee=${encodeURIComponent(payee)}`, session.spaceId)) : Promise.resolve(null), [payee, session.householdId, session.spaceId]);
+  const flow = useLoad(() => api<{ links: { source: string; target: string; amountMinor: number }[] }>(scoped(session.householdId, "/reports/sankey", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   if (!spending.data || !rate.data) return <Loading label="Loading reports" />;
   const max = Math.max(1, ...spending.data.rows.map((row) => Math.abs(row.amountMinor)));
   return (
@@ -132,11 +133,13 @@ export function Reports() {
         <li key={row.label}><span style={{ flex: 1 }}>{row.label}<span className="bar" style={{ marginTop: 6 }}><span style={{ width: `${Math.abs(row.amountMinor) / max * 100}%` }} /></span></span><Money minor={row.amountMinor} /></li>
       ))}</ul>
       <article className="card"><h2>Savings rate</h2><p>{rate.data.rateBps == null ? "Needs income in the period." : `${(rate.data.rateBps / 100).toFixed(1)}%`}</p><p className="formula">{rate.data.formula}</p></article>
+      <article className="card"><h2>Cash flow</h2><p className="muted">Income flows into spending, then into category groups. Transfers and card payments are not a second expense.</p>{flow.data ? <SankeyChart links={flow.data.links} /> : <p className="muted">{flow.error ?? "Loading cash flow…"}</p>}</article>
       <form className="card" onSubmit={(event) => { event.preventDefault(); setPayee(String(new FormData(event.currentTarget).get("payee") || "")); }}>
         <h2>Watchlist</h2>
         <Field label="Payee contains"><input name="payee" /></Field>
         <button className="btn" type="submit">Check</button>
-        {watch.data ? <p>{watch.data.formula} Total <Money minor={watch.data.totalMinor} />.</p> : null}
+        {watch.error ? <Notice kind="bad">{watch.error}</Notice> : null}
+        {watch.data ? <p>{watch.data.formula} Total <Money minor={watch.data.actualMinor} />.</p> : null}
       </form>
     </Page>
   );

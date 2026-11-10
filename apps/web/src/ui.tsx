@@ -115,6 +115,68 @@ export function Spark({ points, label }: { points: { date: string; balanceMinor:
   );
 }
 
+export function SankeyChart({ links }: { links: { source: string; target: string; amountMinor: number }[] }) {
+  const positive = links.filter((link) => link.amountMinor > 0);
+  if (!positive.length) return <p className="muted">No inflow or spending in this period yet.</p>;
+  const columnOf = (name: string) => (name === "Inflow" ? 1 : name === "Spending" ? 2 : positive.some((link) => link.source === "Spending" && link.target === name) ? 3 : 0);
+  const names = [...new Set(positive.flatMap((link) => [link.source, link.target]))];
+  const value = new Map<string, number>();
+  for (const name of names) {
+    const outbound = positive.filter((link) => link.source === name).reduce((sum, link) => sum + link.amountMinor, 0);
+    const inbound = positive.filter((link) => link.target === name).reduce((sum, link) => sum + link.amountMinor, 0);
+    value.set(name, Math.max(outbound, inbound, 1));
+  }
+  const width = 720;
+  const height = Math.max(220, names.length * 36);
+  const columns = [0, 1, 2, 3].map((column) => names.filter((name) => columnOf(name) === column));
+  const pos = new Map<string, { x: number; y: number; h: number }>();
+  columns.forEach((column, index) => {
+    const total = column.reduce((sum, name) => sum + (value.get(name) ?? 0), 0) || 1;
+    let y = 28;
+    const usable = height - 36 - Math.max(0, column.length - 1) * 10;
+    for (const name of column) {
+      const h = Math.max(14, ((value.get(name) ?? 0) / total) * usable);
+      pos.set(name, { x: 16 + index * (width / 4), y, h });
+      y += h + 10;
+    }
+  });
+  const outCursor = new Map<string, number>();
+  const inCursor = new Map<string, number>();
+  const paths = positive.flatMap((link) => {
+    const source = pos.get(link.source);
+    const target = pos.get(link.target);
+    if (!source || !target) return [];
+    const sourceHeight = Math.max(3, (link.amountMinor / (value.get(link.source) || 1)) * source.h);
+    const targetHeight = Math.max(3, (link.amountMinor / (value.get(link.target) || 1)) * target.h);
+    const sourceY = source.y + (outCursor.get(link.source) ?? 0);
+    const targetY = target.y + (inCursor.get(link.target) ?? 0);
+    outCursor.set(link.source, (outCursor.get(link.source) ?? 0) + sourceHeight);
+    inCursor.set(link.target, (inCursor.get(link.target) ?? 0) + targetHeight);
+    const x1 = source.x + 12;
+    const x2 = target.x;
+    const curve = (x1 + x2) / 2;
+    const d = `M ${x1} ${sourceY} C ${curve} ${sourceY}, ${curve} ${targetY}, ${x2} ${targetY} L ${x2} ${targetY + targetHeight} C ${curve} ${targetY + targetHeight}, ${curve} ${sourceY + sourceHeight}, ${x1} ${sourceY + sourceHeight} Z`;
+    return [{ d, label: `${link.source} to ${link.target}` }];
+  });
+  return (
+    <div>
+      <svg className="chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Cash flow from income, through spending, into category groups">
+        {paths.map((path) => <path key={path.d} d={path.d} fill="currentColor" opacity="0.28"><title>{path.label}</title></path>)}
+        {[...pos.entries()].map(([name, box]) => (
+          <g key={name}>
+            <rect x={box.x} y={box.y} width={12} height={box.h} rx="3" fill="currentColor" />
+            <text x={columnOf(name) === 3 ? box.x - 8 : box.x + 18} y={box.y + 12} fontSize="12" textAnchor={columnOf(name) === 3 ? "end" : "start"} fill="currentColor">{name}</text>
+          </g>
+        ))}
+      </svg>
+      <table>
+        <thead><tr><th>From</th><th>To</th><th className="num">Amount</th></tr></thead>
+        <tbody>{positive.map((link) => <tr key={`${link.source}-${link.target}`}><td>{link.source}</td><td>{link.target}</td><td className="num"><Money minor={link.amountMinor} /></td></tr>)}</tbody>
+      </table>
+    </div>
+  );
+}
+
 export function useLoad<T>(loader: () => Promise<T>, deps: unknown[]) {
   const [state, setState] = useState<{ data?: T; error?: string; loading: boolean }>({ loading: true });
   useEffect(() => {
