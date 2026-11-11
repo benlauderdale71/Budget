@@ -5,7 +5,8 @@
   "type": "module",
   "description": "BudgetCents shared financial calculations. Integer minor units only.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./dashboard-layout": "./src/dashboard-layout.ts"
   },
   "scripts": {
     "test": "vitest run",

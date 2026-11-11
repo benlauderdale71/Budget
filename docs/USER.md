@@ -10,6 +10,8 @@ Add the account where cash sits and an opening balance. On-budget accounts are t
 
 Tab through the page. Skip to content jumps past the sidebar. Escape closes a dialog and returns to the button that opened it. Hide amounts is announced as hidden, including the name of the amount.
 
+Customize dashboard changes the order, visibility, and width of the home cards for this window size. A phone-width browser and a wider window keep separate arrangements, and the Android app keeps its own. Drag the handle or use Up and Down. Standard and Wide change the width of This month, Upcoming, Alerts, and Recent when the window is wide enough; a narrow window still shows the whole card. Reset layout returns that window’s cards to the starting order. Undo puts the previous arrangement back, including after a reload in the same tab, and does not undo a transaction. The change is saved when the status says so. If it says the change was not saved, the cards stay as they were and Try again sends the same change. Another signed-in person has a separate arrangement.
+
 A production site served over HTTPS can be installed from the browser. The installed window is the same BudgetCents app. After one online load it can open offline, but the balances are not stored on the device. A transaction saved while its account is on screen waits there until the connection returns. Signing out does not send someone else’s waiting transactions.
 
 ## Plan

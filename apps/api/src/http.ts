@@ -1,4 +1,4 @@
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
@@ -106,7 +106,7 @@ export function createApp(db: Database) {
 
   app.onError((err, c) => {
     if (err instanceof ApiError) return c.json({ error: err.message }, err.status as 400);
-    if (err instanceof BudgetError || err instanceof MoneyError) return c.json({ error: err.message }, 400);
+    if (err instanceof BudgetError || err instanceof MoneyError || err instanceof DashboardLayoutError) return c.json({ error: err.message }, (err instanceof DashboardLayoutError ? err.status : 400) as 400);
     if (err instanceof z.ZodError) return c.json({ error: err.issues.map((issue) => issue.message).join(" ") }, 400);
     console.error(JSON.stringify({ level: "error", message: err instanceof Error ? err.name : "error" }));
     return c.json({ error: "Something went wrong." }, 500);
@@ -348,7 +348,6 @@ export function createApp(db: Database) {
       budgetApproach: z.enum(["category", "zero", "envelope", "flex"]).optional(),
       labelMode: z.enum(["categories", "envelopes"]).optional(),
       alertSettings: z.record(z.unknown()).optional(),
-      dashboardLayout: z.array(z.record(z.unknown())).optional(),
       onboardingStep: z.string().max(40).nullable().optional(),
     }).parse(raw);
     const sets: string[] = [];
@@ -368,11 +367,31 @@ export function createApp(db: Database) {
     if ("budgetApproach" in raw) set("budget_approach", body.budgetApproach);
     if ("labelMode" in raw) set("label_mode", body.labelMode);
     if ("alertSettings" in raw) set("alert_settings", JSON.stringify(body.alertSettings ?? {}));
-    if ("dashboardLayout" in raw) set("dashboard_layout", JSON.stringify(body.dashboardLayout ?? []));
     if ("onboardingStep" in raw) set("onboarding_step", body.onboardingStep);
+    let previousLayout: string | null = null;
+    if ("dashboardLayout" in raw) {
+      const encoded = JSON.stringify(raw.dashboardLayout ?? null);
+      if (encoded.length > DASHBOARD_LAYOUT_MAX_BYTES) throw new ApiError(400, "That dashboard layout is too large.");
+      const rows = await db.query(`SELECT dashboard_layout FROM users WHERE id = $1`, [me.id]);
+      previousLayout = String(rows[0]?.dashboard_layout ?? "[]");
+      let stored: unknown = [];
+      try {
+        stored = JSON.parse(previousLayout);
+      } catch {
+        stored = [];
+      }
+      const next = updateDashboardLayout(readDashboardLayout(stored), raw.dashboardLayout);
+      set("dashboard_layout", JSON.stringify(next));
+    }
     if (sets.length) {
       params.push(me.id);
-      await db.query(`UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length}`, params);
+      let sql = `UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length}`;
+      if (previousLayout !== null) {
+        params.push(previousLayout);
+        sql += ` AND dashboard_layout = $${params.length}`;
+      }
+      const updated = await db.query(`${sql} RETURNING id`, params);
+      if (!updated.length) throw new ApiError(409, "This dashboard layout was changed somewhere else. Reload it and try again.");
     }
     return c.json({ user: await publicUser(me.id) });
   });
@@ -2225,6 +2244,14 @@ export function createApp(db: Database) {
     return token;
   }
 
+  function safeJson(value: unknown): unknown {
+    try {
+      return JSON.parse(String(value ?? "[]"));
+    } catch {
+      return [];
+    }
+  }
+
   async function publicUser(userId: string) {
     const rows = await db.query(`SELECT id, email, display_name, email_verified_at, mfa_enabled, locale, time_zone, week_start, theme, privacy_mode, ai_enabled, pay_cadence, budget_approach, label_mode, onboarding_step, alert_settings, dashboard_layout FROM users WHERE id = $1`, [userId]);
     const row = rows[0];
@@ -2232,7 +2259,7 @@ export function createApp(db: Database) {
       id: row.id, email: row.email, displayName: row.display_name, emailVerified: !!row.email_verified_at, mfaEnabled: num(row.mfa_enabled) === 1,
       locale: row.locale, timeZone: row.time_zone, weekStart: num(row.week_start), theme: row.theme, privacyMode: num(row.privacy_mode) === 1,
       aiEnabled: num(row.ai_enabled) === 1, payCadence: row.pay_cadence, budgetApproach: row.budget_approach, labelMode: row.label_mode,
-      onboardingStep: row.onboarding_step, alertSettings: JSON.parse(String(row.alert_settings || "{}")), dashboardLayout: JSON.parse(String(row.dashboard_layout || "[]")),
+      onboardingStep: row.onboarding_step, alertSettings: JSON.parse(String(row.alert_settings || "{}")), dashboardLayout: readDashboardLayout(safeJson(row.dashboard_layout)),
     };
   }
 

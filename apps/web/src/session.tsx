@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import type { HouseholdRow, User } from "./types.js";
 
@@ -18,7 +18,7 @@ interface SessionValue {
   chooseHousehold: (id: string) => void;
   chooseSpace: (id: string) => void;
   adoptSpace: (id: string) => void;
-  patchMe: (body: Record<string, unknown>) => Promise<void>;
+  patchMe: (body: Record<string, unknown>) => Promise<boolean>;
   signOut: () => Promise<void>;
 }
 
@@ -54,6 +54,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [offline, setOffline] = useState(!navigator.onLine);
   const [queued, setQueued] = useState(queuedCount());
   const [syncError, setSyncError] = useState("");
+  const userIdRef = useRef<string | null>(null);
+  const sessionGen = useRef(0);
+  userIdRef.current = user?.id ?? null;
 
   async function refresh() {
     const data = await api<{ user: User; households: HouseholdRow[] }>("/api/me");
@@ -141,11 +144,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     adoptSpace: (id) => setSpaceId((current) => current ?? id),
     patchMe: async (body) => {
+      const owner = userIdRef.current;
+      const gen = sessionGen.current;
       const data = await api<{ user: User }>("/api/me", { method: "PATCH", body: JSON.stringify(body) });
+      if (sessionGen.current !== gen || userIdRef.current !== owner || !owner || data.user.id !== owner) return false;
       setUser(data.user);
       applyTheme(data.user.theme);
+      writeProfile(data.user, households, householdId, spaceId);
+      return true;
     },
     signOut: async () => {
+      sessionGen.current += 1;
+      userIdRef.current = null;
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
       clearLocalSession();
       setUser(null);

@@ -8,9 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "tsc --noEmit && node --experimental-strip-types --test test/shell-cache.test.ts"
+    "test": "tsc --noEmit && node --experimental-strip-types --test test/shell-cache.test.ts test/dashboard-undo.test.ts"
   },
   "dependencies": {
+    "@budgetcents/domain": "*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.4"

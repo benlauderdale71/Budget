@@ -125,6 +125,15 @@ main:focus { outline: none; }
 .wizard-steps li { padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 .wizard-steps li[aria-current="step"] { background: var(--teal-soft); color: var(--navy); font-weight: 650; }
 .grid.three { grid-template-columns: repeat(3, 1fr); }
+.dashboard-flow { display: grid; gap: 16px; min-width: 0; }
+.dashboard-row { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; }
+.dashboard-row.single { grid-template-columns: minmax(0, 1fr); }
+.dashboard-card { min-width: 0; }
+.dashboard-card .figure, .dashboard-card .list { overflow-wrap: anywhere; }
+.layout-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.layout-item { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.layout-item .name { flex: 1 1 8rem; min-width: 0; }
+.drag-handle { touch-action: none; cursor: grab; user-select: none; }
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow); padding: 18px 18px 16px;
@@ -209,8 +218,9 @@ td.num, th.num { text-align: right; }
   .auth-story { padding: 28px 22px; }
 }
 @media (max-width: 860px) {
-  html { scroll-padding-bottom: 96px; }
-  :focus-visible { scroll-margin-bottom: 108px; }
+  html { scroll-padding-top: min(16rem, 38vh); scroll-padding-bottom: min(7rem, 24vh); }
+  :focus-visible { scroll-margin-top: min(16rem, 38vh); scroll-margin-bottom: min(7rem, 24vh); }
+  .dashboard-row { grid-template-columns: minmax(0, 1fr); }
   .shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .tabbar { display: flex; }

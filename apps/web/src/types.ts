@@ -14,7 +14,7 @@ export interface User {
   budgetApproach: string;
   labelMode: string;
   onboardingStep: string | null;
-  dashboardLayout?: { id: string; hidden?: boolean }[];
+  dashboardLayout?: unknown;
 }
 
 export interface HouseholdRow {

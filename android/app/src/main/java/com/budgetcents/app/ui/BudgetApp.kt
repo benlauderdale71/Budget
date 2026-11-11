@@ -209,7 +209,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                             reload()
                         }
                     } else when (tab) {
-                        0 -> HomeTab(dash, store.privacy)
+                        0 -> DashboardHome(dash, store.privacy, api, store, LocalConfiguration.current.screenWidthDp)
                         1 -> PlanTab(dash, store.privacy, { bucketId, amount ->
                             scope.launch {
                                 runCatching {
@@ -465,34 +465,6 @@ private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, 
     }
 }
 
-@Composable
-private fun HomeTab(dash: JSONObject?, privacy: Boolean) {
-    if (dash == null) { Text("Loading the household…"); return }
-    val guidance = dash.getJSONObject("guidance")
-    val budget = dash.getJSONObject("budget")
-    val worth = dash.getJSONObject("netWorth")
-    val short = guidance.optString("primaryFigure") == "shortage"
-    val committed = budget.optLong("claimsMinor") - budget.optLong("readyToAssignMinor") - budget.optLong("futureAssignedMinor")
-    Text(if (short) "Short before upcoming bills" else "Safe to spend", color = MaterialTheme.colorScheme.primary)
-    Text(money(if (short) guidance.optLong("shortageMinor") else guidance.optLong("cashSafeMinor"), privacy), style = MaterialTheme.typography.headlineLarge)
-    Text(guidance.optString("formula"))
-    Text("Ready to Assign ${money(budget.optLong("readyToAssignMinor"), privacy)}")
-    Text("Already given a job ${money(committed, privacy)}")
-    Text("Net worth ${money(worth.optLong("netMinor"), privacy)}")
-    Text("Needs review ${dash.optInt("reviewCount")}")
-    val upcoming = dash.optJSONArray("upcoming")
-    if (upcoming == null || upcoming.length() == 0) Text("No bill is scheduled in the next month.")
-    else {
-        val next = (0 until upcoming.length()).map { upcoming.getJSONObject(it) }.firstOrNull { it.optLong("amountMinor") < 0 }
-        if (next == null) Text("No outflow is scheduled in the next month.")
-        else Text("Next bill ${next.optString("date")} ${next.optString("label")} ${money(next.optLong("amountMinor"), privacy)}")
-    }
-    val goals = dash.optJSONArray("goals")
-    if (goals == null || goals.length() == 0) Text("No goal is using an envelope yet.")
-    else Text("Goals ${goals.length()}. Open More, then Goals, to see progress.")
-    if (budget.optLong("identityDifferenceMinor") != 0L) Text("The plan does not match cash. Review it before assigning more.")
-    if (dash.optJSONObject("household")?.optBoolean("isDemo") == true) Text("Sample household. These figures are fictional.")
-}
 
 @Composable
 private fun PlanTab(dash: JSONObject?, privacy: Boolean, onAssign: (String, Long) -> Unit, onMove: (String, String, Long) -> Unit) {

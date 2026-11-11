@@ -283,12 +283,20 @@ describe("transaction workflow", () => {
     const home = await household(api, "layout@example.com");
     const saved = await json(await api.request("/api/me", {
       method: "PATCH", headers: auth(home.token),
-      body: JSON.stringify({ dashboardLayout: [{ id: "goals", hidden: true }, { id: "safe", hidden: false }], onboardingStep: "family" }),
+      body: JSON.stringify({
+        dashboardLayout: {
+          deviceClass: "web-desktop",
+          revision: 0,
+          cards: [{ id: "goals", hidden: true, size: "standard" }, { id: "safe", hidden: false, size: "standard" }],
+        },
+        onboardingStep: "family",
+      }),
     }));
-    expect(saved.body.user.dashboardLayout).toEqual([{ id: "goals", hidden: true }, { id: "safe", hidden: false }]);
+    expect(saved.status).toBe(200);
     expect(saved.body.user.onboardingStep).toBe("family");
-    const reset = await json(await api.request("/api/me", { method: "PATCH", headers: auth(home.token), body: JSON.stringify({ dashboardLayout: [] }) }));
-    expect(reset.body.user.dashboardLayout).toEqual([]);
+    expect(saved.body.user.dashboardLayout.revision).toBe(1);
+    expect(saved.body.user.dashboardLayout.layouts["web-desktop"][0]).toMatchObject({ id: "goals", hidden: true });
+    expect(saved.body.user.dashboardLayout.layouts["web-compact"][0].id).toBe("safe");
   });
 
   it("keeps a renamed view on that user and does not treat an equal amount as the same bank record", async () => {

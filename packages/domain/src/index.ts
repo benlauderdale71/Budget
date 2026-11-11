@@ -16,3 +16,4 @@ export * from "./percent.js";
 export * from "./fills.js";
 export * from "./income.js";
 export * from "./receipt-allocate.js";
+export * from "./dashboard-layout.js";
