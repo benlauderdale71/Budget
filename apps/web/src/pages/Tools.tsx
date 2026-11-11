@@ -8,6 +8,7 @@ import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad }
 
 const moreLinks = [
   ["/forecast", "Forecast", "Cash projection and paycheck coverage"],
+  ["/receipts", "Receipts", "Read a receipt, then confirm it"],
   ["/paychecks", "Paychecks", "Expected income that is not cash yet"],
   ["/calendar", "Calendar", "Paychecks, bills, and due dates"],
   ["/bills", "Bills", "Recurring bills and subscriptions"],

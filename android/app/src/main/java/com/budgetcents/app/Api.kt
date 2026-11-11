@@ -21,24 +21,36 @@ class BudgetApi(private val store: Store) {
     fun transactions(householdId: String) = request("GET", "/api/households/$householdId/transactions?limit=100")
     fun createTransaction(householdId: String, body: JSONObject) = request("POST", "/api/households/$householdId/transactions", body)
 
-    fun uploadReceipt(householdId: String, transactionId: String, jpeg: ByteArray) {
+    fun uploadReceipt(householdId: String, transactionId: String, jpeg: ByteArray) =
+        uploadAttachment(householdId, jpeg, "image/jpeg", transactionId)
+
+    fun uploadAttachment(householdId: String, bytes: ByteArray, mime: String, transactionId: String? = null): JSONObject {
         val boundary = "----BudgetCentsBoundary"
+        val filename = when (mime) {
+            "image/png" -> "receipt.png"
+            "application/pdf" -> "receipt.pdf"
+            else -> "receipt.jpg"
+        }
         val connection = (URL("$base/api/households/$householdId/attachments").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 12000
-            readTimeout = 20000
+            readTimeout = 30000
             doOutput = true
             setRequestProperty("authorization", "Bearer ${store.token}")
             setRequestProperty("content-type", "multipart/form-data; boundary=$boundary")
         }
         connection.outputStream.use { out ->
             fun write(text: String) = out.write(text.toByteArray(StandardCharsets.UTF_8))
-            write("--$boundary\r\nContent-Disposition: form-data; name=\"transactionId\"\r\n\r\n$transactionId\r\n")
-            write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"receipt.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
-            out.write(jpeg)
+            if (!transactionId.isNullOrBlank()) write("--$boundary\r\nContent-Disposition: form-data; name=\"transactionId\"\r\n\r\n$transactionId\r\n")
+            write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$filename\"\r\nContent-Type: $mime\r\n\r\n")
+            out.write(bytes)
             write("\r\n--$boundary--\r\n")
         }
-        if (connection.responseCode !in 200..299) throw ApiException(connection.responseCode, "The receipt was not stored.")
+        val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.bufferedReader()?.use(BufferedReader::readText).orEmpty()
+        val json = if (text.isBlank()) JSONObject() else JSONObject(text)
+        if (connection.responseCode !in 200..299) throw ApiException(connection.responseCode, json.optString("error", "The receipt was not stored."))
+        return json
     }
 
     private val base get() = store.baseUrl

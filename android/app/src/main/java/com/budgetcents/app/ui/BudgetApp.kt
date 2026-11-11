@@ -201,7 +201,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                         }, { name ->
                             themeName = name
                             store.theme = name
-                        }) { ids, label ->
+                        }, activity) { ids, label ->
                             activityIds = ids
                             activityLabel = label
                             page = null
@@ -243,7 +243,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                                     val created = withContext(Dispatchers.IO) { api.createTransaction(store.householdId!!, body) }
                                     if (receipt != null && created.has("id")) {
                                         withContext(Dispatchers.IO) { api.uploadReceipt(store.householdId!!, created.getString("id"), receipt) }
-                                        error = "Receipt saved. OCR is not connected, so the amount you typed was not changed."
+                                        error = "Receipt saved. Open Receipts to read it. The amount you typed was not changed."
                                     }
                                     status = "Saved."
                                     reload()
@@ -631,7 +631,7 @@ private fun ActivityTab(
             payee = ""; amount = ""; notes = ""; receipt = null
         }) { Text("Save") }
     }
-    Text("Receipt text is not read automatically.")
+    Text("The photo is stored after you save. Open Receipts to read it. Saving here does not change the amount.")
     val rows = txns?.optJSONArray("transactions")
     var selected by remember { mutableStateOf("") }
     var matchId by remember { mutableStateOf("") }
@@ -793,6 +793,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
         "goals" to "Goals",
         "debts" to "Debts",
         "forecast" to "Forecast",
+        "receipts" to "Receipts",
         "investments" to "Investments",
         "retirement" to "Retirement",
         "reports" to "Reports",

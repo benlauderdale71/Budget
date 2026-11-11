@@ -13,7 +13,7 @@ export function PrivacyPolicy() {
         <li>Account email, display name, a password hash, and optional authenticator data.</li>
         <li>Session tokens and device labels you use to sign in.</li>
         <li>Household names, roles, invitations, and the financial records you add: accounts, transactions, categories, goals, bills, holdings, and notes.</li>
-        <li>Receipt files you attach. The file is stored. Optical character recognition is not connected, so the image is not turned into a transaction by itself.</li>
+        <li>Receipt files you attach. The file is stored and can be read on the BudgetCents server with Tesseract. It is not sent to an external OCR service, and it does not become a transaction until you confirm it.</li>
       </ul>
       <h2>What is not connected</h2>
       <p>Bank aggregation, live market prices, credit monitoring, bill negotiation, subscription cancellation, tax filing, and estate-document services are not active. A screen that says a provider is not configured has not contacted that provider. Manual credit scores and manual prices stay labeled as entries you typed.</p>

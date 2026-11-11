@@ -1,6 +1,8 @@
 package com.budgetcents.app.ui
 
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,8 +20,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -46,6 +50,7 @@ fun FeatureScreen(
     onStatus: (String) -> Unit,
     onSignedOut: () -> Unit,
     onTheme: (String) -> Unit,
+    activity: com.budgetcents.app.MainActivity? = null,
     onOpenTransactions: (String, String) -> Unit = { _, _ -> },
 ) {
     val hid = store.householdId ?: return
@@ -227,6 +232,7 @@ fun FeatureScreen(
             }
         }
         "setup" -> SetupScreen(api, hid, onError, onStatus)
+        "receipts" -> ReceiptScreen(api, store, dash, privacy, activity, hid, onError, onStatus, onChanged)
         "security" -> SecurityScreen(api, store, onTheme, onError, onSignedOut)
         "learn" -> RemoteScreen("learn", { api.request("GET", "/api/lessons") }) { data ->
             val lessons = data.optJSONArray("lessons") ?: JSONArray()
@@ -1998,6 +2004,245 @@ private fun expenseBucketId(state: JSONObject): String {
         if (row.optString("kind") == "expense") return row.optString("id")
     }
     return ""
+}
+
+@Composable
+private fun ReceiptScreen(
+    api: BudgetApi,
+    store: Store,
+    dash: JSONObject?,
+    privacy: Boolean,
+    activity: com.budgetcents.app.MainActivity?,
+    hid: String,
+    onError: (String) -> Unit,
+    onStatus: (String) -> Unit,
+    onChanged: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val cacheKey = rememberSaveable { java.util.UUID.randomUUID().toString() }
+    var attachmentId by rememberSaveable { mutableStateOf("") }
+    var opId by rememberSaveable { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var merchant by rememberSaveable { mutableStateOf("") }
+    var date by rememberSaveable { mutableStateOf("") }
+    var currency by rememberSaveable { mutableStateOf("") }
+    var total by rememberSaveable { mutableStateOf("") }
+    var accountId by rememberSaveable { mutableStateOf("") }
+    var bucketId by rememberSaveable { mutableStateOf("") }
+    var status by rememberSaveable { mutableStateOf("Choose a receipt") }
+    var note by rememberSaveable { mutableStateOf("Reading happens on the BudgetCents server. It does not post a transaction.") }
+    var bytes by remember { mutableStateOf<ByteArray?>(null) }
+    var matches by remember { mutableStateOf(JSONArray()) }
+    var version by remember { mutableStateOf(1) }
+    var busy by remember { mutableStateOf(false) }
+    var lineWarning by rememberSaveable { mutableStateOf("") }
+    val cacheFile = activity?.let { java.io.File(it.cacheDir, "receipt-$cacheKey") }
+
+    fun keep(next: ByteArray) {
+        bytes = next
+        scope.launch { withContext(Dispatchers.IO) { cacheFile?.writeBytes(next) } }
+        status = "Uploaded on this phone"
+        note = "The photo stays here until the server accepts it. A lost connection does not submit it twice."
+    }
+
+    LaunchedEffect(cacheKey) {
+        val restored = withContext(Dispatchers.IO) { if (cacheFile?.exists() == true) cacheFile.readBytes() else null }
+        if (bytes == null && restored != null) bytes = restored
+    }
+    LaunchedEffect(activity, attachmentId) {
+        activity?.onReceipt = { keep(it) }
+        activity?.onFile = { keep(it) }
+        val id = attachmentId
+        if (id.isBlank()) return@LaunchedEffect
+        try {
+            val loaded = withContext(Dispatchers.IO) { api.request("GET", "/api/households/$hid/attachments/$id") }
+            val draft = loaded.getJSONObject("draft")
+            val fields = draft.getJSONObject("fields")
+            version = draft.optInt("version", 1)
+            status = draft.optString("status")
+            if (merchant.isBlank()) merchant = fields.optString("merchant")
+            if (date.isBlank()) date = fields.optString("date")
+            if (currency.isBlank()) currency = fields.optString("currency")
+            if (total.isBlank() && fields.has("totalMinor") && !fields.isNull("totalMinor")) total = money(fields.optLong("totalMinor"), false).removePrefix("$")
+            lineWarning = if (fields.optString("lineVersusTotal") == "differs") "Line items do not add up to the receipt total." else ""
+            matches = loaded.optJSONArray("possibleTransactions") ?: JSONArray()
+            val reader = loaded.optJSONObject("reader")
+            if (reader != null) note = reader.optString("note")
+        } catch (caught: Exception) {
+            onError(caught.message ?: "The receipt could not be opened.")
+        }
+    }
+
+    Text(statusLabel(status))
+    Text(note)
+    if (privacy) Text("Amounts are hidden.")
+    val bitmap = remember(bytes) { bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) } }
+    if (bitmap != null) Image(bitmap.asImageBitmap(), contentDescription = "Receipt preview")
+    else if (bytes != null) Text("The file is stored. A PDF preview is shown after it is read on the server.")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = { activity?.captureReceipt() }, enabled = !busy) { Text("Take photo") }
+        TextButton(onClick = { activity?.pickReceipt() }, enabled = !busy) { Text("Choose file") }
+    }
+    OutlinedTextField(merchant, { merchant = it }, label = { Text("Merchant") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(date, { date = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(currency, { currency = it.uppercase() }, label = { Text("Currency") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(total, { total = it }, label = { Text(if (privacy) "Total hidden" else "Total") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    if (lineWarning.isNotBlank()) Text(lineWarning)
+    Text("Account")
+    val accounts = dash?.optJSONArray("accounts") ?: JSONArray()
+    for (index in 0 until accounts.length()) {
+        val account = accounts.getJSONObject(index)
+        if (account.optString("kind") !in setOf("checking", "savings", "cash")) continue
+        TextButton(onClick = { accountId = account.optString("id") }) { Text(if (accountId == account.optString("id")) "Selected ${account.optString("name")}" else account.optString("name")) }
+    }
+    Text("Category")
+    val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
+    for (index in 0 until buckets.length()) {
+        val bucket = buckets.getJSONObject(index)
+        if (bucket.optString("kind") != "expense" || bucket.optString("systemRole").isNotBlank()) continue
+        TextButton(onClick = { bucketId = bucket.optString("id") }) { Text(if (bucketId == bucket.optString("id")) "Selected ${bucket.optString("name")}" else bucket.optString("name")) }
+    }
+    Text("Confirming uses ${accounts.accountName(accountId)} · ${buckets.bucketName(bucketId)} · ${merchant.ifBlank { "no merchant" }} · ${date.ifBlank { "no date" }} · ${currency.ifBlank { "no currency" }} · ${if (privacy) "amount hidden" else total.ifBlank { "no total" }}.")
+    fun launch(block: suspend () -> Unit) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { block() }
+            } catch (caught: Exception) {
+                onError(caught.message ?: "That did not work.")
+            } finally {
+                withContext(Dispatchers.Main) { busy = false }
+            }
+        }
+    }
+    Button(onClick = {
+        val current = bytes
+        if (current == null) onError("Choose a receipt first.")
+        else launch {
+            try {
+                val mime = sniffReceipt(current)
+                if (mime == null) throw IllegalArgumentException("Choose a JPEG, PNG, or PDF.")
+                val uploaded = api.uploadAttachment(hid, current, mime, null)
+                withContext(Dispatchers.Main) {
+                    attachmentId = uploaded.getString("id")
+                    status = "uploaded"
+                    onStatus("Uploaded. Cash was not changed.")
+                }
+            } catch (caught: Exception) {
+                withContext(Dispatchers.Main) {
+                    onError("The receipt is still on this phone. Reading it needs the BudgetCents server. ${caught.message ?: "Try again when the connection returns."}")
+                }
+            }
+        }
+    }, enabled = !busy) { Text(if (busy) "Working" else "Upload") }
+    Button(onClick = {
+        if (attachmentId.isBlank()) onError("Upload the receipt first.")
+        else launch {
+            val response = api.request("POST", "/api/households/$hid/attachments/$attachmentId/extract", JSONObject().put("version", version))
+            val draft = response.getJSONObject("draft")
+            val next = draft.optString("status")
+            withContext(Dispatchers.Main) {
+                version = draft.optInt("version", version)
+                status = next
+                if (response.optBoolean("kept")) onStatus(response.optString("reason", "The current review was kept."))
+                else onStatus(if (next == "failed") "The reader did not find text. You can type it." else "Ready for review. Nothing was posted.")
+                onChanged()
+            }
+        }
+    }, enabled = !busy) { Text(if (status == "failed") "Try reading again" else "Read the receipt") }
+    Button(onClick = {
+        if (attachmentId.isBlank()) onError("Upload the receipt first.")
+        else launch {
+            val body = JSONObject().put("version", version).put("fields", JSONObject()
+                .put("merchant", merchant.ifBlank { JSONObject.NULL })
+                .put("date", date.ifBlank { JSONObject.NULL })
+                .put("currency", currency.ifBlank { JSONObject.NULL })
+                .put("totalMinor", if (total.isBlank()) JSONObject.NULL else parseDollars(total)))
+            val saved = api.request("PATCH", "/api/households/$hid/attachments/$attachmentId/draft", body)
+            withContext(Dispatchers.Main) {
+                version = saved.getJSONObject("draft").optInt("version", version)
+                onStatus("Corrections saved. Cash was not changed.")
+            }
+        }
+    }, enabled = !busy) { Text("Save corrections") }
+    Button(onClick = {
+        if (attachmentId.isBlank() || accountId.isBlank() || bucketId.isBlank() || total.isBlank()) onError("Choose an account, a category, and a total first.")
+        else launch {
+            val response = api.request("POST", "/api/households/$hid/attachments/$attachmentId/confirm", JSONObject()
+                .put("confirm", true)
+                .put("version", version)
+                .put("opId", opId)
+                .put("accountId", accountId)
+                .put("acceptLineMismatch", lineWarning.isNotBlank())
+                .put("splits", JSONArray().put(JSONObject().put("bucketId", bucketId).put("amountMinor", parseDollars(total)))))
+            withContext(Dispatchers.Main) {
+                status = "confirmed"
+                onStatus(if (response.optBoolean("created")) "Created one expense." else "No second expense was created.")
+                onChanged()
+            }
+        }
+    }, enabled = !busy) { Text("Create this expense") }
+    if (matches.length() == 0) Text("No visible expense looks close. You decide whether one matches.")
+    for (index in 0 until matches.length()) {
+        val txn = matches.getJSONObject(index)
+        Text("${txn.optString("date")} ${txn.optString("payee")} ${money(txn.optLong("amountMinor"), privacy)} ${txn.optString("reason")}")
+        TextButton(onClick = {
+            launch {
+                val response = api.request("POST", "/api/households/$hid/attachments/$attachmentId/apply", JSONObject()
+                    .put("confirm", true)
+                    .put("transactionId", txn.optString("id"))
+                    .put("draftVersion", version)
+                    .put("transactionVersion", txn.optInt("version", 1))
+                    .put("opId", opId)
+                    .put("acceptTotalMismatch", true)
+                    .put("acceptDateMismatch", true)
+                    .put("acceptLineMismatch", true))
+                withContext(Dispatchers.Main) {
+                    status = "confirmed"
+                    onStatus(response.optString("note", "Linked. No second expense was created."))
+                    onChanged()
+                }
+            }
+        }, enabled = !busy) { Text("Link to this transaction") }
+    }
+    TextButton(onClick = {
+        if (attachmentId.isBlank()) onError("There is no receipt to discard.")
+        else launch {
+            api.request("POST", "/api/households/$hid/attachments/$attachmentId/discard", JSONObject().put("version", version))
+            withContext(Dispatchers.Main) {
+                status = "discarded"
+                onStatus("Discarded. No transaction was changed.")
+                onChanged()
+            }
+        }
+    }, enabled = !busy) { Text("Discard") }
+}
+
+private fun statusLabel(status: String) = when (status) {
+    "uploaded" -> "Uploaded"
+    "processing" -> "Processing"
+    "ready" -> "Ready for review"
+    "failed" -> "Failed"
+    "confirmed" -> "Confirmed"
+    "discarded" -> "Discarded"
+    else -> status
+}
+
+private fun sniffReceipt(bytes: ByteArray): String? {
+    if (bytes.size > 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) return "image/jpeg"
+    if (bytes.size > 4 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte()) return "image/png"
+    if (bytes.size > 4 && bytes[0] == 0x25.toByte() && bytes[1] == 0x50.toByte()) return "application/pdf"
+    return null
+}
+
+private fun JSONArray.accountName(id: String): String {
+    for (index in 0 until length()) if (getJSONObject(index).optString("id") == id) return getJSONObject(index).optString("name")
+    return "no account"
+}
+
+private fun JSONArray.bucketName(id: String): String {
+    for (index in 0 until length()) if (getJSONObject(index).optString("id") == id) return getJSONObject(index).optString("name")
+    return "no category"
 }
 
 private suspend fun runIo(onError: (String) -> Unit, block: suspend () -> Unit) {

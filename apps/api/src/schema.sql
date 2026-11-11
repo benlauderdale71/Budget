@@ -762,6 +762,29 @@ CREATE TABLE IF NOT EXISTS onboarding_states (
   PRIMARY KEY (user_id, household_id)
 );
 
+CREATE TABLE IF NOT EXISTS receipt_drafts (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  attachment_id text NOT NULL UNIQUE REFERENCES attachments(id) ON DELETE CASCADE,
+  status text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  engine text,
+  source_kind text,
+  raw_text text,
+  fields_json text NOT NULL DEFAULT '{}',
+  confidence double precision,
+  confidence_note text,
+  user_edited integer NOT NULL DEFAULT 0,
+  transaction_id text,
+  op_id text,
+  error text,
+  content_sha256 text NOT NULL,
+  created_at text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS receipt_drafts_hash ON receipt_drafts (household_id, content_sha256);
+
 CREATE TABLE IF NOT EXISTS onboarding_keys (
   household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,

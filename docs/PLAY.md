@@ -28,7 +28,7 @@ This repository does not create a Play listing. Before anyone submits the AAB th
 
 - A Play Console app and the real upload key.
 - A privacy policy URL. The app serves `/privacy`. It describes the bearer token, household records, optional receipt photos, and the fact that bank and credit providers are not connected.
-- Data safety: financial info the user enters, account identifiers, and photos if they attach receipts. No advertising id. Data is not sold. Declare financial features as user-entered records. Do not declare live bank linking, credit monitoring, or money movement while those providers are disconnected.
+- Data safety: financial info the user enters, account identifiers, and photos if they attach receipts. A receipt file can be read on the BudgetCents server with Tesseract. It is not sent to an external OCR service. No advertising id. Data is not sold. Declare financial features as user-entered records. Do not declare live bank linking, credit monitoring, or money movement while those providers are disconnected.
 - An account-deletion URL and an in-app path. `/delete-account` explains the steps. Settings on the web and Security on Android call `DELETE /api/me` after the password and the confirmation word. Removing the app from a phone only clears that device’s session.
 - Screenshots from a device or emulator running this app, a feature graphic, and a content rating.
 - Confirmation that cleartext HTTP is acceptable only for local testing. Production traffic should be HTTPS.

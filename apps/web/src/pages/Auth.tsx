@@ -103,6 +103,7 @@ export function Invite() {
   const session = useSession();
   const navigate = useNavigate();
   const [error, setError] = useState("");
+  if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
   if (!session.user) return <Navigate to="/login" replace />;
   return (
     <main className="content">

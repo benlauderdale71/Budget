@@ -218,7 +218,7 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
         <Field label="Note"><textarea name="notes" defaultValue={existing?.notes ?? ""} /></Field>
         {existing?.reconciled ? <Field label="Reason for changing a reconciled amount"><input name="reason" /></Field> : null}
         <Field label="Receipt (JPEG, PNG, or PDF)"><input name="receipt" type="file" accept="image/jpeg,image/png,application/pdf" /></Field>
-        <p className="muted">Receipt text is not read automatically. Confirm the merchant and total yourself. A reconciled transaction is not overwritten.</p>
+        <p className="muted">The receipt is stored with this transaction and does not change it. Open Receipts to read the file. A reconciled transaction is not overwritten.</p>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
         <button className="btn" type="submit">Save</button>
       </form>

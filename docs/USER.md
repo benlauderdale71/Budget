@@ -20,7 +20,7 @@ Underfunded targets can be previewed. The preview will not spend expected income
 
 Record an expense, income, refund, transfer, or card payment. Split an expense across categories. A card payment is not a second expense. A refund lowers spending and is not income.
 
-Attach a JPEG, PNG, or PDF receipt if you want the file kept with the transaction. The app does not read the receipt. If the file total disagrees with the transaction, you change the transaction yourself. A reconciled transaction is left alone.
+Attach a JPEG, PNG, or PDF receipt if you want the file kept. Open Receipts to read it. The BudgetCents server reads the file with Tesseract. The image is not sent to an external OCR service, and the phone does not read it on the device. Correct the merchant, date, currency, and total before you confirm. Upload, reading, and corrections do not change cash or a saved transaction. Linking a receipt leaves the transaction amount as it is. Creating an expense is a separate confirmation and adds one transaction. A reconciled transaction can receive the file and is not overwritten.
 
 ## Ahead and behind
 

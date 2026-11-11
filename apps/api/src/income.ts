@@ -281,7 +281,7 @@ export async function paycheckPlan(db: Database, me: Actor, householdId: string,
   const from = query.from && isIsoDate(query.from) ? query.from : loaded.input.asOf;
   const to = query.to && isIsoDate(query.to) ? query.to : addDays(loaded.input.asOf, 120);
   const sources = await visibleSources(db, me, loaded.member.householdId, loaded.spaceId, false);
-  const upcoming: { sourceId: string; name: string; earner: string; key: string; expectedDate: string; date: string; amountMinor: number; status: string; countsAsExpected: boolean; inFutureForecast: boolean; receivedAmountMinor: number | null; transactionId: string | null }[] = [];
+  const upcoming: { sourceId: string; accountId?: string; name: string; earner: string; key: string; expectedDate: string; date: string; amountMinor: number; status: string; countsAsExpected: boolean; inFutureForecast: boolean; receivedAmountMinor: number | null; transactionId: string | null }[] = [];
   for (const source of sources) {
     const bundle = await loadBundle(db, source);
     const shown = showIncomeOccurrences({
@@ -297,6 +297,7 @@ export async function paycheckPlan(db: Database, me: Actor, householdId: string,
     for (const item of shown) {
       upcoming.push({
         sourceId: String(source.id),
+        accountId: str(source.account_id) || undefined,
         name: String(source.name),
         earner: str(source.owner_user_id) ?? String(source.name),
         ...item,
@@ -315,6 +316,7 @@ export async function paycheckPlan(db: Database, me: Actor, householdId: string,
     label: item.name,
     kind: "income" as const,
     expectedIncome: true,
+    accountId: item.accountId,
   }));
   const combined = [...billEvents.map((event) => ({ ...event, kind: event.kind })), ...sourceEvents];
   const cash = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events: combined, includeExpectedIncome: false });
@@ -361,7 +363,7 @@ export async function paycheckPlan(db: Database, me: Actor, householdId: string,
     cashProjection: cash,
     expectedProjection: withExpected,
     states: { empty: sources.length === 0, overdue, delayed, missing: !upcoming.some((item) => item.inFutureForecast) },
-    expectedReceipts: upcoming.filter((item) => item.countsAsExpected).map((item) => ({ sourceId: item.sourceId, name: item.name, date: item.date, expectedDate: item.expectedDate, amountMinor: item.amountMinor, status: item.status })),
+    expectedReceipts: upcoming.filter((item) => item.countsAsExpected).map((item) => ({ sourceId: item.sourceId, accountId: item.accountId, name: item.name, date: item.date, expectedDate: item.expectedDate, amountMinor: item.amountMinor, status: item.status })),
     upcoming,
     sources: await Promise.all(sources.map(async (source) => mapSource(source, await datesOf(db, String(source.id)), await exceptionsOf(db, String(source.id))))),
     note: "Expected income is not cash, Ready to Assign, or net worth.",
@@ -925,5 +927,6 @@ export async function expectedIncomeEvents(db: Database, me: Actor, householdId:
     label: item.name,
     kind: "income" as const,
     expectedIncome: true,
+    accountId: item.accountId,
   }));
 }

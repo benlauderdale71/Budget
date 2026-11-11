@@ -17,6 +17,8 @@ Open http://127.0.0.1:5173. The API listens on http://127.0.0.1:8787. Use **Open
 
 Without `DATABASE_URL`, BudgetCents uses an embedded Postgres-compatible database (PGlite) under `BUDGETCENTS_DATA`. Set `DATABASE_URL` to use PostgreSQL. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
+Receipt reading runs on the API with Tesseract and Poppler. Install `tesseract-ocr`, `tesseract-ocr-eng`, and `poppler-utils` on that host. The browser and Android upload the file and review the draft. See [docs/RECEIPTS.md](docs/RECEIPTS.md).
+
 ## Android
 
 The Android client is a native app in `android/`, application id `com.budgetcents.app`, target SDK 36. It talks to the same API. On an emulator, set the server to `http://10.0.2.2:8787`.

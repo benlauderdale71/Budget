@@ -26,11 +26,11 @@ Put the process behind a reverse proxy that terminates TLS. Redirect HTTP to HTT
 
 ## Files
 
-Receipts are written under `BUDGETCENTS_UPLOADS`. Back that directory up with the database. It is not object storage.
+Receipts are written under `BUDGETCENTS_UPLOADS`. Back that directory up with the database. It is not object storage. Reading a receipt needs `tesseract-ocr`, `tesseract-ocr-eng`, and `poppler-utils` on the API host. Setup, limits, and the health fields are in `docs/RECEIPTS.md`.
 
 ## Mail
 
-Password reset and address verification are written to the `outbox` table until `SMTP_URL` is set. `ALLOW_DEV_MAILSINK=true` returns the raw token in the API response. Leave it unset or `false` on any server other people can reach.
+Password reset and address verification are written to the outbox until `SMTP_URL` is set. The API response does not include the raw token. In development, `GET /api/dev/outbox?email=` returns that mailbox. The route is absent when `NODE_ENV` is `production`. That outbox is not proof that SMTP delivered the message.
 
 ## Scheduled fills
 

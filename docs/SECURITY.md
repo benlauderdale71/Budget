@@ -28,7 +28,7 @@ The Android client stores the session token in encrypted shared preferences (AES
 
 ## Attachments
 
-Uploads are sniffed as JPEG, PNG, or PDF and rejected past 8 MB. OCR is not connected. Applying a receipt does not overwrite a reconciled transaction, and a mismatched total does not change the amount by itself.
+Uploads are sniffed as JPEG, PNG, or PDF and rejected past 8 MB. The API reads an accepted file with local Tesseract and Poppler. The file is not sent to an external OCR service. See `docs/RECEIPTS.md`. A receipt the caller cannot access is rejected before any transaction edit. Applying a receipt does not overwrite a reconciled transaction, and a mismatched total does not change the amount unless the person accepts that difference and the transaction is not reconciled. Confirmation uses an operation id so a repeated submit does not create a second expense.
 
 ## What this does not do
 

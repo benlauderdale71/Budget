@@ -614,7 +614,7 @@ export function forecastEventsFromSchedules(
   const until = addDays(asOf, horizonDays);
   const postedBefore = new Set(transactions.filter((txn) => txn.scheduleId && !txn.deleted && txn.date <= asOf).map((txn) => `${txn.scheduleId}:${txn.date}`));
   const postedAfter = new Map(transactions.filter((txn) => txn.scheduleId && !txn.deleted && txn.date > asOf).map((txn) => [`${txn.scheduleId}:${txn.date}`, txn]));
-  const events: { id: string; scheduleId?: string; date: string; amountMinor: number; label: string; kind: "income" | "expense"; expectedIncome?: boolean; bucketId?: string }[] = [];
+  const events: { id: string; scheduleId?: string; date: string; amountMinor: number; label: string; kind: "income" | "expense"; expectedIncome?: boolean; bucketId?: string; accountId?: string }[] = [];
   for (const schedule of schedules) {
     if (schedule.paused || schedule.archived || schedule.type === "transfer" || schedule.type === "fill") continue;
     const dates = forecastDatesForSchedule(schedule, asOf, until);
@@ -632,6 +632,7 @@ export function forecastEventsFromSchedules(
           kind: later.amountMinor < 0 ? "expense" : "income",
           expectedIncome: false,
           bucketId: schedule.bucketId,
+          accountId: schedule.accountId,
         });
         continue;
       }
@@ -644,6 +645,7 @@ export function forecastEventsFromSchedules(
         kind: schedule.direction === "inflow" ? "income" : "expense",
         expectedIncome: schedule.direction === "inflow",
         bucketId: schedule.bucketId,
+        accountId: schedule.accountId,
       });
     }
   }

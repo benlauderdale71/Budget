@@ -1,6 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, duplicateKey, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, displayBalance, duplicateKey, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
@@ -37,7 +35,9 @@ import {
   financialRoadmap,
   neededForTarget,
 } from "./finance.js";
+import { readerStatus } from "./ocr.js";
 import { textPdf } from "./pdf.js";
+import { mountReceipts } from "./receipts.js";
 import { DEMO_EMAIL, DEMO_PASSWORD, ensureDemo } from "./seed.js";
 
 const money = z.number().int();
@@ -155,7 +155,7 @@ export function createApp(db: Database) {
     return mapUser(rows[0]);
   }
 
-  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus(), devMail: devMailEnabled() }));
+  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus(), devMail: devMailEnabled(), ocr: readerStatus() }));
 
   app.get("/api/dev/outbox", async (c) => {
     if (!devMailEnabled()) throw new ApiError(404, "Not found");
@@ -1083,13 +1083,39 @@ export function createApp(db: Database) {
   app.get("/api/households/:hid/forecast", async (c) => {
     const me = await actor(c);
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
-    const days = Math.min(370, Number(c.req.query("days") ?? 30));
+    const requestedDays = Number(c.req.query("days") ?? 30);
+    const days = Math.min(370, Math.max(1, Number.isFinite(requestedDays) ? Math.trunc(requestedDays) : 30));
+    const accountId = c.req.query("accountId") || undefined;
+    let starting = loaded.budget.cashPoolMinor;
+    let accountName: string | null = null;
+    if (accountId) {
+      const account = await mustAccount(me.id, loaded.member.householdId, accountId);
+      await assertSpace(me.id, loaded.member.householdId, String(account.space_id));
+      const domainAccount: Account = {
+        id: String(account.id),
+        name: String(account.name),
+        kind: String(account.kind) as Account["kind"],
+        currency: String(account.currency),
+        onBudget: num(account.on_budget) === 1,
+        archived: num(account.archived) === 1,
+        excludeFromNetWorth: num(account.exclude_from_net_worth) === 1,
+      };
+      if (!isOnBudgetCash(domainAccount)) throw new ApiError(400, "Choose a cash account. The forecast starts from cash, not a card or loan balance.");
+      starting = displayBalance(domainAccount, loaded.balanceTransactions, loaded.input.asOf);
+      accountName = domainAccount.name;
+    }
     const guide = guidanceFor(loaded, days);
     const income = await expectedIncomeEvents(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
-    const events = [...guide.events, ...income];
-    const cash = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events, includeExpectedIncome: false });
-    const plan = projectCash({ startingMinor: loaded.budget.cashPoolMinor, startDate: loaded.input.asOf, days, events, includeExpectedIncome: true });
-    return c.json({ cash, plan, paycheck: planView(loaded), guidance: guide.guidance, spaceId: loaded.spaceId, note: "The cash projection does not spend a paycheck that has not arrived. The plan view is labeled separately." });
+    const events = [...guide.events, ...income].filter((event) => !accountId || event.accountId === accountId);
+    const cash = projectCash({ startingMinor: starting, startDate: loaded.input.asOf, days, events, includeExpectedIncome: false });
+    const plan = projectCash({ startingMinor: starting, startDate: loaded.input.asOf, days, events, includeExpectedIncome: true });
+    return c.json({
+      cash, plan, paycheck: planView(loaded), guidance: guide.guidance, spaceId: loaded.spaceId,
+      asOf: loaded.input.asOf, days, accountId: accountId ?? null, accountName, startingMinor: starting,
+      note: accountId
+        ? "This forecast is one cash account. It includes bills and paychecks assigned to that account. Cash and expected income stay separate."
+        : "The cash projection does not spend a paycheck that has not arrived. The plan view is labeled separately.",
+    });
   });
 
   app.post("/api/households/:hid/scenarios", async (c) => {
@@ -1642,42 +1668,6 @@ export function createApp(db: Database) {
     return c.json({ ...created, note: "This adjustment is a real register entry. It is not hidden inside the reconciliation." }, 201);
   });
 
-  app.post("/api/households/:hid/attachments", async (c) => {
-    const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const form = await c.req.parseBody();
-    const file = form.file;
-    if (!(file instanceof File)) throw new ApiError(400, "Choose a JPEG, PNG, or PDF.");
-    if (file.size > 8_000_000) throw new ApiError(400, "Files need to be 8 MB or smaller.");
-    const bytes = Buffer.from(await file.arrayBuffer());
-    const mime = sniff(bytes);
-    if (!mime) throw new ApiError(400, "Only JPEG, PNG, and PDF files are accepted.");
-    const attachmentId = id();
-    const key = `${member.householdId}/${attachmentId}`;
-    await mkdir(join(uploadDir(), member.householdId), { recursive: true });
-    await writeFile(join(uploadDir(), key), bytes);
-    await db.query(`INSERT INTO attachments (id, household_id, transaction_id, filename, mime, size_bytes, storage_key, created_by, created_at, ocr_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [attachmentId, member.householdId, typeof form.transactionId === "string" ? form.transactionId : null, file.name, mime, bytes.length, key, me.id, nowIso(), JSON.stringify({ status: "needs_review", merchant: null, date: null, totalMinor: null, note: "OCR is not connected. Type the merchant, date, and total. Confirming is a separate step and will not overwrite a reconciled transaction." })]);
-    return c.json({ id: attachmentId, ocr: { status: "needs_review" } }, 201);
-  });
-
-  app.post("/api/households/:hid/attachments/:id/apply", async (c) => {
-    const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const body = z.object({ confirm: z.literal(true), transactionId: z.string(), payee: z.string().optional(), date: z.string().optional(), totalMinor: money.optional() }).parse(await c.req.json());
-    const txn = await mustTxn(me.id, member.householdId, body.transactionId);
-    if (num(txn.reconciled) === 1) throw new ApiError(409, "Reconciled transactions are not overwritten from a receipt.");
-    if (body.totalMinor != null && body.totalMinor !== Math.abs(num(txn.amount_minor))) {
-      return c.json({ ok: false, mismatch: true, message: "The receipt total does not match the transaction. Change the transaction yourself if the receipt is right." });
-    }
-    if (body.payee || body.date) {
-      await db.query(`UPDATE transactions SET payee = COALESCE($1, payee), date = COALESCE($2, date), updated_at = $3 WHERE id = $4`, [body.payee ?? null, body.date ?? null, nowIso(), txn.id]);
-    }
-    await db.query(`UPDATE attachments SET transaction_id = $1 WHERE id = $2 AND household_id = $3`, [txn.id, c.req.param("id"), member.householdId]);
-    return c.json({ ok: true });
-  });
-
   app.get("/api/households/:hid/roadmap", async (c) => {
     const me = await actor(c);
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined);
@@ -2190,6 +2180,17 @@ export function createApp(db: Database) {
     createGoal: (user, householdId, raw, forcedId) => createManualGoal(user, householdId, raw, forcedId),
   });
 
+  mountReceipts(app, db, {
+    actor,
+    requireMember: (userId, householdId) => requireMember(db, userId, householdId),
+    assertWrite,
+    assertSpace,
+    mustAccount,
+    mustTxn,
+    insertTransaction,
+    uploadDir,
+  });
+
   return app;
 }
 
@@ -2273,13 +2274,6 @@ function fundingFor(loaded: Awaited<ReturnType<typeof loadSpace>>) {
 function flag(value: boolean | undefined): number | null {
   if (value == null) return null;
   return value ? 1 : 0;
-}
-
-function sniff(bytes: Buffer): string | null {
-  if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
-  if (bytes.length > 8 && bytes[0] === 0x89 && bytes.toString("ascii", 1, 4) === "PNG") return "image/png";
-  if (bytes.length > 4 && bytes.toString("ascii", 0, 4) === "%PDF") return "application/pdf";
-  return null;
 }
 
 function mapHolding(row: Record<string, unknown>) {

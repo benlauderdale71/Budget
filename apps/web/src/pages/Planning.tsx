@@ -7,40 +7,58 @@ import { ErrorNote, Field, Loading, Money, Notice, Page, Spark, useFormError, us
 
 export function Forecast() {
   const session = useSession();
+  const [asOf, setAsOf] = useState("");
+  const [days, setDays] = useState("45");
+  const [accountId, setAccountId] = useState("");
+  const accounts = useLoad(() => api<{ accounts: { id: string; name: string; kind: string }[] }>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  const query = `?days=${encodeURIComponent(days || "45")}${asOf ? `&asOf=${asOf}` : ""}${accountId ? `&accountId=${accountId}` : ""}`;
   const state = useLoad(() => api<{
-    cash: { points: { date: string; balanceMinor: number }[]; endingMinor: number; minimumMinor: number; overdraftDate: string | null; formula: string };
-    plan: { endingMinor: number };
+    cash: { points: { date: string; balanceMinor: number }[]; endingMinor: number; minimumMinor: number; overdraftDate: string | null; formula: string; includedExpectedIncome: boolean };
+    plan: { endingMinor: number; includedExpectedIncome: boolean };
     paycheck: { note: string; paychecks: { beforeNext: { shortageMinor: number; uncoveredMinor: number; obligations: { name: string; date: string; uncoveredMinor: number }[]; paycheckDate: string | null }; formula: string } };
     note: string;
     spaceId: string;
-  }>(scoped(session.householdId, "/forecast?days=45", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+    asOf: string;
+    days: number;
+    accountName: string | null;
+  }>(scoped(session.householdId, `/forecast${query}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, asOf, days, accountId]);
   const form = useFormError();
   const [scenario, setScenario] = useState("");
   if (state.loading && !state.data) return <Loading label="Building the forecast" />;
   if (!state.data) return <ErrorNote message={state.error ?? "No forecast"} onRetry={session.bump} />;
   const data = state.data;
+  const cashAccounts = (accounts.data?.accounts ?? []).filter((account) => ["checking", "savings", "cash"].includes(account.kind));
   return (
     <Page title="Forecast" lede={data.note}>
+      <form className="card row" onSubmit={(event) => event.preventDefault()}>
+        <Field label="Start date"><input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></Field>
+        <Field label="Days"><input inputMode="numeric" value={days} onChange={(event) => setDays(event.target.value)} /></Field>
+        <Field label="Account"><select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">All cash accounts</option>{cashAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        <p className="muted">Showing {data.asOf} for {data.days} days{data.accountName ? ` on ${data.accountName}` : ""}.</p>
+      </form>
       <div className="grid two">
         <article className="card">
-          <p className="kicker">Cash on hand</p>
+          <p className="kicker">Cash projection</p>
+          <p className="figure"><Money minor={data.cash.endingMinor} /></p>
           <Spark points={data.cash.points} label="Cash projection without expected income" />
           <p>Lowest point <Money minor={data.cash.minimumMinor} />{data.cash.overdraftDate ? ` on ${data.cash.overdraftDate}` : ""}.</p>
           <p className="formula">{data.cash.formula}</p>
         </article>
         <article className="card">
+          <h2>Projection with expected income</h2>
+          <p className="figure"><Money minor={data.plan.endingMinor} /></p>
+          <p>This figure includes pay that has not arrived. It is separate from the cash projection and is not money you can assign.</p>
           <h2>Before the next paycheck</h2>
           <p>{data.paycheck.note}</p>
           {data.paycheck.paychecks.beforeNext.shortageMinor > 0 ? <p className="figure shortage"><Money minor={data.paycheck.paychecks.beforeNext.shortageMinor} /></p> : <p>Covered by cash already here.</p>}
           <ul className="list">{data.paycheck.paychecks.beforeNext.obligations.map((item) => <li key={`${item.name}-${item.date}`}><span>{item.date} {item.name}</span><Money minor={item.uncoveredMinor} /></li>)}</ul>
-          <p className="muted">A separate plan that includes expected income ends at <Money minor={data.plan.endingMinor} />. That figure is not cash.</p>
         </article>
       </div>
       <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         const body = new FormData(event.currentTarget);
         const amount = -Math.abs(parseAmount(String(body.get("amount")), session.currency));
         const result = await api<{ note: string; projection: { endingMinor: number; overdraftDate: string | null } }>(scoped(session.householdId, "/scenarios"), { method: "POST", body: JSON.stringify({
-          spaceId: data.spaceId, name: body.get("name"), days: 45, save: true,
+          spaceId: data.spaceId, name: body.get("name"), days: data.days, save: true,
           adjustments: [{ id: "what-if", label: String(body.get("name")), date: body.get("date"), amountMinor: amount, kind: "expense" }],
         }) });
         setScenario(`${result.note} The copy ends at ${result.projection.endingMinor} minor units.${result.projection.overdraftDate ? ` It would cross zero on ${result.projection.overdraftDate}.` : " It stays at or above zero."}`);
