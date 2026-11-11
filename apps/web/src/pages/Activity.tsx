@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import { allows } from "@budgetcents/domain/access";
+import { OwnershipFilter, useHouseholdPeople } from "../ownership.js";
 import { parseAmount, todayISO } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
 import type { Account, Dashboard, Txn } from "../types.js";
@@ -19,10 +21,12 @@ export function Activity() {
   const [offset, setOffset] = useState(0);
   const [matchId, setMatchId] = useState("");
   const [commentFor, setCommentFor] = useState<Txn | null>(null);
+  const [peopleFor, setPeopleFor] = useState<Txn | null>(null);
   const [note, setNote] = useState("");
   const [noteBad, setNoteBad] = useState(false);
   const [viewName, setViewName] = useState("");
   const [renaming, setRenaming] = useState("");
+  const people = useHouseholdPeople();
   const query = params.get("q") ?? "";
   const review = params.get("review") ?? "";
   const accountId = params.get("accountId") ?? "";
@@ -30,21 +34,26 @@ export function Activity() {
   const tag = params.get("tag") ?? "";
   const ids = params.get("ids") ?? "";
   const sort = params.get("sort") === "payee" ? "payee" : "date";
-  useEffect(() => { setOffset(0); }, [query, review, accountId, bucketId, tag, ids, sort]);
+  const ownership = params.get("ownership") ?? "all";
+  const personId = params.get("personId") ?? "";
+  const reviewer = params.get("reviewer") ?? "";
+  const collaborationQuery = new URLSearchParams({ ownership, ...(personId ? { personId } : {}), ...(reviewer ? { reviewer } : {}) }).toString();
+  useEffect(() => { setOffset(0); }, [query, review, accountId, bucketId, tag, ids, sort, ownership, personId, reviewer]);
   useEffect(() => {
     if (!pageChanged.current) return;
     summaryRef.current?.focus();
   }, [offset]);
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const views = useLoad(() => api<{ views: { id: string; name: string; query: Record<string, string> }[] }>(scoped(session.householdId, "/views")), [session.householdId, session.tick]);
-  const list = useLoad(() => api<{ total: number; offset: number; transactions: Txn[]; nextOffset: number | null }>(scoped(session.householdId, `/transactions?limit=${PAGE}&offset=${offset}&sort=${sort}${query ? `&q=${encodeURIComponent(query)}` : ""}${review ? `&review=${encodeURIComponent(review)}` : ""}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}${bucketId ? `&bucketId=${encodeURIComponent(bucketId)}` : ""}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}${ids ? `&ids=${encodeURIComponent(ids)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query, review, accountId, bucketId, tag, ids, sort, offset]);
+  const list = useLoad(() => api<{ total: number; offset: number; transactions: Txn[]; nextOffset: number | null }>(scoped(session.householdId, `/transactions?${collaborationQuery}&limit=${PAGE}&offset=${offset}&sort=${sort}${query ? `&q=${encodeURIComponent(query)}` : ""}${review ? `&review=${encodeURIComponent(review)}` : ""}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}${bucketId ? `&bucketId=${encodeURIComponent(bucketId)}` : ""}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}${ids ? `&ids=${encodeURIComponent(ids)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query, review, accountId, bucketId, tag, ids, sort, offset, collaborationQuery]);
   const purchases = useLoad(() => api<{ transactions: Txn[] }>(scoped(session.householdId, "/transactions?limit=200", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   if ((dash.loading || list.loading) && !list.data) return <Loading label="Loading activity" />;
   if (!dash.data || !list.data) return <ErrorNote message={dash.error || list.error || "Could not load activity"} onRetry={session.bump} />;
   const names = new Map(dash.data.accounts.map((account) => [account.id, account.name]));
   const payees = new Map((purchases.data?.transactions ?? list.data.transactions).map((txn) => [txn.id, txn.payee]));
   const visible = list.data.transactions;
-  const currentQuery = { q: query, review, accountId, bucketId, tag, ids, sort };
+  const currentQuery = { q: query, review, accountId, bucketId, tag, ids, sort, ownership, personId, reviewer };
+  const personNames = new Map((people.data?.people ?? []).map((person) => [person.id, person.displayName]));
   function replaceFilters(next: URLSearchParams) {
     setOffset(0);
     setParams(next);
@@ -64,6 +73,12 @@ export function Activity() {
     <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" type="button" disabled={!access.canWrite} onClick={() => { setEditing(null); setOpen(true); }}>Add</button>}>
       {ids ? <p><button className="btn-quiet" type="button" onClick={() => { const next = new URLSearchParams(params); next.delete("ids"); replaceFilters(next); }}>Show the whole register</button></p> : null}
       <div className="row">
+        <OwnershipFilter people={people.data?.people ?? []} />
+        <label className="field">Review queue
+          <select aria-label="Review queue" value={reviewer} onChange={(event) => { const next = new URLSearchParams(params); if (event.target.value) { next.set("reviewer", event.target.value); next.set("review", "needs_review"); } else { next.delete("reviewer"); next.delete("review"); } replaceFilters(next); }}>
+            <option value="">All reviews</option><option value="mine">Assigned to me</option><option value="unassigned">Unassigned reviews</option>
+          </select>
+        </label>
         <label className="field">Account
           <select value={accountId} onChange={(event) => { const next = new URLSearchParams(params); if (event.target.value) next.set("accountId", event.target.value); else next.delete("accountId"); replaceFilters(next); }}>
             <option value="">All accounts</option>
@@ -100,18 +115,18 @@ export function Activity() {
           </span>
         ))}
       </div>
-      <p className="muted" ref={summaryRef} tabIndex={-1}>{list.data.total} in this view. Showing {visible.length === 0 ? "0" : `${(list.data.offset ?? offset) + 1}–${(list.data.offset ?? offset) + visible.length}`}.</p>
+      <p className="muted" ref={summaryRef} tabIndex={-1}>{list.loading ? "Loading this view." : list.error ? "This view could not be loaded." : <>{list.data.total} in this view. Showing {visible.length === 0 ? "0" : `${(list.data.offset ?? offset) + 1}–${(list.data.offset ?? offset) + visible.length}`}.</>}</p>
       {note ? <Notice kind={noteBad ? "bad" : "ok"}>{note}</Notice> : null}
-      {visible.length === 0 ? <p className="muted">No transactions match.</p> : (
+      {list.loading ? <Loading label="Loading this activity view" /> : list.error ? <ErrorNote message={list.error} onRetry={session.bump} /> : visible.length === 0 ? <p className="muted">No transactions match.</p> : (
         <div className="card table-wrap">
-          <table>
+          <table className="activity-register">
             <caption>Transactions in this view</caption>
             <thead><tr><th>Date</th><th>Payee</th><th>Account</th><th>Review</th><th className="num">Amount</th><th>Actions</th></tr></thead>
             <tbody>
               {visible.map((txn) => (
                 <tr key={txn.id}>
-                  <td>{txn.date}</td>
-                  <td>
+                  <td data-label="Date">{txn.date}</td>
+                  <td data-label="Payee">
                     {txn.payee}
                     {txn.notes ? <div className="muted">{txn.notes}</div> : null}
                     {txn.tags?.length ? <div className="muted">Tags {txn.tags.join(", ")}</div> : null}
@@ -120,10 +135,14 @@ export function Activity() {
                     {txn.refundOfId ? <div className="muted">Refund of {payees.get(txn.refundOfId) ?? "a purchase"}</div> : null}
                     {txn.matchedArchivedId ? <div className="muted">Matched. The other copy is hidden.</div> : null}
                   </td>
-                  <td>{names.get(txn.accountId) ?? "Account"}</td>
-                  <td>{txn.reviewStatus === "needs_review" ? "Needs review" : txn.reconciled ? "Reconciled" : "Reviewed"}</td>
-                  <td className="num"><Money minor={txn.amountMinor} /></td>
-                  <td>
+                  <td data-label="Account">{names.get(txn.accountId) ?? "Account"}</td>
+                  <td data-label="Review">{txn.reviewStatus === "needs_review" ? "Needs review" : txn.reconciled ? "Reconciled" : "Reviewed"}
+                    <div className="muted">Owner: {txn.ownerUserId ? personNames.get(txn.ownerUserId) ?? "Former member" : "Ours"}</div>
+                    {txn.reviewerUserId ? <div className="muted">Reviewer: {personNames.get(txn.reviewerUserId) ?? "Former member"}</div> : null}
+                    {txn.reviewResolvedAt ? <div className="muted">Resolved by {personNames.get(txn.reviewResolvedBy ?? "") ?? "Former member"} on {txn.reviewResolvedAt.slice(0, 10)}</div> : null}
+                  </td>
+                  <td className="num" data-label="Amount"><Money minor={txn.amountMinor} /></td>
+                  <td data-label="Actions">
                     <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Edit ${txn.payee} on ${txn.date}`} onClick={() => { setEditing(txn); setOpen(true); }}>Edit</button>
                     <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Duplicate ${txn.payee} on ${txn.date}`} onClick={() => act("A copy was added and marked for review. The original was not changed, and its bank id was not copied.", () => api(scoped(session.householdId, `/transactions/${txn.id}/duplicate`), { method: "POST" }).then(() => undefined))}>Duplicate</button>
                     <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-pressed={matchId === txn.id} aria-label={matchId === txn.id ? `${txn.payee} on ${txn.date} is selected to match` : `Match ${txn.payee} on ${txn.date}`} onClick={() => setMatchId(matchId === txn.id ? "" : txn.id)}>{matchId === txn.id ? "Selected to match" : "Match"}</button>
@@ -133,7 +152,8 @@ export function Activity() {
                     })}>Match with selected</button> : null}
                     {txn.matchedArchivedId ? <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Unmatch ${txn.payee} on ${txn.date}`} onClick={() => act("The hidden record is back in the register, and a receipt that moved comes back with it.", () => api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" }).then(() => undefined))}>Unmatch</button> : null}
                     <button className="btn-quiet" type="button" aria-label={`Comment on ${txn.payee} on ${txn.date}`} onClick={() => setCommentFor(txn)}>Comment</button>
-                    {access.canReview ? <button className="btn-quiet" type="button" aria-label={`Mark ${txn.payee} on ${txn.date} reviewed`} onClick={() => act("Marked reviewed. The amount, category, and balance did not change.", () => api(scoped(session.householdId, `/transactions/${txn.id}/review`), { method: "POST", body: JSON.stringify({ reviewStatus: "reviewed", version: txn.version ?? 1 }) }).then(() => undefined))}>Mark reviewed</button> : null}
+                    {access.canWrite ? <button className="btn-quiet" type="button" aria-label={`Manage people for ${txn.payee} on ${txn.date}`} onClick={() => setPeopleFor(txn)}>Manage people</button> : null}
+                    {access.canReview && (access.canWrite || !txn.reviewerUserId || txn.reviewerUserId === session.user?.id) ? <button className="btn-quiet" type="button" aria-label={`${txn.reviewStatus === "reviewed" ? "Reopen review for" : "Mark reviewed:"} ${txn.payee} on ${txn.date}`} onClick={() => act("Review updated. The amount, category, and balance did not change.", () => api(scoped(session.householdId, `/transactions/${txn.id}/review`), { method: "POST", body: JSON.stringify({ reviewStatus: txn.reviewStatus === "reviewed" ? "needs_review" : "reviewed", version: txn.version ?? 1 }) }).then(() => undefined))}>{txn.reviewStatus === "reviewed" ? "Reopen review" : "Mark reviewed"}</button> : null}
                   </td>
                 </tr>
               ))}
@@ -145,10 +165,33 @@ export function Activity() {
         {offset > 0 ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(Math.max(0, offset - PAGE)); }}>Previous page</button> : null}
         {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
+      {peopleFor ? <PeopleForm txn={peopleFor} onClose={() => setPeopleFor(null)} /> : null}
       {commentFor ? <CommentForm txn={commentFor} onClose={() => setCommentFor(null)} onSaved={(message) => { setNoteBad(false); setNote(message); setCommentFor(null); }} /> : null}
       {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
     </Page>
   );
+}
+
+function PeopleForm({ txn, onClose }: { txn: Txn; onClose: () => void }) {
+  const session = useSession();
+  const people = useHouseholdPeople();
+  const form = useFormError();
+  const [kind, setKind] = useState("ownership");
+  const [personId, setPersonId] = useState(txn.ownerUserId ?? "");
+  const choices = (people.data?.people ?? []).filter((person) => kind === "ownership" || allows(person.role, "review"));
+  return <Modal title={`People for ${txn.payee}`} onClose={onClose}>
+    <p>Ownership labels filter views. Assigning a reviewer requests a new review. Neither changes money or grants access to private records.</p>
+    <form onSubmit={(event) => form.run(event, async () => {
+      await api(scoped(session.householdId, `/transactions/${txn.id}/${kind}`), { method: "POST", body: JSON.stringify({ version: txn.version ?? 1, ...(kind === "ownership" ? { ownerUserId: personId || null } : { reviewerUserId: personId || null }) }) });
+      session.bump(); onClose();
+    })}>
+      <Field label="Change"><select aria-label="Change" value={kind} onChange={(event) => { setKind(event.target.value); setPersonId(event.target.value === "ownership" ? txn.ownerUserId ?? "" : txn.reviewerUserId ?? ""); }}><option value="ownership">Ownership label</option><option value="review-assignment">Reviewer</option></select></Field>
+      <Field label={kind === "ownership" ? "Owner" : "Assign review to"}><select aria-label={kind === "ownership" ? "Owner" : "Assign review to"} value={personId} onChange={(event) => setPersonId(event.target.value)}><option value="">{kind === "ownership" ? "Ours — shared ownership" : "Unassigned"}</option>{choices.map((person) => <option key={person.id} value={person.id}>{person.displayName}</option>)}</select></Field>
+      {people.error ? <Notice kind="bad">{people.error}</Notice> : null}
+      {form.error ? <Notice kind="bad">{form.error} Close this dialog and refresh Activity if someone else changed this record.</Notice> : null}
+      <button type="submit" className="btn" disabled={people.loading || !!people.error}>Save {kind === "ownership" ? "ownership" : "reviewer"}</button>
+    </form>
+  </Modal>;
 }
 
 function CommentForm({ txn, onClose, onSaved }: { txn: Txn; onClose: () => void; onSaved: (message: string) => void }) {

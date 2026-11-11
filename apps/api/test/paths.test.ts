@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { repositoryRoot, resolveStaticFile, resolveWebRoot } from "../src/paths.js";
 import { shouldServeAppShell } from "../src/static-fallback.js";
@@ -8,7 +8,7 @@ import { shouldServeAppShell } from "../src/static-fallback.js";
 describe("web root resolution", () => {
   it("resolves the repository root from the API source directory", () => {
     const root = repositoryRoot(join(process.cwd(), "src"));
-    expect(root.endsWith("Budget") || root.endsWith("workspace") || root.includes("budget")).toBe(true);
+    expect(root).toBe(resolve(process.cwd(), "../.."));
     const web = resolveWebRoot({ moduleDir: join(process.cwd(), "src") });
     expect(web).toBe(join(root, "apps/web/dist"));
   });

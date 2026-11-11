@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
+import { collaborationPeople, ownershipFilter, ownershipSummary, recordReviewResolution, updateCollaboration } from "./collaboration.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
 import { mountLoans } from "./loans.js";
@@ -531,6 +532,28 @@ export function createApp(db: Database) {
     });
   });
 
+  app.get("/api/households/:hid/collaboration/people", async (c) => {
+    const me = await actor(c);
+    return c.json({ people: await collaborationPeople(db, me.id, c.req.param("hid")) });
+  });
+
+  app.get("/api/households/:hid/ownership-summary", async (c) => {
+    const me = await actor(c);
+    return c.json(await ownershipSummary(db, me, c.req.param("hid"), c.req.query("ownership") ?? "all", c.req.query("personId"), c.req.query("spaceId"), c.req.query("asOf")));
+  });
+
+  app.post("/api/households/:hid/transactions/:id/ownership", async (c) => {
+    const me = await actor(c);
+    const body = z.object({ ownerUserId: z.string().min(1).nullable(), version: z.number().int().positive() }).parse(await c.req.json());
+    return c.json(await updateCollaboration(db, me, c.req.param("hid"), c.req.param("id"), body.version, { kind: "owner", userId: body.ownerUserId }));
+  });
+
+  app.post("/api/households/:hid/transactions/:id/review-assignment", async (c) => {
+    const me = await actor(c);
+    const body = z.object({ reviewerUserId: z.string().min(1).nullable(), version: z.number().int().positive() }).parse(await c.req.json());
+    return c.json(await updateCollaboration(db, me, c.req.param("hid"), c.req.param("id"), body.version, { kind: "assignment", userId: body.reviewerUserId }));
+  });
+
   app.post("/api/households/:hid/accounts", async (c) => {
     const me = await actor(c);
     const created = await createManualAccount(me, c.req.param("hid"), await c.req.json());
@@ -569,7 +592,13 @@ export function createApp(db: Database) {
     const idFilter = c.req.query("ids");
     const idSet = idFilter ? new Set(idFilter.split(",").map((item) => item.trim()).filter(Boolean)) : null;
     if (idSet && idSet.size > 200) throw new ApiError(400, "Choose a smaller set of transactions.");
+    const matchesOwnership = await ownershipFilter(db, me.id, loaded.member.householdId, c.req.query("ownership") ?? "all", c.req.query("personId"));
+    const reviewer = c.req.query("reviewer");
+    if (reviewer && reviewer !== "mine" && reviewer !== "unassigned") throw new ApiError(400, "Choose My reviews or Unassigned reviews.");
     let rows = loaded.input.transactions.filter((txn) => {
+      if (!matchesOwnership(txn)) return false;
+      if (reviewer === "mine" && txn.reviewerUserId !== me.id) return false;
+      if (reviewer === "unassigned" && txn.reviewerUserId) return false;
       if (idSet && !idSet.has(txn.id)) return false;
       if (q && !`${txn.payee} ${txn.notes ?? ""} ${txn.originalDescription ?? ""} ${txn.checkNumber ?? ""}`.toLowerCase().includes(q)) return false;
       if (c.req.query("accountId") && txn.accountId !== c.req.query("accountId") && txn.counterAccountId !== c.req.query("accountId")) return false;
@@ -662,6 +691,8 @@ export function createApp(db: Database) {
     const accounts = await loadEngineAccounts(member.householdId, [resulting.accountId, resulting.counterAccountId]);
     validateTransaction(resulting, accounts, String(account.currency));
     await db.tx(async () => {
+      await db.query(`SELECT id FROM households WHERE id = $1 FOR UPDATE`, [member.householdId]);
+      assertWrite(await requireMember(db, me.id, member.householdId));
       const updated = await db.query(
         `UPDATE transactions SET date = COALESCE($1, date), payee = COALESCE($2, payee), notes = COALESCE($3, notes), amount_minor = COALESCE($4, amount_minor),
          review_status = COALESCE($5, review_status), bank_status = COALESCE($6, bank_status), flag = COALESCE($7, flag), category_locked = COALESCE($8, category_locked),
@@ -676,6 +707,7 @@ export function createApp(db: Database) {
         ],
       );
       if (!updated.length) throw new ApiError(409, "Someone else changed this transaction. Reload it and try again.");
+      if (body.reviewStatus && body.reviewStatus !== existing.review_status) await recordReviewResolution(db, member.householdId, String(existing.id), me.id, body.reviewStatus);
       if (body.splits) await replaceSplits(String(existing.id), body.splits);
       if (body.tags) await replaceTags(String(existing.id), body.tags);
       await audit(db, member.householdId, me.id, "transaction.update", body.reason ?? "Edited transaction", "transaction", String(existing.id));
@@ -718,6 +750,8 @@ export function createApp(db: Database) {
       prepared.push({ existing, splits });
     }
     await db.tx(async () => {
+      await db.query(`SELECT id FROM households WHERE id = $1 FOR UPDATE`, [member.householdId]);
+      assertWrite(await requireMember(db, me.id, member.householdId));
       for (const { existing } of prepared) {
         const txnId = String(existing.id);
         if (body.deleted) {
@@ -725,11 +759,13 @@ export function createApp(db: Database) {
           await db.query(`UPDATE transactions SET deleted = 1, updated_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), txnId, member.householdId]);
         }
         if (body.reviewStatus) await db.query(`UPDATE transactions SET review_status = $1, updated_at = $2 WHERE id = $3 AND household_id = $4`, [body.reviewStatus, nowIso(), txnId, member.householdId]);
+        if (body.reviewStatus && body.reviewStatus !== existing.review_status) await recordReviewResolution(db, member.householdId, txnId, me.id, body.reviewStatus);
         if (body.tag) await db.query(`INSERT INTO transaction_tags (transaction_id, tag) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [txnId, body.tag]);
         if (body.bucketId) {
           await replaceSplits(txnId, [{ bucketId: body.bucketId, amountMinor: Math.abs(num(existing.amount_minor)), role: num(existing.amount_minor) >= 0 ? "income" : "expense" }]);
           await db.query(`UPDATE transactions SET category_locked = 1, updated_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), txnId, member.householdId]);
         }
+        await db.query(`UPDATE transactions SET version = version + 1 WHERE id = $1 AND household_id = $2`, [txnId, member.householdId]);
       }
       await audit(db, member.householdId, me.id, "transaction.bulk", `Updated ${body.ids.length} transactions`);
     });
@@ -857,6 +893,9 @@ export function createApp(db: Database) {
         accountId: z.string().optional(),
         bucketId: z.string().optional(),
         review: z.string().optional(),
+        ownership: z.string().optional(),
+        personId: z.string().optional(),
+        reviewer: z.string().optional(),
         tag: z.string().optional(),
         from: z.string().optional(),
         to: z.string().optional(),
@@ -878,6 +917,9 @@ export function createApp(db: Database) {
         accountId: z.string().optional(),
         bucketId: z.string().optional(),
         review: z.string().optional(),
+        ownership: z.string().optional(),
+        personId: z.string().optional(),
+        reviewer: z.string().optional(),
         tag: z.string().optional(),
         from: z.string().optional(),
         to: z.string().optional(),
@@ -1966,19 +2008,8 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/transactions/:id/review", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    if (!allows(member.role, "review")) throw new ApiError(403, "Your role can comment, but it cannot mark a transaction reviewed.");
-    const body = z.object({ reviewStatus: z.enum(["needs_review", "reviewed"]), version: z.number().int() }).parse(await c.req.json());
-    const existing = await mustTxn(me.id, member.householdId, c.req.param("id"));
-    await db.tx(async () => {
-      const updated = await db.query(
-        `UPDATE transactions SET review_status = $1, version = version + 1, updated_at = $2 WHERE id = $3 AND household_id = $4 AND version = $5 AND deleted = 0 RETURNING id`,
-        [body.reviewStatus, nowIso(), existing.id, member.householdId, body.version],
-      );
-      if (!updated.length) throw new ApiError(409, "Someone else changed this transaction. Reload it and try again.");
-      await audit(db, member.householdId, me.id, "transaction.review", body.reviewStatus === "reviewed" ? "Marked a transaction reviewed" : "Marked a transaction for review", "transaction", String(existing.id));
-    });
-    return c.json({ ok: true, note: "Review status changed. The amount, category, and balance did not." });
+    const body = z.object({ reviewStatus: z.enum(["needs_review", "reviewed"]), version: z.number().int().positive() }).parse(await c.req.json());
+    return c.json(await updateCollaboration(db, me, c.req.param("hid"), c.req.param("id"), body.version, { kind: "review", status: body.reviewStatus }));
   });
 
   app.post("/api/households/:hid/reconcile", async (c) => {

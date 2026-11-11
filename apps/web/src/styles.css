@@ -246,6 +246,21 @@ td.num, th.num { text-align: right; }
   .dialog { padding: 14px; }
   th, td { padding: 8px 6px; }
 }
+.ownership-summary { margin-bottom: 1rem; }
+
+@media (max-width: 700px) {
+  .table-wrap table.activity-register { min-width: 0; }
+  .activity-register, .activity-register tbody { display: block; }
+  .activity-register thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .activity-register tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+  .activity-register td { display: block; padding: 0; border: 0; overflow-wrap: anywhere; }
+  .activity-register td::before { display: block; content: attr(data-label); color: var(--muted); font-size: .8rem; font-weight: 600; }
+  .activity-register td:nth-child(2) { grid-column: 1 / -1; grid-row: 1; font-weight: 600; }
+  .activity-register td:nth-child(1) { grid-column: 1; grid-row: 2; }
+  .activity-register td:nth-child(5) { grid-column: 2; grid-row: 2; }
+  .activity-register td:nth-child(3), .activity-register td:nth-child(4), .activity-register td:nth-child(6) { grid-column: 1 / -1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }

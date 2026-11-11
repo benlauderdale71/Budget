@@ -46,6 +46,10 @@ Goals point at one envelope. The available amount is the progress, so it is not 
 
 Invite someone by email. They must accept with that same address. Private accounts stay hidden from them, including on net worth and in a backup. You can also add a personal space only you see, or a business space with its own plan.
 
+Home has a household ownership activity view. All shows records you may see, Mine uses your ownership label, Ours uses shared ownership, and Yours asks which other member. The summary uses posted income and spending after refunds for the displayed dates. Shared budget assignments and Ready to Assign stay combined. Existing owner labels are kept; check them before relying on ownership comparisons.
+
+In Activity, open Manage people for a transaction to change its ownership label or reviewer. Changing the reviewer requests a new review, including when you choose Unassigned. Choose Assigned to me to see your unfinished reviews. Mark reviewed records the person and time; Reopen review keeps the audit history. A reviewer needs a role that can review and existing access to that record. A read-only member cannot be assigned a review. If the reviewer leaves, is removed, or becomes read-only, unfinished work returns to Unassigned. Labels and assignments do not reveal private accounts or alter money.
+
 ## Assistant and connections
 
 The assistant repeats figures the ledger already calculated. If a figure is missing, it says so. Turning it off leaves the plan and the register working.

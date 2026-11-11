@@ -11,6 +11,7 @@ import {
 import { id, nowIso, randomToken, sha256 } from "./crypto.js";
 import { type Database, num } from "./db.js";
 import { ApiError, type Actor, audit, requireMember } from "./finance.js";
+import { releaseReviewer } from "./collaboration.js";
 
 const WEEK_MS = 7 * 86_400_000;
 
@@ -302,6 +303,7 @@ export async function changeMemberRole(db: Database, me: Actor, householdId: str
     if (!caller.length || !allows(String(caller[0].role), "invite")) throw new ApiError(403, "Your role cannot change membership.");
     if (current === role) return { ok: true, role, changed: false };
     await db.query(`UPDATE memberships SET role = $1 WHERE household_id = $2 AND user_id = $3`, [role, member.householdId, userId]);
+    if (!allows(role, "review")) await releaseReviewer(db, member.householdId, userId, me.id);
     await audit(db, member.householdId, me.id, "membership.role", `Changed a member to ${roleLabel(role)}`, "membership", userId);
     return { ok: true, role, changed: true };
   });
@@ -324,6 +326,7 @@ export async function removeMember(db: Database, me: Actor, householdId: string,
       if (owners.length < 2) throw new ApiError(409, "Transfer ownership before removing the only owner.");
     }
     await db.query(`DELETE FROM memberships WHERE household_id = $1 AND user_id = $2`, [member.householdId, userId]);
+    await releaseReviewer(db, member.householdId, userId, me.id);
     await audit(db, member.householdId, me.id, "membership.remove", "Removed a member's access. Shared records were kept.", "membership", userId);
     return { ok: true, note: "Their access has ended. Shared records and history stay. Their other households and personal account stay." };
   });
@@ -340,6 +343,7 @@ export async function leaveHousehold(db: Database, me: Actor, householdId: strin
       if (!owners.length) throw new ApiError(409, "Transfer ownership before leaving. You are the only owner.");
     }
     await db.query(`DELETE FROM memberships WHERE household_id = $1 AND user_id = $2`, [member.householdId, me.id]);
+    await releaseReviewer(db, member.householdId, me.id, me.id);
     await audit(db, member.householdId, me.id, "membership.leave", "A member left. Shared records were kept.", "membership", me.id);
     return { ok: true, note: "You left this household. Shared records stay. Your other households and personal account stay." };
   });

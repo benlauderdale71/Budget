@@ -282,7 +282,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                                 }.onSuccess { status = "Moved. No bank transaction was created."; reload() }.onFailure { error = it.message ?: "Could not move money." }
                             }
                         }
-                        2 -> ActivityTab(txns, dash, store.privacy, writesAllowed(householdRole), activityIds != null, activityLabel, {
+                        2 -> ActivityTab(api, store, householdRole, { reload() }, txns, dash, store.privacy, writesAllowed(householdRole), activityIds != null, activityLabel, {
                             activityIds = null
                             activityLabel = ""
                             reload()
@@ -564,6 +564,10 @@ private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssi
 
 @Composable
 private fun ActivityTab(
+    api: BudgetApi,
+    store: Store,
+    role: String,
+    onReload: () -> Unit,
     txns: JSONObject?,
     dash: JSONObject?,
     privacy: Boolean,
@@ -664,7 +668,10 @@ private fun ActivityTab(
     }
     Text("The photo is stored after you save. Open Receipts to read it. Saving here does not change the amount.")
     }
-    val rows = txns?.optJSONArray("transactions")
+    var collaborationRows by remember(store.householdId) { mutableStateOf<JSONObject?>(null) }
+    val reportIds = if (filtered) txns?.optJSONArray("transactions")?.let { array -> (0 until array.length()).joinToString(",") { array.getJSONObject(it).optString("id") } } else null
+    OwnershipPanel(api, store, dash, privacy, txns?.toString() ?: "", reportIds) { collaborationRows = it }
+    val rows = collaborationRows?.optJSONArray("transactions")
     var selected by remember { mutableStateOf("") }
     var matchId by remember { mutableStateOf("") }
     Text("Activity", style = MaterialTheme.typography.titleMedium)
@@ -672,7 +679,7 @@ private fun ActivityTab(
         Text("Showing $filterLabel from the report. Other register rows are hidden.")
         TextButton(onClick = onShowRegister) { Text("Show the whole register") }
     }
-    if (txns != null) Text("Showing ${rows?.length() ?: 0} of ${txns.optInt("total")}.")
+    if (collaborationRows != null) Text("Showing ${rows?.length() ?: 0} of ${collaborationRows!!.optInt("total")}.")
     if (rows == null) Text("Loading activity…")
     else if (rows.length() == 0) Text(if (filtered) "No transactions in that report row." else "No transactions yet.")
     else for (index in 0 until rows.length()) {
@@ -681,6 +688,7 @@ private fun ActivityTab(
         TextButton(onClick = { selected = if (selected == id) "" else id }, modifier = Modifier.fillMaxWidth()) {
             Text("${row.optString("date")}  ${row.optString("payee")}  ${money(row.optLong("amountMinor"), privacy)}  ${row.optString("reviewStatus").replace('_', ' ')}")
         }
+        if (selected == id) TransactionPeople(row, api, store, role, onReload)
         if (selected == id && writes) {
             TransactionEditor(row, accounts, buckets, onMessage) { patch -> onUpdate(id, patch) }
             if (writes) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

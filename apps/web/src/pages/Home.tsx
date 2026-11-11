@@ -18,6 +18,7 @@ import { ApiError, api } from "../api.js";
 import { DASHBOARD_UNDO_STORAGE, readUndoStacks, withUndoStack, writeUndoStacks, type UndoStacks } from "../dashboard-undo.js";
 import { monthLabel } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
+import { OwnershipDashboard } from "../ownership.js";
 import type { Dashboard } from "../types.js";
 import { ErrorNote, Loading, Modal, Money, useLoad } from "../ui.js";
 
@@ -181,6 +182,7 @@ export function Home() {
           {access.canWrite ? <Link className="btn" to="/activity">Add transaction</Link> : <Link className="btn-secondary" to="/activity">View activity</Link>}
         </div>
       </header>
+      <OwnershipDashboard key={`${session.householdId}:${session.spaceId ?? ""}`} />
       {customizing ? null : <LayoutStatus status={status} failed={failed} retry={retry} onRetry={() => { if (retry) void persist(retry.cards, retry.message, retry.mode, retry.focusId); }} />}
       {dash.budget.identityDifferenceMinor !== 0 ? <div className="banner bad" role="alert">The plan does not match on-budget cash by <Money minor={dash.budget.identityDifferenceMinor} />. Review recent edits before relying on Ready to Assign.</div> : null}
       {dash.budget.warnings.filter((warning) => !warning.includes("identity")).map((warning) => <div key={warning} className="banner bad">{warning}</div>)}

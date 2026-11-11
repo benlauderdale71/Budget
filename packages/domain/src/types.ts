@@ -129,6 +129,11 @@ export interface Transaction {
   splits: Split[];
   bankStatus: BankStatus;
   reviewStatus: ReviewStatus;
+  reviewerUserId?: string;
+  reviewAssignedBy?: string;
+  reviewAssignedAt?: string;
+  reviewResolvedBy?: string;
+  reviewResolvedAt?: string;
   cleared?: boolean;
   reconciled?: boolean;
   locked?: boolean;

@@ -133,6 +133,12 @@ export interface Txn {
   splits: Split[];
   bankStatus: string;
   reviewStatus: string;
+  ownerUserId?: string;
+  reviewerUserId?: string;
+  reviewAssignedBy?: string;
+  reviewAssignedAt?: string;
+  reviewResolvedBy?: string;
+  reviewResolvedAt?: string;
   cleared: boolean;
   reconciled: boolean;
   tags?: string[];

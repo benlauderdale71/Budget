@@ -208,6 +208,7 @@ fun DashboardHome(dash: JSONObject?, privacy: Boolean, api: BudgetApi, store: St
         return
     }
     val guidance = dash.getJSONObject("guidance")
+    OwnershipPanel(api, store, dash, privacy, dash.toString())
     val budget = dash.getJSONObject("budget")
     if (budget.optLong("identityDifferenceMinor") != 0L) {
         Text("The plan does not match cash. Review it before assigning more.")
