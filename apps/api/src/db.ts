@@ -36,6 +36,30 @@ export async function migrate(db: Database): Promise<void> {
   await db.exec(`ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'shared'`);
   await db.exec(`ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS owner_user_id text`);
   await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS invitations_token_hash ON invitations (token_hash)`);
+  for (const [name, type] of [
+    ["fingerprint", "text NOT NULL DEFAULT ''"],
+    ["entity_type", "text"],
+    ["entity_id", "text"],
+    ["href", "text"],
+    ["amount_minor", "bigint"],
+    ["status", "text NOT NULL DEFAULT 'unread'"],
+    ["snoozed_until", "text"],
+    ["resolved_at", "text"],
+    ["resolved_reason", "text"],
+    ["updated_at", "text"],
+    ["delivery_status", "text NOT NULL DEFAULT 'generated'"],
+    ["delivery_detail", "text"],
+    ["last_notified_at", "text"],
+    ["escalated_at", "text"],
+    ["channel_status", "text NOT NULL DEFAULT '{}'"],
+  ] as const) {
+    await db.exec(`ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ${name} ${type}`);
+  }
+  await db.exec(`UPDATE alerts SET status = 'read' WHERE read_at IS NOT NULL AND status = 'unread'`);
+  await db.exec(`UPDATE alerts SET updated_at = created_at WHERE updated_at IS NULL`);
+  await db.exec(`UPDATE alerts SET delivery_status = 'delivered' WHERE fingerprint = '' AND delivery_status = 'generated'`);
+  await db.exec(`UPDATE alerts SET fingerprint = dedupe_key WHERE fingerprint = ''`);
+  await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS alerts_one_open ON alerts (household_id, user_id, dedupe_key) WHERE status <> 'resolved'`);
 }
 
 export async function openDatabase(databaseUrl = process.env.DATABASE_URL): Promise<Database> {

@@ -439,11 +439,35 @@ CREATE TABLE IF NOT EXISTS alerts (
   user_id text NOT NULL,
   kind text NOT NULL,
   dedupe_key text NOT NULL,
+  fingerprint text NOT NULL DEFAULT '',
   title text NOT NULL,
   body text NOT NULL,
+  entity_type text,
+  entity_id text,
+  href text,
+  amount_minor bigint,
+  status text NOT NULL DEFAULT 'unread',
+  snoozed_until text,
+  resolved_at text,
+  resolved_reason text,
   created_at text NOT NULL,
+  updated_at text,
   read_at text,
+  delivery_status text NOT NULL DEFAULT 'generated',
+  delivery_detail text,
+  last_notified_at text,
+  escalated_at text,
+  channel_status text NOT NULL DEFAULT '{}',
   channel text NOT NULL DEFAULT 'inapp'
+);
+
+CREATE TABLE IF NOT EXISTS alert_preferences (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  version integer NOT NULL DEFAULT 1,
+  settings_json text NOT NULL,
+  updated_at text NOT NULL,
+  PRIMARY KEY (user_id, household_id)
 );
 
 CREATE TABLE IF NOT EXISTS cases (

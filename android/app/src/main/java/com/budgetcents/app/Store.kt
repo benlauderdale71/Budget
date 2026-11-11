@@ -74,4 +74,19 @@ class Store(context: Context) {
     fun clearSession() {
         prefs.edit().remove("token").remove("household").remove("summary").remove("userId").apply()
     }
+
+    fun hasNotified(id: String): Boolean = notifiedAlerts().contains(id)
+
+    fun markNotified(id: String) {
+        if (id.isBlank() || hasNotified(id)) return
+        val ids = notifiedAlerts().toMutableList()
+        ids.add(id)
+        val kept = if (ids.size > 100) ids.takeLast(100) else ids
+        prefs.edit().putString("notifiedAlerts", JSONArray(kept).toString()).apply()
+    }
+
+    private fun notifiedAlerts(): List<String> {
+        val array = JSONArray(prefs.getString("notifiedAlerts", "[]"))
+        return (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
+    }
 }

@@ -5,6 +5,7 @@ import { DevMail, ResetPassword, VerifyEmail } from "./pages/AccountAccess.js";
 import { Auth } from "./pages/Auth.js";
 import { Invite } from "./pages/Invite.js";
 import { Setup } from "./pages/Setup.js";
+import { Alerts } from "./pages/Alerts.js";
 import { Home } from "./pages/Home.js";
 import { Plan } from "./pages/Plan.js";
 import { Activity } from "./pages/Activity.js";
@@ -29,7 +30,7 @@ const primary = [
 ] as const;
 
 const groups: { title: string; links: [string, string][] }[] = [
-  { title: "Planning", links: [["/forecast", "Forecast"], ["/receipts", "Receipts"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"]] },
+  { title: "Planning", links: [["/forecast", "Forecast"], ["/receipts", "Receipts"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"], ["/alerts", "Alerts"]] },
   { title: "Insight", links: [["/reports", "Reports"], ["/investments", "Investments"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
   { title: "Household", links: [["/setup", "Setup"], ["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
 ];
@@ -150,6 +151,7 @@ export function App() {
         <Route path="/bills" element={<Bills />} />
         <Route path="/debts" element={<Debts />} />
         <Route path="/goals" element={<Goals />} />
+        <Route path="/alerts" element={<Alerts />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/investments" element={<Investments />} />
         <Route path="/retirement" element={<Retirement />} />

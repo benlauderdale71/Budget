@@ -116,7 +116,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                 val label = if (short) "Short" else "Safe to spend"
                 store.summary = "$label ${money(amount, store.privacy)}"
                 refreshWidgets(context)
-                notifyAlerts(context, loaded)
+                notifyAlerts(context, loaded, store)
                 if (flush.rejected.isNotBlank()) error = flush.rejected
                 else if (flush.sent > 0) status = "Synced ${flush.sent}. Balances were refreshed."
             } catch (caught: Exception) {
@@ -251,7 +251,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                         }, { name ->
                             themeName = name
                             store.theme = name
-                        }, activity) { ids, label ->
+                        }, activity, onOpenPage = { page = it }) { ids, label ->
                             activityIds = ids
                             activityLabel = label
                             page = null
@@ -831,6 +831,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
         "calendar" to "Calendar",
         "incomeplan" to "Category plan",
         "goals" to "Goals",
+        "alerts" to "Alerts",
         "debts" to "Debts",
         "forecast" to "Forecast",
         "receipts" to "Receipts",
@@ -851,16 +852,29 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
     TextButton(onClick = signOut) { Text("Sign out") }
 }
 
-private fun notifyAlerts(context: Context, dash: JSONObject) {
+private fun notifyAlerts(context: Context, dash: JSONObject, store: Store) {
     val alerts = dash.optJSONArray("alerts") ?: return
-    val unread = (0 until alerts.length()).map { alerts.getJSONObject(it) }.firstOrNull { it.isNull("readAt") && it.isNull("read_at") } ?: return
+    val unread = (0 until alerts.length()).map { alerts.getJSONObject(it) }.firstOrNull { alert ->
+        val status = alert.optString("status", if (alert.isNull("read_at") && alert.isNull("readAt")) "unread" else "read")
+        val delivery = alert.optString("deliveryStatus", alert.optString("delivery_status", "delivered"))
+        status == "unread" && delivery == "delivered" && !store.hasNotified(alert.optString("id"))
+    } ?: return
+    val hidden = store.privacy
+    val lockScreen = NotificationCompat.Builder(context, "budgetcents")
+        .setSmallIcon(R.drawable.ic_mark)
+        .setContentTitle("BudgetCents")
+        .setContentText("Open the app to view an alert.")
+        .build()
     val notification = NotificationCompat.Builder(context, "budgetcents")
         .setSmallIcon(R.drawable.ic_mark)
-        .setContentTitle(unread.optString("title"))
-        .setContentText(unread.optString("body"))
+        .setContentTitle(if (hidden) "BudgetCents" else unread.optString("title"))
+        .setContentText(if (hidden) "Open the app to view an alert." else unread.optString("body"))
+        .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+        .setPublicVersion(lockScreen)
         .setAutoCancel(true)
         .build()
     context.getSystemService(NotificationManager::class.java).notify(42, notification)
+    store.markNotified(unread.optString("id"))
 }
 
 private data class SplitDraft(val bucketId: String, val amount: String)
@@ -900,7 +914,7 @@ private fun tabIndex(host: String) = when (host) {
     "plan" -> 1
     "activity" -> 2
     "wealth", "investments", "retirement", "reports" -> 3
-    "more", "setup", "accounts", "categories", "fills", "bills", "paycheck", "calendar", "incomeplan", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import" -> 4
+    "more", "setup", "accounts", "categories", "fills", "bills", "paycheck", "calendar", "incomeplan", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import", "alerts" -> 4
     else -> 0
 }
 

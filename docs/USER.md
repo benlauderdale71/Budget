@@ -50,6 +50,18 @@ Home has a household ownership activity view. All shows records you may see, Min
 
 In Activity, open Manage people for a transaction to change its ownership label or reviewer. Changing the reviewer requests a new review, including when you choose Unassigned. Choose Assigned to me to see your unfinished reviews. Mark reviewed records the person and time; Reopen review keeps the audit history. A reviewer needs a role that can review and existing access to that record. A read-only member cannot be assigned a review. If the reviewer leaves, is removed, or becomes read-only, unfinished work returns to Unassigned. Labels and assignments do not reveal private accounts or alter money.
 
+## Alerts
+
+Open Alerts from Planning, or from More on a narrow window. The settings belong to you in this household. Another member has a separate copy. They do not change a transaction, a balance, an assignment, or a total.
+
+You can watch bills, trials, renewals, low balance, a projected overdraft, large transactions, unusual spending, overspending, missing expected pay, underfunded goals, debt milestones, and a card reserve gap. A trial or renewal is used only when that date is saved. Unusual spending waits until the category has two earlier months. A goal without a target date is skipped. Price increases, credit-bureau changes, and a broken bank connection are listed as unavailable. BudgetCents does not invent those events.
+
+Quiet hours can cross midnight. The end minute is not included. A digest waits for the next local time you chose. A clock time that does not exist when daylight saving starts is skipped. Snooze and a digest keep the same alert instead of making another one. Checking again does not repeat an unchanged condition. Mark read, snooze, or resolve from the history. Resolve does not bring the same condition back.
+
+In app is the channel that delivers. Push, email, and text can remember that you would allow them, and each one says it is unavailable. Remembering consent does not send a message. The development outbox is not email delivery. A notification the Android app creates on the phone is not remote push, and the lock screen shows a generic line.
+
+An alert link opens the related record after you are signed in and only when you can still see it. A private account, payee, amount, or id is not shown to someone else. Hide amounts masks the figure on the page. If you are offline, the page says so and does not save. If someone saves newer settings first, your unsaved copy stays and you can load the saved one.
+
 ## Assistant and connections
 
 The assistant repeats figures the ledger already calculated. If a figure is missing, it says so. Turning it off leaves the plan and the register working.

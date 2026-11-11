@@ -51,6 +51,7 @@ fun FeatureScreen(
     onSignedOut: () -> Unit,
     onTheme: (String) -> Unit,
     activity: com.budgetcents.app.MainActivity? = null,
+    onOpenPage: (String) -> Unit = {},
     onOpenTransactions: (String, String) -> Unit = { _, _ -> },
 ) {
     val hid = store.householdId ?: return
@@ -72,6 +73,7 @@ fun FeatureScreen(
             }
         }
         "bills" -> BillsScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
+        "alerts" -> AlertsScreen(api, hid, privacy, onError, onStatus, onOpenPage, onOpenTransactions)
         "goals" -> {
             val goals = dash?.optJSONArray("goals") ?: JSONArray()
             if (goals.length() == 0) Text("A goal uses one envelope. The same dollars are not also free to spend.")

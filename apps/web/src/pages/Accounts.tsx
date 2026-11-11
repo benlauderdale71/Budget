@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -10,6 +11,12 @@ export function Accounts() {
   const state = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const form = useFormError();
   const [accountId, setAccountId] = useState("");
+  const [params] = useSearchParams();
+  const focus = params.get("focus");
+  useEffect(() => {
+    if (!focus || !state.data) return;
+    document.getElementById(`account-${focus}`)?.scrollIntoView({ block: "center" });
+  }, [focus, state.data]);
   if (state.loading && !state.data) return <Loading label="Loading accounts" />;
   if (!state.data) return <ErrorNote message={state.error ?? "No accounts"} onRetry={session.bump} />;
   const dash = state.data;
@@ -20,8 +27,9 @@ export function Accounts() {
         <table>
           <thead><tr><th>Name</th><th>Kind</th><th>Visibility</th><th className="num">Balance</th></tr></thead>
           <tbody>
+            {focus && !dash.accounts.some((account) => account.id === focus) ? <tr><td colSpan={4}>That account is not available in this view.</td></tr> : null}
             {dash.accounts.map((account) => (
-              <tr key={account.id}>
+              <tr key={account.id} id={`account-${account.id}`}>
                 <td>{account.name}{account.mask ? ` · ${account.mask}` : ""}{account.onBudget ? "" : " · off budget"}</td>
                 <td>{account.kind.replaceAll("_", " ")}</td>
                 <td>{account.visibility}</td>

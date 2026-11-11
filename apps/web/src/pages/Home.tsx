@@ -347,7 +347,7 @@ function LayoutEditor({ cards, saving, onCommit }: { cards: DashboardCardPrefere
 
 function DashboardCard({ card, dash, session }: { card: DashboardCardPreference; dash: Dashboard; session: ReturnType<typeof useSession> }) {
   const short = dash.guidance.primaryFigure === "shortage";
-  const unread = dash.alerts.filter((alert) => !alert.read_at);
+  const unread = dash.alerts.filter((alert) => (alert.status ? alert.status === "unread" : !alert.read_at) && (alert.delivery_status ?? alert.deliveryStatus ?? "delivered") === "delivered");
   const committed = dash.budget.claimsMinor - dash.budget.readyToAssignMinor - dash.budget.futureAssignedMinor;
   const nextBill = dash.upcoming.find((item) => item.amountMinor < 0);
   const props = { className: "card dashboard-card", "data-card-id": card.id, "data-card-size": card.size };
@@ -394,10 +394,10 @@ function DashboardCard({ card, dash, session }: { card: DashboardCardPreference;
     <article {...props}>
       <div className="link-row">
         <h2>Alerts</h2>
-        {unread.length ? <button type="button" className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, "/alerts/read"), { method: "POST" }); session.bump(); }}>Mark read</button> : null}
+        <span className="row">{unread.length ? <button type="button" className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, "/alerts/read"), { method: "POST" }); session.bump(); }}>Mark read</button> : null}<Link to="/alerts">Open alerts</Link></span>
       </div>
       {dash.alerts.length === 0 ? <p className="muted">No alerts.</p> : (
-        <ul className="list">{dash.alerts.slice(0, 4).map((alert) => <li key={alert.id}><span><strong>{alert.title}</strong><br /><span className="muted">{alert.body}</span></span></li>)}</ul>
+        <ul className="list">{dash.alerts.slice(0, 4).map((alert) => <li key={alert.id}><span><strong>{alert.title}</strong><br /><span className="muted">{alert.body}</span>{alert.amountMinor != null ? <> <Money minor={alert.amountMinor} /></> : null}</span>{alert.href ? <Link to={alert.href}>Open record</Link> : null}</li>)}</ul>
       )}
     </article>
   );

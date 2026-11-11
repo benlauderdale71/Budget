@@ -83,6 +83,9 @@ class MainActivity : FragmentActivity() {
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("budgetcents", "BudgetCents", NotificationManager.IMPORTANCE_DEFAULT))
+        val channel = NotificationChannel("budgetcents", "BudgetCents", NotificationManager.IMPORTANCE_DEFAULT)
+        channel.description = "In-app BudgetCents alerts. This is not remote push."
+        channel.lockscreenVisibility = android.app.Notification.VISIBILITY_SECRET
+        manager.createNotificationChannel(channel)
     }
 }

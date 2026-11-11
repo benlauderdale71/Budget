@@ -359,6 +359,7 @@ private fun DashCardBody(card: DashCard, dash: JSONObject, privacy: Boolean, gui
                 val limit = minOf(4, alerts.length())
                 for (index in 0 until limit) Text(alerts.getJSONObject(index).optString("title"))
             }
+            Text("Open Alerts in More for history, snooze, and settings.")
         }
         "recent" -> {
             Text("Recent", style = MaterialTheme.typography.titleMedium)

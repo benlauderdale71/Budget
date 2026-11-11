@@ -14,6 +14,7 @@ const moreLinks = [
   ["/bills", "Bills", "Recurring bills and subscriptions"],
   ["/debts", "Debts", "Saved extra-payment and refinance plans"],
   ["/goals", "Goals", "Envelopes with a target"],
+  ["/alerts", "Alerts", "Bills, balances, and goals you choose to watch"],
   ["/reports", "Reports", "Spending, savings rate, exports"],
   ["/investments", "Investments", "Holdings and manual prices"],
   ["/retirement", "Retirement", "A seeded model, not a promise"],

@@ -18,3 +18,4 @@ export * from "./income.js";
 export * from "./receipt-allocate.js";
 export * from "./dashboard-layout.js";
 export * from "./access.js";
+export * from "./alerts.js";

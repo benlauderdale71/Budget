@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { minorToInput, parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -116,13 +117,20 @@ export function Bills() {
   const form = useFormError();
   const [editing, setEditing] = useState<BillSchedule | null>(null);
   const [cadence, setCadence] = useState("monthly");
+  const [params] = useSearchParams();
+  const focus = params.get("focus");
+  useEffect(() => {
+    if (!focus || !state.data) return;
+    document.getElementById(`schedule-${focus}`)?.scrollIntoView({ block: "center" });
+  }, [focus, state.data]);
   if (!state.data || !dash.data) return state.error ? <ErrorNote message={state.error} /> : <Loading label="Loading bills" />;
   const shownCadence = editing ? (editing.scheduleMode ?? editing.cadence) : cadence;
   return (
     <Page title="Bills and subscriptions" lede="A bill schedule is an estimate until it is paid. Skipping one date does not delete the series. Irregular pay belongs on Paychecks and does not add cash.">
+      {focus && !state.data.schedules.some((item) => item.id === focus) ? <Notice kind="bad">That bill is not available in this view.</Notice> : null}
       <ul className="list card">
         {state.data.schedules.map((item) => (
-          <li key={item.id}>
+          <li key={item.id} id={`schedule-${item.id}`}>
             <span>{item.name} · {item.scheduleMode ?? item.cadence} · next {item.nextDate}{item.paused ? " · Paused" : ""}</span>
             <span className="row">
               <Money minor={item.direction === "inflow" ? item.amountMinor : -item.amountMinor} />
@@ -202,11 +210,18 @@ export function Goals() {
   const state = useLoad(() => api<{ goals: { id: string; name: string; target_minor: number; availableMinor: number; target_date: string | null }[]; spaceId: string; buckets: { id: string; name: string; systemRole?: string | null }[]; budget: { buckets: { bucketId: string; availableMinor: number }[] } }>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const roadmap = useLoad(() => api<{ milestones: { id: string; label: string; complete: boolean; detail: string }[]; emergency: { gapMinor: number; formula: string }; essential: { amountMinor: number; formula: string; sources: { name: string; monthlyMinor: number }[] } }>(scoped(session.householdId, "/roadmap", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const form = useFormError();
+  const [params] = useSearchParams();
+  const focus = params.get("focus");
+  useEffect(() => {
+    if (!focus || !state.data) return;
+    document.getElementById(`goal-${focus}`)?.scrollIntoView({ block: "center" });
+  }, [focus, state.data]);
   if (!state.data) return state.loading ? <Loading /> : <ErrorNote message={state.error ?? "No goals"} />;
   return (
     <Page title="Goals" lede="A goal points at one envelope. The available balance is the progress, so those dollars are not also free to spend.">
+      {focus && !state.data.goals.some((goal) => goal.id === focus) ? <Notice kind="bad">That goal is not available in this view.</Notice> : null}
       <ul className="list">{state.data.goals.map((goal) => (
-        <li key={goal.id}><span>{goal.name}{goal.target_date ? ` · ${goal.target_date}` : ""}</span><span><Money minor={goal.availableMinor} /> / <Money minor={Number(goal.target_minor)} /></span></li>
+        <li key={goal.id} id={`goal-${goal.id}`}><span>{goal.name}{goal.target_date ? ` · ${goal.target_date}` : ""}</span><span><Money minor={goal.availableMinor} /> / <Money minor={Number(goal.target_minor)} /></span></li>
       ))}</ul>
       {roadmap.data ? <article className="card"><h2>Roadmap</h2><ul>{roadmap.data.milestones.map((item) => <li key={item.id}>{item.complete ? "Done" : "Open"} · {item.label} · {item.detail}</li>)}</ul><p>Essential monthly spending <Money minor={roadmap.data.essential.amountMinor} />.</p><p className="muted">{roadmap.data.essential.formula}</p>{roadmap.data.essential.sources.length ? <ul className="list">{roadmap.data.essential.sources.map((source) => <li key={source.name}><span>{source.name}</span><Money minor={source.monthlyMinor} /></li>)}</ul> : null}<p className="muted">{roadmap.data.emergency.formula} Gap <Money minor={roadmap.data.emergency.gapMinor} />.</p></article> : null}
       <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {

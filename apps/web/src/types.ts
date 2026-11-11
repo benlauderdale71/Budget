@@ -178,7 +178,7 @@ export interface Dashboard {
   };
   upcoming: { id: string; date: string; amountMinor: number; label: string; kind: string; expectedIncome?: boolean }[];
   goals: { id: string; name: string; target_minor: number; target_date: string | null; availableMinor: number; bucket_id: string; purpose?: string }[];
-  alerts: { id: string; title: string; body: string; kind: string; read_at: string | null; created_at: string }[];
+  alerts: { id: string; title: string; body: string; kind: string; read_at: string | null; created_at: string; status?: string; delivery_status?: string; deliveryStatus?: string; href?: string | null; amountMinor?: number | null }[];
   recent: Txn[];
   reviewCount: number;
   funding?: {

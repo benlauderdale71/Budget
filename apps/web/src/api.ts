@@ -2,9 +2,11 @@ import { partitionQueue, withStableOpId, type QueuedOp } from "./queue.js";
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  payload: unknown;
+  constructor(status: number, message: string, payload?: unknown) {
     super(message);
     this.status = status;
+    this.payload = payload;
     this.name = "ApiError";
   }
 }
@@ -121,7 +123,7 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
     if ((response.status === 403 || response.status === 404) && path.startsWith("/api/households/")) {
       window.dispatchEvent(new Event("budgetcents-access"));
     }
-    throw new ApiError(response.status, data?.error ?? "The request failed.");
+    throw new ApiError(response.status, data?.error ?? "The request failed.", data);
   }
   return data as T;
 }

@@ -50,6 +50,7 @@
                 <data android:scheme="budgetcents" android:host="verify" />
                 <data android:scheme="budgetcents" android:host="reset" />
                 <data android:scheme="budgetcents" android:host="invite" />
+                <data android:scheme="budgetcents" android:host="alerts" />
             </intent-filter>
         </activity>
 

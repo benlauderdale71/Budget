@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
+import { getAlert, listAlerts, markAlertRead, markAlertsRead, readAlertSettings, resolveAlert, saveAlertSettings, snoozeAlert, syncAlerts } from "./alerts.js";
 import { collaborationPeople, ownershipFilter, ownershipSummary, recordReviewResolution, updateCollaboration } from "./collaboration.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
@@ -508,8 +509,8 @@ export function createApp(db: Database) {
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined, c.req.query("month") ?? undefined);
     const guide = guidanceFor(loaded);
     const worth = await withInvestments(loaded);
-    await refreshAlerts(me, loaded, guide.guidance.shortageMinor);
-    const alerts = await db.query(`SELECT * FROM alerts WHERE user_id = $1 AND household_id = $2 ORDER BY created_at DESC LIMIT 30`, [me.id, loaded.member.householdId]);
+    await syncAlerts(db, me, loaded, new Date());
+    const alerts = (await listAlerts(db, me, loaded)).slice(0, 30);
     const goals = await db.query(`SELECT * FROM goals WHERE space_id = $1 AND archived = 0`, [loaded.spaceId]);
     return c.json({
       household: loaded.member,
@@ -2207,11 +2208,69 @@ export function createApp(db: Database) {
     return c.json({ transactions });
   });
 
+  app.get("/api/households/:hid/alert-settings", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    return c.json(await readAlertSettings(db, me.id, member.householdId, member.timeZone));
+  });
+
+  app.put("/api/households/:hid/alert-settings", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const body = await c.req.json() as { version?: unknown; settings?: unknown };
+    try {
+      return c.json(await saveAlertSettings(db, me.id, member.householdId, body.version, body.settings, member.timeZone));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const current = await readAlertSettings(db, me.id, member.householdId, member.timeZone);
+        return c.json({ error: error.message, ...current }, 409);
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/households/:hid/alerts", async (c) => {
+    const me = await actor(c);
+    const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
+    return c.json({ alerts: await listAlerts(db, me, loaded) });
+  });
+
+  app.post("/api/households/:hid/alerts/check", async (c) => {
+    const me = await actor(c);
+    const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
+    await syncAlerts(db, me, loaded, new Date());
+    return c.json({ alerts: await listAlerts(db, me, loaded), evaluatedAt: nowIso() });
+  });
+
   app.post("/api/households/:hid/alerts/read", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
-    await db.query(`UPDATE alerts SET read_at = $1 WHERE user_id = $2 AND household_id = $3 AND read_at IS NULL`, [nowIso(), me.id, member.householdId]);
-    return c.json({ ok: true });
+    return c.json(await markAlertsRead(db, me, member.householdId));
+  });
+
+  app.get("/api/households/:hid/alerts/:id", async (c) => {
+    const me = await actor(c);
+    const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
+    return c.json({ alert: await getAlert(db, me, loaded, c.req.param("id")) });
+  });
+
+  app.post("/api/households/:hid/alerts/:id/read", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    return c.json(await markAlertRead(db, me, member.householdId, c.req.param("id")));
+  });
+
+  app.post("/api/households/:hid/alerts/:id/snooze", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const body = await c.req.json().catch(() => ({})) as { hours?: number };
+    return c.json(await snoozeAlert(db, me, member.householdId, c.req.param("id"), body.hours, member.timeZone));
+  });
+
+  app.post("/api/households/:hid/alerts/:id/resolve", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    return c.json(await resolveAlert(db, me, member.householdId, c.req.param("id")));
   });
 
   app.get("/api/households/:hid/targets", async (c) => {
@@ -2537,20 +2596,6 @@ export function createApp(db: Database) {
   async function replaceTags(txnId: string, tags: string[]) {
     await db.query(`DELETE FROM transaction_tags WHERE transaction_id = $1`, [txnId]);
     for (const tag of tags) await db.query(`INSERT INTO transaction_tags (transaction_id, tag) VALUES ($1,$2)`, [txnId, tag]);
-  }
-
-  async function refreshAlerts(me: Actor, loaded: Awaited<ReturnType<typeof loadSpace>>, shortage: number) {
-    const alerts: { kind: string; title: string; body: string }[] = [];
-    if (shortage > 0) alerts.push({ kind: "low_balance", title: "Cash shortfall", body: "Projected cash goes negative before the reserved bills are covered." });
-    for (const gap of loaded.budget.cardGaps) {
-      if (gap.gapMinor > 0) alerts.push({ kind: "card_gap", title: "Card reserve is short", body: "The card balance is higher than the cash reserved to pay it." });
-    }
-    for (const alert of alerts) {
-      const key = `${loaded.input.asOf}:${alert.kind}`;
-      const existing = await db.query(`SELECT id FROM alerts WHERE user_id = $1 AND dedupe_key = $2`, [me.id, key]);
-      if (existing.length) continue;
-      await db.query(`INSERT INTO alerts (id, household_id, user_id, kind, dedupe_key, title, body, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [id(), loaded.member.householdId, me.id, alert.kind, key, alert.title, alert.body, nowIso()]);
-    }
   }
 
   async function withInvestments(loaded: Awaited<ReturnType<typeof loadSpace>>) {
