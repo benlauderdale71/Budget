@@ -6,10 +6,11 @@ import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
-import { createBill, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
+import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
 import { mountLoans } from "./loans.js";
+import { mountOnboarding } from "./onboarding.js";
 import { planRestore } from "./restore.js";
-import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, totp, verifyPassword, verifyTotp } from "./crypto.js";
+import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
 import {
@@ -154,7 +155,23 @@ export function createApp(db: Database) {
     return mapUser(rows[0]);
   }
 
-  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus() }));
+  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus(), devMail: devMailEnabled() }));
+
+  app.get("/api/dev/outbox", async (c) => {
+    if (!devMailEnabled()) throw new ApiError(404, "Not found");
+    const requested = (c.req.query("email") ?? "").trim().toLowerCase();
+    if (!requested.includes("@")) throw new ApiError(400, "Enter the full email address for the mailbox.");
+    const header = c.req.header("authorization") ?? "";
+    if (header.toLowerCase().startsWith("bearer ") && header.slice(7).trim()) {
+      const me = await actor(c);
+      if (me.email !== requested) throw new ApiError(404, "Not found");
+    }
+    const rows = await db.query(
+      `SELECT subject, body, created_at FROM outbox WHERE lower(to_email) = $1 ORDER BY created_at DESC LIMIT 20`,
+      [requested],
+    );
+    return c.json({ messages: rows, note: "Development outbox only. This is not proof that SMTP delivered the message." });
+  });
 
   app.post("/api/auth/register", async (c) => {
     const body = z.object({
@@ -176,10 +193,11 @@ export function createApp(db: Database) {
     const created = nowIso();
     const passwordHash = await hashPassword(body.password);
     const verify = randomToken();
+    const origin = appOrigin(c);
     await db.tx(async () => {
       await db.query(
-        `INSERT INTO users (id, email, password_hash, display_name, locale, time_zone, budget_approach, created_at)
-         VALUES ($1,$2,$3,$4,'en-US','America/Chicago',$5,$6)`,
+        `INSERT INTO users (id, email, password_hash, display_name, locale, time_zone, budget_approach, onboarding_step, created_at)
+         VALUES ($1,$2,$3,$4,'en-US','America/Chicago',$5,'who',$6)`,
         [userId, email, passwordHash, body.displayName, body.approach, created],
       );
       await db.query(
@@ -198,12 +216,17 @@ export function createApp(db: Database) {
         [id(), userId, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
       );
       await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
-        id(), userId, email, "Verify your BudgetCents email", `Verification code: ${verify}`, created,
+        id(), userId, email, "Verify your BudgetCents email", verificationMessage(origin, verify), created,
       ]);
+      await db.query(
+        `INSERT INTO onboarding_states (user_id, household_id, step, completed_json, skipped_json, draft_json, version, finished_at, updated_at)
+         VALUES ($1,$2,'who','[]','[]','{}',1,NULL,$3)`,
+        [userId, householdId, created],
+      );
       await audit(db, householdId, userId, "register", "Household created");
     });
     const token = await startSession(userId, c.req.header("user-agent") ?? "web");
-    return c.json({ token, user: await publicUser(userId), verificationRequired: true, devVerificationToken: process.env.ALLOW_DEV_MAILSINK === "true" ? verify : undefined });
+    return c.json({ token, user: await publicUser(userId), verificationRequired: true });
   });
 
   app.post("/api/auth/login", async (c) => {
@@ -215,14 +238,12 @@ export function createApp(db: Database) {
     const ok = await verifyPassword(body.password, user ? String(user.password_hash) : dummy);
     if (!user || !ok) throw new ApiError(401, "Email or password is incorrect.");
     if (num(user.mfa_enabled) === 1) {
-      const code = body.code ?? "";
+      const code = (body.code ?? "").trim();
       if (!code) return c.json({ mfaRequired: true });
-      const recovery = JSON.parse(String(user.recovery_hashes || "[]")) as string[];
-      const codeHash = sha256(code);
-      const usedRecovery = recovery.includes(codeHash);
-      if (!verifyTotp(String(user.mfa_secret), code) && !usedRecovery) throw new ApiError(401, "That authentication code is not valid.");
-      if (usedRecovery) {
-        await db.query(`UPDATE users SET recovery_hashes = $1 WHERE id = $2`, [JSON.stringify(recovery.filter((item) => item !== codeHash)), user.id]);
+      if (!verifyTotp(String(user.mfa_secret), code)) {
+        const recovery = JSON.parse(String(user.recovery_hashes || "[]")) as string[];
+        if (!recovery.includes(sha256(code))) throw new ApiError(401, "That authentication code is not valid.");
+        await consumeRecoveryCode(String(user.id), code);
       }
     }
     await audit(db, null, String(user.id), "login", "Signed in");
@@ -260,36 +281,60 @@ export function createApp(db: Database) {
       const expires = new Date(Date.now() + 3_600_000).toISOString();
       await db.query(`INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'reset',$3,$4)`, [id(), rows[0].id, sha256(token), expires]);
       await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
-        id(), rows[0].id, body.email.toLowerCase(), "Reset your BudgetCents password", `Reset token: ${token}`, nowIso(),
+        id(), rows[0].id, body.email.toLowerCase(), "Reset your BudgetCents password", resetMessage(appOrigin(c), token), nowIso(),
       ]);
-      if (process.env.ALLOW_DEV_MAILSINK === "true") return c.json({ ok: true, devResetToken: token });
     }
     return c.json({ ok: true, message: "If that email has an account, a reset message was created." });
   });
 
   app.post("/api/auth/reset", async (c) => {
-    const body = z.object({ token: z.string(), password: z.string().min(10) }).parse(await c.req.json());
-    const rows = await db.query(`SELECT * FROM email_tokens WHERE purpose = 'reset' AND token_hash = $1 AND used_at IS NULL AND expires_at > $2`, [sha256(body.token), nowIso()]);
-    if (!rows.length) throw new ApiError(400, "That reset link is invalid or expired.");
-    await db.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [await hashPassword(body.password), rows[0].user_id]);
-    await db.query(`UPDATE email_tokens SET used_at = $1 WHERE id = $2`, [nowIso(), rows[0].id]);
-    await db.query(`UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL`, [nowIso(), rows[0].user_id]);
-    return c.json({ ok: true });
+    const body = z.object({ token: z.string().min(1), password: z.string().min(10) }).parse(await c.req.json());
+    const passwordHash = await hashPassword(body.password);
+    const userId = await db.tx(async () => {
+      const consumed = await consumeEmailToken("reset", body.token);
+      await db.query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, consumed]);
+      await db.query(`UPDATE sessions SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL`, [nowIso(), consumed]);
+      return consumed;
+    });
+    const user = await publicUser(userId);
+    return c.json({ ok: true, onboardingStep: user.onboardingStep });
   });
 
   app.post("/api/auth/verify-email", async (c) => {
-    const body = z.object({ token: z.string() }).parse(await c.req.json());
-    const rows = await db.query(`SELECT * FROM email_tokens WHERE purpose = 'verify' AND token_hash = $1 AND used_at IS NULL AND expires_at > $2`, [sha256(body.token), nowIso()]);
-    if (!rows.length) throw new ApiError(400, "That verification link is invalid or expired.");
-    await db.query(`UPDATE users SET email_verified_at = $1 WHERE id = $2`, [nowIso(), rows[0].user_id]);
-    await db.query(`UPDATE email_tokens SET used_at = $1 WHERE id = $2`, [nowIso(), rows[0].id]);
-    return c.json({ ok: true });
+    const body = z.object({ token: z.string().min(1) }).parse(await c.req.json());
+    const userId = await db.tx(async () => {
+      const consumed = await consumeEmailToken("verify", body.token);
+      await db.query(`UPDATE users SET email_verified_at = $1 WHERE id = $2`, [nowIso(), consumed]);
+      return consumed;
+    });
+    const user = await publicUser(userId);
+    return c.json({ ok: true, emailVerified: true, onboardingStep: user.onboardingStep });
+  });
+
+  app.post("/api/auth/verify-email/resend", async (c) => {
+    const me = await actor(c);
+    const rows = await db.query(`SELECT email, email_verified_at FROM users WHERE id = $1`, [me.id]);
+    if (rows[0]?.email_verified_at) throw new ApiError(400, "This email is already verified.");
+    const verify = randomToken();
+    const created = nowIso();
+    await db.tx(async () => {
+      await db.query(`UPDATE email_tokens SET used_at = $1 WHERE user_id = $2 AND purpose = 'verify' AND used_at IS NULL`, [created, me.id]);
+      await db.query(
+        `INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'verify',$3,$4)`,
+        [id(), me.id, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
+      );
+      await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
+        id(), me.id, String(rows[0].email), "Verify your BudgetCents email", verificationMessage(appOrigin(c), verify), created,
+      ]);
+    });
+    return c.json({ ok: true, message: "A new verification message was created." });
   });
 
   app.get("/api/me", async (c) => c.json({ user: await publicUser((await actor(c)).id), households: await householdsFor((await actor(c)).id) }));
 
   app.patch("/api/me", async (c) => {
     const me = await actor(c);
+    const raw = await c.req.json() as Record<string, unknown>;
     const body = z.object({
       displayName: z.string().min(1).max(80).optional(),
       locale: z.string().optional(),
@@ -303,63 +348,91 @@ export function createApp(db: Database) {
       labelMode: z.enum(["categories", "envelopes"]).optional(),
       alertSettings: z.record(z.unknown()).optional(),
       dashboardLayout: z.array(z.record(z.unknown())).optional(),
-      onboardingStep: z.string().nullable().optional(),
-    }).parse(await c.req.json());
-    await db.query(
-      `UPDATE users SET display_name = COALESCE($1, display_name), locale = COALESCE($2, locale), time_zone = COALESCE($3, time_zone),
-       week_start = COALESCE($4, week_start), theme = COALESCE($5, theme), privacy_mode = COALESCE($6, privacy_mode),
-       ai_enabled = COALESCE($7, ai_enabled), pay_cadence = COALESCE($8, pay_cadence), budget_approach = COALESCE($9, budget_approach),
-       label_mode = COALESCE($10, label_mode), alert_settings = COALESCE($11, alert_settings), dashboard_layout = COALESCE($12, dashboard_layout),
-       onboarding_step = COALESCE($13, onboarding_step) WHERE id = $14`,
-      [
-        body.displayName ?? null, body.locale ?? null, body.timeZone ?? null, body.weekStart ?? null, body.theme ?? null,
-        body.privacyMode == null ? null : body.privacyMode ? 1 : 0, body.aiEnabled == null ? null : body.aiEnabled ? 1 : 0,
-        body.payCadence ?? null, body.budgetApproach ?? null, body.labelMode ?? null,
-        body.alertSettings ? JSON.stringify(body.alertSettings) : null,
-        body.dashboardLayout ? JSON.stringify(body.dashboardLayout) : null,
-        body.onboardingStep === undefined ? null : body.onboardingStep, me.id,
-      ],
-    );
+      onboardingStep: z.string().max(40).nullable().optional(),
+    }).parse(raw);
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const set = (column: string, value: unknown) => {
+      params.push(value);
+      sets.push(`${column} = $${params.length}`);
+    };
+    if ("displayName" in raw) set("display_name", body.displayName);
+    if ("locale" in raw) set("locale", body.locale);
+    if ("timeZone" in raw) set("time_zone", body.timeZone);
+    if ("weekStart" in raw) set("week_start", body.weekStart);
+    if ("theme" in raw) set("theme", body.theme);
+    if ("privacyMode" in raw) set("privacy_mode", body.privacyMode ? 1 : 0);
+    if ("aiEnabled" in raw) set("ai_enabled", body.aiEnabled ? 1 : 0);
+    if ("payCadence" in raw) set("pay_cadence", body.payCadence);
+    if ("budgetApproach" in raw) set("budget_approach", body.budgetApproach);
+    if ("labelMode" in raw) set("label_mode", body.labelMode);
+    if ("alertSettings" in raw) set("alert_settings", JSON.stringify(body.alertSettings ?? {}));
+    if ("dashboardLayout" in raw) set("dashboard_layout", JSON.stringify(body.dashboardLayout ?? []));
+    if ("onboardingStep" in raw) set("onboarding_step", body.onboardingStep);
+    if (sets.length) {
+      params.push(me.id);
+      await db.query(`UPDATE users SET ${sets.join(", ")} WHERE id = $${params.length}`, params);
+    }
     return c.json({ user: await publicUser(me.id) });
   });
 
   app.post("/api/auth/mfa/setup", async (c) => {
     const me = await actor(c);
+    const body = z.object({ password: z.string().min(1, "Enter your password.") }).parse(await c.req.json());
+    await requirePassword(me.id, body.password);
     const secret = newMfaSecret();
-    await db.query(`UPDATE users SET mfa_secret = $1 WHERE id = $2 AND mfa_enabled = 0`, [secret, me.id]);
-    return c.json({ secret, otpauth: `otpauth://totp/BudgetCents:${me.email}?secret=${secret}&issuer=BudgetCents`, sample: totp(secret) });
+    const updated = await db.query(`UPDATE users SET mfa_secret = $1 WHERE id = $2 AND mfa_enabled = 0 RETURNING id`, [secret, me.id]);
+    if (!updated.length) throw new ApiError(400, "Turn off the authenticator before starting again.");
+    return c.json({ secret, otpauth: `otpauth://totp/BudgetCents:${me.email}?secret=${secret}&issuer=BudgetCents` });
   });
 
   app.post("/api/auth/mfa/enable", async (c) => {
     const me = await actor(c);
-    const body = z.object({ code: z.string() }).parse(await c.req.json());
-    const rows = await db.query(`SELECT mfa_secret FROM users WHERE id = $1`, [me.id]);
+    const body = z.object({ password: z.string().min(1, "Enter your password."), code: z.string().min(1) }).parse(await c.req.json());
+    await requirePassword(me.id, body.password);
+    const rows = await db.query(`SELECT mfa_secret, mfa_enabled FROM users WHERE id = $1`, [me.id]);
+    if (num(rows[0]?.mfa_enabled) === 1) throw new ApiError(400, "Turn off the authenticator before starting again.");
     const secret = String(rows[0]?.mfa_secret ?? "");
     if (!secret || !verifyTotp(secret, body.code)) throw new ApiError(400, "That code does not match.");
     const codes = Array.from({ length: 8 }, () => randomToken(6));
-    await db.query(`UPDATE users SET mfa_enabled = 1, recovery_hashes = $1 WHERE id = $2`, [JSON.stringify(codes.map(sha256)), me.id]);
+    const saved = await db.query(`UPDATE users SET mfa_enabled = 1, recovery_hashes = $1 WHERE id = $2 AND mfa_enabled = 0 RETURNING id`, [JSON.stringify(codes.map(sha256)), me.id]);
+    if (!saved.length) throw new ApiError(400, "Turn off the authenticator before starting again.");
     return c.json({ recoveryCodes: codes, note: "Store these codes. They are shown once." });
   });
 
   app.post("/api/auth/mfa/disable", async (c) => {
     const me = await actor(c);
-    const body = z.object({ password: z.string() }).parse(await c.req.json());
-    const rows = await db.query(`SELECT password_hash FROM users WHERE id = $1`, [me.id]);
-    if (!(await verifyPassword(body.password, String(rows[0].password_hash)))) throw new ApiError(401, "Password is incorrect.");
+    const body = z.object({ password: z.string().min(1, "Enter your password.") }).parse(await c.req.json());
+    await requirePassword(me.id, body.password);
     await db.query(`UPDATE users SET mfa_enabled = 0, mfa_secret = NULL, recovery_hashes = '[]' WHERE id = $1`, [me.id]);
     return c.json({ ok: true });
   });
 
   app.get("/api/auth/sessions", async (c) => {
     const me = await actor(c);
-    const rows = await db.query(`SELECT id, device_label, user_agent, created_at, expires_at, revoked_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC`, [me.id]);
-    return c.json({ sessions: rows });
+    const hash = bearerHash(c);
+    const rows = await db.query(`SELECT id, token_hash, device_label, user_agent, created_at, expires_at, revoked_at FROM sessions WHERE user_id = $1 ORDER BY created_at DESC`, [me.id]);
+    return c.json({
+      sessions: rows.map((row) => ({
+        id: row.id,
+        device_label: row.device_label,
+        user_agent: row.user_agent,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        revoked_at: row.revoked_at,
+        current: row.token_hash === hash,
+      })),
+    });
   });
 
   app.delete("/api/auth/sessions/:id", async (c) => {
     const me = await actor(c);
-    await db.query(`UPDATE sessions SET revoked_at = $1 WHERE id = $2 AND user_id = $3`, [nowIso(), c.req.param("id"), me.id]);
-    return c.json({ ok: true });
+    const hash = bearerHash(c);
+    const rows = await db.query(
+      `UPDATE sessions SET revoked_at = $1 WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL RETURNING token_hash`,
+      [nowIso(), c.req.param("id"), me.id],
+    );
+    return c.json({ ok: true, current: rows[0]?.token_hash === hash });
   });
 
   app.delete("/api/me", async (c) => {
@@ -415,46 +488,8 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/accounts", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const body = z.object({
-      spaceId: z.string(),
-      name: z.string().min(1),
-      kind: z.string(),
-      currency: z.string().length(3).optional(),
-      onBudget: z.boolean().optional(),
-      visibility: z.enum(["shared", "private"]).default("shared"),
-      institution: z.string().optional(),
-      mask: z.string().max(8).optional(),
-      creditLimitMinor: money.optional(),
-      aprBps: z.number().int().optional(),
-      minimumPaymentMinor: money.optional(),
-      linkedAccountId: z.string().optional(),
-      openingBalanceMinor: money.optional(),
-      openingDate: z.string().optional(),
-    }).parse(await c.req.json());
-    await assertSpace(me.id, member.householdId, body.spaceId);
-    const accountId = id();
-    const onBudget = body.onBudget ?? ["checking", "savings", "cash", "credit"].includes(body.kind);
-    await db.tx(async () => {
-      await db.query(
-        `INSERT INTO accounts (id, household_id, space_id, name, kind, currency, on_budget, visibility, owner_user_id, institution, mask, credit_limit_minor, apr_bps, minimum_payment_minor, linked_account_id, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-        [accountId, member.householdId, body.spaceId, body.name, body.kind, (body.currency ?? member.currency).toUpperCase(), onBudget ? 1 : 0, body.visibility, me.id, body.institution ?? null, body.mask ?? null, body.creditLimitMinor ?? null, body.aprBps ?? null, body.minimumPaymentMinor ?? null, body.linkedAccountId ?? null, nowIso()],
-      );
-      if (body.kind === "credit" && onBudget) {
-        const { ensureCardReserve } = await import("./finance.js");
-        await ensureCardReserve(db, member.householdId, body.spaceId, accountId, body.name);
-      }
-      if (body.openingBalanceMinor) {
-        const signed = ["credit", "loan", "student_loan", "mortgage", "other_liability"].includes(body.kind) ? -Math.abs(body.openingBalanceMinor) : body.openingBalanceMinor;
-        await insertTransaction(me, member.householdId, {
-          spaceId: body.spaceId, date: body.openingDate ?? localDate(member.timeZone), accountId, amountMinor: signed, type: "opening", payee: "Opening balance", splits: [], bankStatus: "posted",
-        });
-      }
-      await audit(db, member.householdId, me.id, "account.create", `Added account ${body.name}`, "account", accountId);
-    });
-    return c.json({ id: accountId }, 201);
+    const created = await createManualAccount(me, c.req.param("hid"), await c.req.json());
+    return c.json(created, 201);
   });
 
   app.patch("/api/households/:hid/accounts/:id", async (c) => {
@@ -959,30 +994,8 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/buckets", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertBudget(member);
-    const body = z.object({
-      spaceId: z.string(), name: z.string().min(1), group: z.string().default("Spending"),
-      kind: z.enum(["income", "expense"]).default("expense"),
-      flexRole: z.enum(["fixed", "non_monthly", "flexible", "income", "reserve"]).default("flexible"),
-      envelopeStyle: z.enum(["regular", "annual", "goal", "debt", "none"]).default("regular"),
-      rollover: z.enum(["both", "positive", "negative", "none", "capped"]).default("both"),
-      rolloverCapMinor: money.optional(), purpose: z.string().optional(), icon: z.string().optional(),
-      displayOrder: z.number().int().min(0).max(9999).optional(),
-      target: z.record(z.unknown()).nullable().optional(),
-    }).parse(await c.req.json());
-    await assertSpace(me.id, member.householdId, body.spaceId);
-    if (body.target) targetJson(body.target);
-    const bucketId = id();
-    await db.tx(async () => {
-      await db.query(
-        `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, display_order, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-        [bucketId, member.householdId, body.spaceId, body.name, body.group, body.kind, body.flexRole, body.envelopeStyle, body.rollover, body.rolloverCapMinor ?? null, body.icon ?? null, body.purpose ?? null, targetJson(body.target), body.displayOrder ?? 0, nowIso()],
-      );
-      await db.query(`INSERT INTO bucket_revisions (bucket_id, household_id, version, updated_at) VALUES ($1,$2,1,$3)`, [bucketId, member.householdId, nowIso()]);
-    });
-    return c.json({ id: bucketId, version: 1 }, 201);
+    const created = await createManualCategory(me, c.req.param("hid"), await c.req.json());
+    return c.json(created, 201);
   });
 
   app.patch("/api/households/:hid/buckets/:id", async (c) => {
@@ -1526,6 +1539,8 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertAdmin(member);
     const body = z.object({ email: z.string().email(), role: z.enum(["admin", "editor", "contributor", "readonly", "coach", "planner", "accountant"]) }).parse(await c.req.json());
+    const verified = await db.query(`SELECT email_verified_at FROM users WHERE id = $1`, [me.id]);
+    if (!verified[0]?.email_verified_at) throw new ApiError(403, "Verify your email before inviting someone.");
     const token = randomToken();
     const summary = `You will see shared spaces and shared accounts in ${member.name}. Private accounts stay hidden. Role: ${body.role}.`;
     await db.query(`INSERT INTO invitations (id, household_id, email, role, token_hash, expires_at, reveal_summary, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [id(), member.householdId, body.email.toLowerCase(), body.role, sha256(token), new Date(Date.now() + 7 * 86_400_000).toISOString(), summary, nowIso()]);
@@ -1709,14 +1724,8 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/goals", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertBudget(member);
-    const body = z.object({ spaceId: z.string(), name: z.string(), bucketId: z.string(), targetMinor: money, targetDate: z.string().optional(), purpose: z.string().optional() }).parse(await c.req.json());
-    await assertSpace(me.id, member.householdId, body.spaceId);
-    await assertBucket(member.householdId, body.spaceId, body.bucketId);
-    const goalId = id();
-    await db.query(`INSERT INTO goals (id, household_id, space_id, bucket_id, name, target_minor, target_date, purpose) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [goalId, member.householdId, body.spaceId, body.bucketId, body.name, body.targetMinor, body.targetDate ?? null, body.purpose ?? "goal"]);
-    return c.json({ id: goalId, note: "Progress uses this envelope's available balance, so the dollars are not also free to spend." }, 201);
+    const created = await createManualGoal(me, c.req.param("hid"), await c.req.json());
+    return c.json(created, 201);
   });
 
   app.post("/api/households/:hid/rules", async (c) => {
@@ -1807,6 +1816,138 @@ export function createApp(db: Database) {
     });
     return c.json({ targets: rows });
   });
+
+  async function requirePassword(userId: string, password: string) {
+    const rows = await db.query(`SELECT password_hash FROM users WHERE id = $1`, [userId]);
+    if (!(await verifyPassword(password, String(rows[0]?.password_hash ?? "")))) throw new ApiError(401, "Password is incorrect.");
+  }
+
+  function bearerHash(c: { req: { header: (name: string) => string | undefined } }) {
+    const header = c.req.header("authorization") ?? "";
+    const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
+    return sha256(token);
+  }
+
+  async function consumeEmailToken(purpose: "verify" | "reset", token: string) {
+    const now = nowIso();
+    const rows = await db.query(
+      `UPDATE email_tokens SET used_at = $1 WHERE purpose = $2 AND token_hash = $3 AND used_at IS NULL AND expires_at > $1 RETURNING user_id`,
+      [now, purpose, sha256(token)],
+    );
+    if (!rows.length) throw new ApiError(400, await explainEmailToken(purpose, token));
+    return String(rows[0].user_id);
+  }
+
+  async function explainEmailToken(purpose: "verify" | "reset", token: string) {
+    const noun = purpose === "reset" ? "reset link" : "verification link";
+    const rows = await db.query(`SELECT used_at, expires_at FROM email_tokens WHERE purpose = $1 AND token_hash = $2`, [purpose, sha256(token)]);
+    if (!rows.length) return `That ${noun} is invalid.`;
+    if (rows[0].used_at) return `That ${noun} was already used.`;
+    return `That ${noun} is expired.`;
+  }
+
+  async function consumeRecoveryCode(userId: string, code: string) {
+    const codeHash = sha256(code);
+    const claimed = await db.tx(async () => {
+      const rows = await db.query(`SELECT recovery_hashes FROM users WHERE id = $1`, [userId]);
+      const stored = String(rows[0]?.recovery_hashes ?? "[]");
+      const recovery = JSON.parse(stored) as string[];
+      if (!recovery.includes(codeHash)) return false;
+      const next = JSON.stringify(recovery.filter((item) => item !== codeHash));
+      const updated = await db.query(
+        `UPDATE users SET recovery_hashes = $1 WHERE id = $2 AND recovery_hashes = $3 RETURNING id`,
+        [next, userId, stored],
+      );
+      return updated.length > 0;
+    });
+    if (!claimed) throw new ApiError(401, "That recovery code was already used.");
+  }
+
+  async function createManualAccount(me: Actor, householdId: string, raw: unknown, forcedId?: string) {
+    const member = await requireMember(db, me.id, householdId);
+    assertWrite(member);
+    const body = z.object({
+      spaceId: z.string(),
+      name: z.string().min(1),
+      kind: z.string(),
+      currency: z.string().length(3).optional(),
+      onBudget: z.boolean().optional(),
+      visibility: z.enum(["shared", "private"]).default("shared"),
+      institution: z.string().optional(),
+      mask: z.string().max(8).optional(),
+      creditLimitMinor: money.optional(),
+      aprBps: z.number().int().optional(),
+      minimumPaymentMinor: money.optional(),
+      linkedAccountId: z.string().optional(),
+      openingBalanceMinor: money.optional(),
+      openingDate: z.string().optional(),
+    }).parse(raw);
+    await assertSpace(me.id, member.householdId, body.spaceId);
+    const accountId = forcedId ?? id();
+    const onBudget = body.onBudget ?? ["checking", "savings", "cash", "credit"].includes(body.kind);
+    await db.tx(async () => {
+      await db.query(
+        `INSERT INTO accounts (id, household_id, space_id, name, kind, currency, on_budget, visibility, owner_user_id, institution, mask, credit_limit_minor, apr_bps, minimum_payment_minor, linked_account_id, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+        [accountId, member.householdId, body.spaceId, body.name, body.kind, (body.currency ?? member.currency).toUpperCase(), onBudget ? 1 : 0, body.visibility, me.id, body.institution ?? null, body.mask ?? null, body.creditLimitMinor ?? null, body.aprBps ?? null, body.minimumPaymentMinor ?? null, body.linkedAccountId ?? null, nowIso()],
+      );
+      if (body.kind === "credit" && onBudget) {
+        const { ensureCardReserve } = await import("./finance.js");
+        await ensureCardReserve(db, member.householdId, body.spaceId, accountId, body.name);
+      }
+      if (body.openingBalanceMinor) {
+        const signed = ["credit", "loan", "student_loan", "mortgage", "other_liability"].includes(body.kind) ? -Math.abs(body.openingBalanceMinor) : body.openingBalanceMinor;
+        await insertTransaction(me, member.householdId, {
+          spaceId: body.spaceId, date: body.openingDate ?? localDate(member.timeZone), accountId, amountMinor: signed, type: "opening", payee: "Opening balance", splits: [], bankStatus: "posted", reviewStatus: "reviewed",
+        });
+      }
+      await audit(db, member.householdId, me.id, "account.create", `Added account ${body.name}`, "account", accountId);
+    });
+    return { id: accountId };
+  }
+
+  async function createManualCategory(me: Actor, householdId: string, raw: unknown, forcedId?: string) {
+    const member = await requireMember(db, me.id, householdId);
+    assertBudget(member);
+    const body = z.object({
+      spaceId: z.string(), name: z.string().min(1), group: z.string().default("Spending"),
+      kind: z.enum(["income", "expense"]).default("expense"),
+      flexRole: z.enum(["fixed", "non_monthly", "flexible", "income", "reserve"]).default("flexible"),
+      envelopeStyle: z.enum(["regular", "annual", "goal", "debt", "none"]).default("regular"),
+      rollover: z.enum(["both", "positive", "negative", "none", "capped"]).default("both"),
+      rolloverCapMinor: money.optional(), purpose: z.string().optional(), icon: z.string().optional(),
+      displayOrder: z.number().int().min(0).max(9999).optional(),
+      target: z.record(z.unknown()).nullable().optional(),
+    }).parse(raw);
+    await assertSpace(me.id, member.householdId, body.spaceId);
+    if (body.target) targetJson(body.target);
+    const bucketId = forcedId ?? id();
+    await db.tx(async () => {
+      await db.query(
+        `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, display_order, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+        [bucketId, member.householdId, body.spaceId, body.name, body.group, body.kind, body.flexRole, body.envelopeStyle, body.rollover, body.rolloverCapMinor ?? null, body.icon ?? null, body.purpose ?? null, targetJson(body.target), body.displayOrder ?? 0, nowIso()],
+      );
+      await db.query(`INSERT INTO bucket_revisions (bucket_id, household_id, version, updated_at) VALUES ($1,$2,1,$3)`, [bucketId, member.householdId, nowIso()]);
+    });
+    return { id: bucketId, version: 1 };
+  }
+
+  async function createManualGoal(me: Actor, householdId: string, raw: unknown, forcedId?: string) {
+    const member = await requireMember(db, me.id, householdId);
+    assertBudget(member);
+    const body = z.object({
+      spaceId: z.string(), name: z.string().min(1), bucketId: z.string(), targetMinor: money, targetDate: z.string().optional(), purpose: z.string().optional(),
+    }).parse(raw);
+    await assertSpace(me.id, member.householdId, body.spaceId);
+    await assertBucket(member.householdId, body.spaceId, body.bucketId);
+    const goalId = forcedId ?? id();
+    await db.query(
+      `INSERT INTO goals (id, household_id, space_id, bucket_id, name, target_minor, target_date, purpose) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [goalId, member.householdId, body.spaceId, body.bucketId, body.name, body.targetMinor, body.targetDate ?? null, body.purpose ?? "goal"],
+    );
+    return { id: goalId, note: "Progress uses this envelope's available balance, so the dollars are not also free to spend." };
+  }
 
   async function startSession(userId: string, agent: string) {
     const token = randomToken();
@@ -2040,6 +2181,14 @@ export function createApp(db: Database) {
     mustAccount,
     insertPayment: (user, householdId, input) => insertTransaction(user, householdId, input),
   });
+  mountOnboarding(app, db, {
+    actor,
+    createAccount: (user, householdId, raw, forcedId) => createManualAccount(user, householdId, raw, forcedId),
+    createCategory: (user, householdId, raw, forcedId) => createManualCategory(user, householdId, raw, forcedId),
+    createIncome: (user, householdId, raw, forcedId) => createIncomeSource(db, user, householdId, raw, incomeHooks(), forcedId),
+    createBill: (user, householdId, raw, forcedId) => createBill(db, user, householdId, raw, incomeHooks(), forcedId),
+    createGoal: (user, householdId, raw, forcedId) => createManualGoal(user, householdId, raw, forcedId),
+  });
 
   return app;
 }
@@ -2048,6 +2197,24 @@ const TRANSACTION_TYPES = new Set([
   "income", "expense", "transfer", "refund", "reimbursement", "cc_payment", "loan_payment", "loan_proceeds",
   "opening", "reconciliation", "buy", "sell", "dividend", "interest", "fee",
 ]);
+
+function devMailEnabled() {
+  return process.env.NODE_ENV !== "production";
+}
+
+function appOrigin(c: { req: { url: string } }) {
+  const configured = process.env.BUDGETCENTS_PUBLIC_URL?.trim().replace(/\/$/, "");
+  if (configured) return configured;
+  return new URL(c.req.url).origin;
+}
+
+function verificationMessage(origin: string, token: string) {
+  return `Verify your BudgetCents email.\nVerification link: ${origin}/verify?token=${token}\nAndroid link: budgetcents://verify?token=${token}\nThe link expires in two days.`;
+}
+
+function resetMessage(origin: string, token: string) {
+  return `Reset your BudgetCents password.\nReset link: ${origin}/reset?token=${token}\nAndroid link: budgetcents://reset?token=${token}\nThe link expires in one hour.`;
+}
 
 function assertKnownType(type: string) {
   if (!TRANSACTION_TYPES.has(type)) throw new ApiError(400, "That transaction type is not supported.");

@@ -66,6 +66,6 @@ class Store(context: Context) {
     }
 
     fun clearSession() {
-        prefs.edit().remove("token").remove("household").remove("summary").apply()
+        prefs.edit().remove("token").remove("household").remove("summary").remove("userId").apply()
     }
 }

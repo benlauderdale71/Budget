@@ -94,16 +94,15 @@ export function Home() {
       </details>
       {dash.budget.identityDifferenceMinor !== 0 ? <div className="banner bad" role="alert">The plan does not match on-budget cash by <Money minor={dash.budget.identityDifferenceMinor} />. Review recent edits before relying on Ready to Assign.</div> : null}
       {dash.budget.warnings.filter((warning) => !warning.includes("identity")).map((warning) => <div key={warning} className="banner bad">{warning}</div>)}
-      {session.user?.onboardingStep !== "done" ? <article className="card">
+      {Number(session.households.find((item) => item.id === session.householdId)?.is_demo) === 1 ? null : session.user?.onboardingStep !== "done" ? <article className="card">
         <h2>Setup</h2>
-        <p className="muted">Start with accounts you type in. A bank connection is not required.</p>
-        <div className="chips">
-          {[["individual", "Just me"], ["couple", "Couple"], ["family", "Family"], ["freelancer", "Freelance"]].map(([id, label]) => (
-            <button key={id} type="button" className="chip" onClick={() => void session.patchMe({ onboardingStep: id })}>{label}</button>
-          ))}
-        </div>
-        <p>{session.user?.onboardingStep ? `Saved: ${session.user.onboardingStep}. ` : "Choose who this plan is for. "}<Link to="/accounts">Add an account</Link> · <button type="button" className="btn-quiet" onClick={() => void session.patchMe({ onboardingStep: "done" })}>Finish setup</button></p>
-      </article> : null}
+        <p className="muted">Continue the saved setup. A bank connection is not required, and bank linking is not available.</p>
+        <p><Link to="/setup">Continue setup</Link></p>
+      </article> : <article className="card">
+        <h2>Setup</h2>
+        <p><Link to="/setup">Review optional setup</Link></p>
+      </article>}
+      {session.user && !session.user.emailVerified && Number(session.households.find((item) => item.id === session.householdId)?.is_demo) !== 1 ? <div className="banner" role="status">Email is not verified. Invitations stay closed until the verification link is used.</div> : null}
       <div className="grid stats">
         {cards.ordered.map(([id]) => {
           if (!cards.show(id)) return null;

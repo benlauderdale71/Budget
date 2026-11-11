@@ -10,7 +10,11 @@ import java.nio.charset.StandardCharsets
 class ApiException(val status: Int, message: String) : Exception(message)
 
 class BudgetApi(private val store: Store) {
-    fun login(email: String, password: String) = request("POST", "/api/auth/login", JSONObject().put("email", email).put("password", password), auth = false)
+    fun login(email: String, password: String, code: String? = null): JSONObject {
+        val body = JSONObject().put("email", email).put("password", password)
+        if (!code.isNullOrBlank()) body.put("code", code)
+        return request("POST", "/api/auth/login", body, auth = false)
+    }
     fun demo() = request("POST", "/api/auth/demo", JSONObject(), auth = false)
     fun households() = request("GET", "/api/households")
     fun dashboard(householdId: String) = request("GET", "/api/households/$householdId/dashboard")

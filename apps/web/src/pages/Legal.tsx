@@ -1,4 +1,6 @@
 import { Link } from "react-router-dom";
+import { useSession } from "../session.js";
+import { DeleteAccount } from "./Tools.js";
 
 export function PrivacyPolicy() {
   return (
@@ -25,18 +27,21 @@ export function PrivacyPolicy() {
 }
 
 export function AccountDeletion() {
+  const session = useSession();
   return (
     <main className="content legal">
       <p className="kicker">BudgetCents</p>
       <h1>Delete your account</h1>
-      <p className="lede">Account deletion is available after you sign in. It is not a request form that someone else processes later.</p>
-      <ol>
-        <li>Sign in on the web and open Settings, or open Security in the Android app.</li>
-        <li>Enter your password and the confirmation word DELETE.</li>
-        <li>The server removes the user. A household that you alone own is removed with it. A household that still has other members has to be left before that household is removed.</li>
-      </ol>
-      <p>Deleting the app from a phone signs that device out of its local session. It does not delete the server account.</p>
-      <p><Link to="/login">Sign in to delete the account</Link> · <Link to="/privacy">Privacy</Link></p>
+      <p className="lede">Account deletion runs on the server after you confirm it. It is not a request form that someone else processes later.</p>
+      <ul>
+        <li>Your user, sessions, and unused verification or reset links are removed.</li>
+        <li>A household you alone own is removed with its transactions and attachments.</li>
+        <li>A household that still has other members stays until ownership is transferred.</li>
+        <li>Households you do not own stay, including the other members’ records.</li>
+      </ul>
+      <p>Signing out, or deleting the app from a phone, does not delete the server account.</p>
+      {session.user ? <DeleteAccount /> : <p><Link to="/login">Sign in to delete the account</Link></p>}
+      <p><Link to="/privacy">Privacy</Link></p>
     </main>
   );
 }

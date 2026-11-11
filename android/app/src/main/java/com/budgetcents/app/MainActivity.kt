@@ -45,7 +45,8 @@ class MainActivity : FragmentActivity() {
         }
         ensureChannel()
         val start = intent?.data?.host ?: "home"
-        setContent { BudgetApp(this, start) }
+        val linkToken = intent?.data?.getQueryParameter("token")
+        setContent { BudgetApp(this, start, linkToken) }
     }
 
     fun pickReceipt() {

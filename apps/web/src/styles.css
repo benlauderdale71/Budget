@@ -195,6 +195,7 @@ td.num, th.num { text-align: right; }
   .sidebar { display: none; }
   .tabbar { display: flex; }
   .content, .topbar { padding-inline: 16px; }
+  .content { padding-bottom: 84px; }
   .split-row { grid-template-columns: 1fr; }
   .calendar-grid { display: none; }
   .loan-grid { grid-template-columns: 1fr; }

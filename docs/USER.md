@@ -2,7 +2,9 @@
 
 ## Start
 
-Create a household with an email and a password of at least 8 characters, or open the sample household. The sample people and balances are fictional. A banner stays on screen while that household is open.
+Create a household with an email and a password of at least 10 characters, or open the sample household. The sample people and balances are fictional. A banner stays on screen while that household is open.
+
+Setup then asks who the plan is for and saves the household name, currency, locale, time zone, week start, and budget approach. Accounts, import, categories, expected income, bills, a goal, and invitations can be skipped and opened again. Bank linking is not available. Expected income is not cash. The sample household is not this wizard. Email verification and password recovery use the local outbox in development. That outbox is not proof that SMTP delivered the message.
 
 Add the account where cash sits and an opening balance. On-budget accounts are the ones the plan can assign. Loans, cards you are only tracking, and investments can stay off the plan and still appear in net worth.
 
@@ -40,4 +42,4 @@ Connections lists what is live. A cancellation or negotiation request is stored 
 
 ## Your account
 
-Settings changes theme, hides amounts, manages the authenticator, lists sessions, downloads a backup, and can delete the account. Deletion asks for the password and the word DELETE. Mail for reset links stays in the server outbox until email delivery is configured.
+Settings changes theme, hides amounts, manages the authenticator, lists sessions, downloads a backup, and can delete the account. Turning the authenticator on or off asks for the password again. A recovery code is shown once and works once. Another session can be signed out from the list. Deletion asks for the password and the word DELETE. It removes the server account. Signing out, or removing the app, does not. A household you own with other members stays until ownership is transferred. Mail for verification and reset stays in the server outbox until email delivery is configured and tested.

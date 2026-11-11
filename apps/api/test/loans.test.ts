@@ -22,6 +22,10 @@ function auth(token: string) {
   return { authorization: `Bearer ${token}`, "content-type": "application/json" };
 }
 
+async function markVerified(email: string) {
+  await db.query(`UPDATE users SET email_verified_at = $1 WHERE email = $2`, [new Date().toISOString(), email.toLowerCase()]);
+}
+
 async function household(api: Awaited<ReturnType<typeof app>>, email: string, name = email) {
   const registered = await json(await api.request("/api/auth/register", {
     method: "POST",
@@ -274,6 +278,7 @@ describe("saved loan plans", () => {
     const missing = await json(await api.request(`/api/households/${owner.hid}/loan-scenarios`, { headers: auth(outsider.token) }));
     expect(missing.status).toBe(404);
 
+    await markVerified("owner@example.com");
     const invite = await json(await api.request(`/api/households/${owner.hid}/invitations`, {
       method: "POST",
       headers: auth(owner.token),

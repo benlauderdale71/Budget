@@ -46,6 +46,9 @@
                 <data android:scheme="budgetcents" android:host="forecast" />
                 <data android:scheme="budgetcents" android:host="reports" />
                 <data android:scheme="budgetcents" android:host="security" />
+                <data android:scheme="budgetcents" android:host="setup" />
+                <data android:scheme="budgetcents" android:host="verify" />
+                <data android:scheme="budgetcents" android:host="reset" />
             </intent-filter>
         </activity>
 

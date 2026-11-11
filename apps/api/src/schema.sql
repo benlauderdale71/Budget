@@ -748,3 +748,26 @@ CREATE TABLE IF NOT EXISTS loan_scenario_audit (
   version integer NOT NULL,
   created_at text NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS onboarding_states (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  step text NOT NULL,
+  completed_json text NOT NULL DEFAULT '[]',
+  skipped_json text NOT NULL DEFAULT '[]',
+  draft_json text NOT NULL DEFAULT '{}',
+  version integer NOT NULL DEFAULT 1,
+  finished_at text,
+  updated_at text NOT NULL,
+  PRIMARY KEY (user_id, household_id)
+);
+
+CREATE TABLE IF NOT EXISTS onboarding_keys (
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  setup_key text NOT NULL,
+  resource_id text NOT NULL,
+  created_at text NOT NULL,
+  PRIMARY KEY (household_id, user_id, kind, setup_key)
+);

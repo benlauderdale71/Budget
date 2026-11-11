@@ -1,6 +1,8 @@
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useSession } from "./session.js";
+import { DevMail, ResetPassword, VerifyEmail } from "./pages/AccountAccess.js";
 import { Auth, Invite } from "./pages/Auth.js";
+import { Setup } from "./pages/Setup.js";
 import { Home } from "./pages/Home.js";
 import { Plan } from "./pages/Plan.js";
 import { Activity } from "./pages/Activity.js";
@@ -22,7 +24,7 @@ const primary = [
 const groups: { title: string; links: [string, string][] }[] = [
   { title: "Planning", links: [["/forecast", "Forecast"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"]] },
   { title: "Insight", links: [["/reports", "Reports"], ["/investments", "Investments"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
-  { title: "Household", links: [["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
+  { title: "Household", links: [["/setup", "Setup"], ["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
 ];
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -86,6 +88,9 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<Auth />} />
+      <Route path="/verify" element={<VerifyEmail />} />
+      <Route path="/reset" element={<ResetPassword />} />
+      <Route path="/dev/mail" element={<DevMail />} />
       <Route path="/privacy" element={<PrivacyPolicy />} />
       <Route path="/delete-account" element={<AccountDeletion />} />
       <Route path="/invite/:token" element={<Invite />} />
@@ -114,6 +119,7 @@ export function App() {
         <Route path="/learn" element={<Learn />} />
         <Route path="/checklists" element={<Checklists />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/setup" element={<Setup />} />
         <Route path="/more" element={<More />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes></Shell>} />

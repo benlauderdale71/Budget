@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, flushQueue, queuedCount, setQueueOwner } from "./api.js";
+import { api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import type { HouseholdRow, User } from "./types.js";
 
 interface SessionValue {
@@ -67,7 +67,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return;
     }
     refresh().catch(() => localStorage.removeItem("budgetcents.token")).finally(() => setReady(true));
-    const onAuth = () => { setUser(null); setHouseholdId(""); };
+    const onAuth = () => { setUser(null); setHouseholdId(""); setQueueOwner(null); };
     const onOff = () => setOffline(true);
     const onOn = () => {
       setOffline(false);
@@ -113,7 +113,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     signOut: async () => {
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
-      localStorage.removeItem("budgetcents.token");
+      clearLocalSession();
       setUser(null);
       setHouseholdId("");
     },

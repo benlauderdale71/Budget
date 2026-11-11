@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { api, downloadFile } from "../api.js";
+import { api, clearLocalSession, downloadFile } from "../api.js";
 import { parseAmount } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
@@ -25,6 +25,7 @@ const moreLinks = [
   ["/credit", "Credit", "A score you type, not a bureau report"],
   ["/learn", "Learn", "Short original lessons"],
   ["/checklists", "Checklists", "Tax and estate lists, not legal documents"],
+  ["/setup", "Setup", "Resume or review household setup"],
   ["/settings", "Settings", "Security, export, and deletion"],
 ];
 
@@ -289,8 +290,9 @@ export function Checklists() {
 
 export function Settings() {
   const session = useSession();
-  const sessions = useLoad(() => api<{ sessions: { id: string; device_label: string | null; created_at: string; revoked_at: string | null }[] }>("/api/auth/sessions"), [session.tick]);
+  const sessions = useLoad(() => api<{ sessions: { id: string; device_label: string | null; created_at: string; revoked_at: string | null; current: boolean }[] }>("/api/auth/sessions"), [session.tick]);
   const [secret, setSecret] = useState("");
+  const [password, setPassword] = useState("");
   const [codes, setCodes] = useState<string[]>([]);
   const [token, setToken] = useState("");
   const form = useFormError();
@@ -309,18 +311,38 @@ export function Settings() {
       </form>
       <section className="card" style={{ marginTop: 16 }}>
         <h2>Authenticator</h2>
-        {!session.user.mfaEnabled ? <button className="btn-secondary" onClick={async () => { const result = await api<{ secret: string }>("/api/auth/mfa/setup", { method: "POST" }); setSecret(result.secret); }}>Start setup</button> : null}
+        <p className="muted">The password is required again for this change. A signed-in session by itself cannot replace the authenticator.</p>
+        <Field label="Current password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></Field>
+        {!session.user.mfaEnabled ? <button className="btn-secondary" onClick={async () => {
+          setSecret("");
+          try {
+            const result = await api<{ secret: string }>("/api/auth/mfa/setup", { method: "POST", body: JSON.stringify({ password }) });
+            setSecret(result.secret);
+          } catch (caught) { form.setError(caught instanceof Error ? caught.message : "Setup did not start."); }
+        }}>Start setup</button> : <button className="btn-secondary" onClick={async () => {
+          try {
+            await api("/api/auth/mfa/disable", { method: "POST", body: JSON.stringify({ password }) });
+            setSecret("");
+            setCodes([]);
+            await session.refresh();
+          } catch (caught) { form.setError(caught instanceof Error ? caught.message : "The authenticator was not turned off."); }
+        }}>Turn off authenticator</button>}
         {secret ? <form onSubmit={(event) => form.run(event, async () => {
           const data = new FormData(event.currentTarget);
-          const result = await api<{ recoveryCodes: string[] }>("/api/auth/mfa/enable", { method: "POST", body: JSON.stringify({ code: data.get("code") }) });
+          const result = await api<{ recoveryCodes: string[] }>("/api/auth/mfa/enable", { method: "POST", body: JSON.stringify({ password, code: data.get("code") }) });
           setCodes(result.recoveryCodes);
+          setSecret("");
           await session.refresh();
-        })}><p>Add this secret to an authenticator, then enter the current code. It is shown once here so you can copy it: {secret}</p><Field label="Code"><input name="code" required /></Field><button className="btn" type="submit">Enable</button></form> : null}
+        })}><p>Add this secret to an authenticator, then enter a new code from that app. Authenticator secret {secret}</p><Field label="Authentication code"><input name="code" required inputMode="numeric" autoComplete="one-time-code" /></Field><button className="btn" type="submit">Enable authenticator</button></form> : null}
         {codes.length ? <Notice>Recovery codes, shown once: {codes.join(", ")}</Notice> : null}
       </section>
       <section className="card" style={{ marginTop: 16 }}>
         <h2>Sessions</h2>
-        <ul>{sessions.data?.sessions.filter((item) => !item.revoked_at).map((item) => <li key={item.id}>{item.device_label || "Session"} · {item.created_at} <button className="btn-quiet" onClick={async () => { await api(`/api/auth/sessions/${item.id}`, { method: "DELETE" }); session.bump(); }}>Revoke</button></li>)}</ul>
+        <ul>{sessions.data?.sessions.filter((item) => !item.revoked_at).map((item) => <li key={item.id}>{item.current ? "This session" : item.device_label || "Session"} · {item.created_at} <button className="btn-quiet" onClick={async () => {
+          const result = await api<{ current: boolean }>(`/api/auth/sessions/${item.id}`, { method: "DELETE" });
+          if (result.current) await session.signOut();
+          else session.bump();
+        }}>{item.current ? "Sign out this session" : "Revoke"}</button></li>)}</ul>
         <button className="btn-secondary" onClick={async () => { const result = await api<{ token: string }>("/api/api-tokens", { method: "POST", body: JSON.stringify({ name: "Personal token" }) }); setToken(result.token); }}>Create API token</button>
         {token ? <Notice>Copy this token now. It is stored only as a hash. {token}</Notice> : null}
       </section>
@@ -389,18 +411,19 @@ function RestoreBackup() {
   );
 }
 
-function DeleteAccount() {
-  const session = useSession();
+export function DeleteAccount() {
   const form = useFormError();
   return (
     <form style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
       const data = new FormData(event.currentTarget);
-      await api("/api/me", { method: "DELETE", body: JSON.stringify({ password: data.get("password"), confirm: "DELETE" }) });
-      localStorage.removeItem("budgetcents.token");
+      const confirm = String(data.get("confirm") ?? "");
+      if (confirm !== "DELETE") throw new Error("Type DELETE to confirm.");
+      await api("/api/me", { method: "DELETE", body: JSON.stringify({ password: data.get("password"), confirm }) });
+      clearLocalSession();
       window.location.assign("/login");
     })}>
       <h3>Delete account</h3>
-      <p className="muted">Type DELETE after your password. An owned household with other people must be left first.</p>
+      <p className="muted">This deletes your user, sessions, and unused verification or reset links. A household you alone own is deleted with its transactions and attachments. A household you own with other members is kept until you leave it. Other people’s households stay. Signing out, or deleting the app, does not do this.</p>
       <Field label="Password"><input name="password" type="password" required /></Field>
       <Field label="Type DELETE"><input name="confirm" required pattern="DELETE" /></Field>
       {form.error ? <Notice kind="bad">{form.error}</Notice> : null}

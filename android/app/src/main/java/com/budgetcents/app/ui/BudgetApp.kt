@@ -63,7 +63,7 @@ private val Tabs = listOf("Home", "Plan", "Activity", "Wealth", "More")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BudgetApp(activity: MainActivity, start: String) {
+fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) {
     val context = LocalContext.current
     val store = remember { Store(context.applicationContext) }
     val api = remember { BudgetApi(store) }
@@ -72,6 +72,7 @@ fun BudgetApp(activity: MainActivity, start: String) {
     var locked by remember { mutableStateOf(store.biometric && store.token != null) }
     var tab by remember { mutableIntStateOf(tabIndex(start)) }
     var page by remember { mutableStateOf(subpage(start)) }
+    var openSetup by remember { mutableStateOf(start == "setup") }
     var error by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var dash by remember { mutableStateOf<JSONObject?>(null) }
@@ -125,15 +126,34 @@ fun BudgetApp(activity: MainActivity, start: String) {
         lightColorScheme(primary = Teal, onPrimary = Color.White, background = Color(0xFFF3F6F4), surface = Color.White)
     }) {
         if (token == null) {
-            SignIn(store, api, error) { message ->
+            SignIn(store, api, error, start, linkToken, { openSetup = true }) { message ->
                 if (message != null) error = message else {
                     token = store.token
                     themeName = store.theme
                     error = ""
+                    if (openSetup) {
+                        page = "setup"
+                        tab = 4
+                        openSetup = false
+                    }
                     reload()
                 }
             }
             return@MaterialTheme
+        }
+        LaunchedEffect(linkToken) {
+            if (start == "verify" && !linkToken.isNullOrBlank()) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        api.request("POST", "/api/auth/verify-email", JSONObject().put("token", linkToken), auth = false)
+                    }
+                    status = "Email verified. Setup continues from the saved step."
+                    page = "setup"
+                    tab = 4
+                } catch (caught: Exception) {
+                    error = caught.message ?: "That verification link did not work."
+                }
+            }
         }
         if (locked) {
             Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -281,27 +301,151 @@ fun BudgetApp(activity: MainActivity, start: String) {
 }
 
 @Composable
-private fun SignIn(store: Store, api: BudgetApi, error: String, done: (String?) -> Unit) {
+private fun SignIn(
+    store: Store,
+    api: BudgetApi,
+    error: String,
+    start: String,
+    linkToken: String?,
+    onRegistered: () -> Unit,
+    done: (String?) -> Unit,
+) {
     var base by remember { mutableStateOf(store.baseUrl) }
+    var mode by remember { mutableStateOf(if (start == "reset" || start == "verify") start else "login") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var household by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var tokenText by remember { mutableStateOf(linkToken ?: "") }
+    var mfa by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    var mail by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("BudgetCents", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         Text("Same household as the web app. The emulator reaches a computer at 10.0.2.2.", color = Ink)
         OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(email, { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("login" to "Sign in", "register" to "Create household", "reset" to "Reset password", "verify" to "Verify email").forEach { (id, label) ->
+                TextButton(onClick = { mode = id; note = "" }) { Text(label) }
+            }
+        }
+        if (mode == "register") {
+            OutlinedTextField(name, { name = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(household, { household = it }, label = { Text("Household name") }, modifier = Modifier.fillMaxWidth())
+        }
+        if (mode != "verify") OutlinedTextField(email, { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+        if (mode == "login" || mode == "register" || mode == "reset") {
+            OutlinedTextField(password, { password = it }, label = { Text(if (mode == "reset") "New password" else "Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        }
+        if (mode == "reset") {
+            OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(tokenText, { tokenText = it }, label = { Text("Reset token") }, modifier = Modifier.fillMaxWidth())
+            Text("The reset request does not say whether the email exists. Open the link, or paste its token. SMTP delivery is not active.")
+        }
+        if (mode == "verify") {
+            OutlinedTextField(tokenText, { tokenText = it }, label = { Text("Verification token") }, modifier = Modifier.fillMaxWidth())
+            Text("An unverified account can keep setting up. Invitations stay closed until this link is used.")
+        }
+        if (mfa) OutlinedTextField(code, { code = it }, label = { Text("Authentication code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
         if (error.isNotBlank()) Text(error)
+        if (note.isNotBlank()) Text(note)
+        if (mail.isNotBlank()) Text(mail)
         Button(onClick = {
             store.baseUrl = base
-            scope.launch { sign(api, store, done) { api.login(email.trim(), password) } }
-        }, modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
+            scope.launch {
+                try {
+                    when (mode) {
+                        "register" -> {
+                            if (password.length < 10) { note = "Use at least 10 characters."; return@launch }
+                            val result = withContext(Dispatchers.IO) {
+                                api.request("POST", "/api/auth/register", JSONObject()
+                                    .put("email", email.trim())
+                                    .put("password", password)
+                                    .put("displayName", name.trim())
+                                    .put("householdName", household.trim()), auth = false)
+                            }
+                            adoptSession(api, store, result)
+                            onRegistered()
+                            done(null)
+                        }
+                        "reset" -> {
+                            if (tokenText.isBlank()) {
+                                val result = withContext(Dispatchers.IO) {
+                                    api.request("POST", "/api/auth/forgot", JSONObject().put("email", email.trim()), auth = false)
+                                }
+                                note = result.optString("message")
+                                return@launch
+                            }
+                            if (password != confirm) { note = "Enter the same password in both fields."; return@launch }
+                            if (password.length < 10) { note = "Use at least 10 characters."; return@launch }
+                            withContext(Dispatchers.IO) {
+                                api.request("POST", "/api/auth/reset", JSONObject().put("token", tokenText.trim()).put("password", password), auth = false)
+                            }
+                            note = "Password updated. Sign in with the new one."
+                            mode = "login"
+                            password = ""
+                            confirm = ""
+                        }
+                        "verify" -> {
+                            val result = withContext(Dispatchers.IO) {
+                                api.request("POST", "/api/auth/verify-email", JSONObject().put("token", tokenText.trim()), auth = false)
+                            }
+                            note = "Email verified. Sign in to continue from ${result.optString("onboardingStep", "the saved step")}."
+                        }
+                        else -> {
+                            val result = withContext(Dispatchers.IO) { api.login(email.trim(), password, code.ifBlank { null }) }
+                            if (result.optBoolean("mfaRequired")) {
+                                mfa = true
+                                note = "Enter the code from your authenticator or a recovery code."
+                                return@launch
+                            }
+                            adoptSession(api, store, result)
+                            val step = result.optJSONObject("user")?.optString("onboardingStep")
+                            if (step != "done") onRegistered()
+                            done(null)
+                        }
+                    }
+                } catch (caught: Exception) {
+                    done(caught.message ?: "Could not sign in.")
+                }
+            }
+        }, modifier = Modifier.fillMaxWidth()) { Text(if (mode == "register") "Create household" else if (mode == "reset") "Continue" else if (mode == "verify") "Verify email" else "Sign in") }
+        TextButton(onClick = {
+            store.baseUrl = base
+            scope.launch {
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        api.request("GET", "/api/dev/outbox?email=${java.net.URLEncoder.encode(email.trim(), "UTF-8")}", auth = false)
+                    }
+                    val messages = result.optJSONArray("messages") ?: org.json.JSONArray()
+                    mail = (0 until messages.length()).joinToString("\n\n") { messages.getJSONObject(it).optString("body") }.ifBlank { "No message is waiting for that address." }
+                    note = result.optString("note")
+                } catch (caught: Exception) {
+                    mail = ""
+                    note = if (caught is ApiException && caught.status == 404) "Development mail is off." else caught.message ?: "Could not read development mail."
+                }
+            }
+        }) { Text("Show development mail") }
         TextButton(onClick = {
             store.baseUrl = base
             scope.launch { sign(api, store, done) { api.demo() } }
         }) { Text("Open the sample household") }
+        Text("Development mail is the local outbox. It is not SMTP delivery. Deleting the app does not delete the server account.")
     }
+}
+
+private suspend fun adoptSession(api: BudgetApi, store: Store, result: JSONObject) {
+    store.token = result.getString("token")
+    val user = result.optJSONObject("user")
+    if (user != null) {
+        store.userId = user.getString("id")
+        store.theme = user.optString("theme", store.theme)
+    }
+    val homes = withContext(Dispatchers.IO) { api.households() }
+    store.householdId = homes.getJSONArray("households").getJSONObject(0).getString("id")
 }
 
 private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, call: () -> JSONObject) {
@@ -638,6 +782,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
         }
     }
     listOf(
+        "setup" to "Setup",
         "accounts" to "Accounts",
         "categories" to "Categories and envelopes",
         "fills" to "Envelope fills",
@@ -714,7 +859,7 @@ private fun tabIndex(host: String) = when (host) {
     "plan" -> 1
     "activity" -> 2
     "wealth", "investments", "retirement", "reports" -> 3
-    "more", "accounts", "categories", "fills", "bills", "paycheck", "calendar", "incomeplan", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import" -> 4
+    "more", "setup", "accounts", "categories", "fills", "bills", "paycheck", "calendar", "incomeplan", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import" -> 4
     else -> 0
 }
 

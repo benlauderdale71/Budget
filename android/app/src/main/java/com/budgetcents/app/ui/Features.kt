@@ -226,6 +226,7 @@ fun FeatureScreen(
                 Text(provider.optString("needs"))
             }
         }
+        "setup" -> SetupScreen(api, hid, onError, onStatus)
         "security" -> SecurityScreen(api, store, onTheme, onError, onSignedOut)
         "learn" -> RemoteScreen("learn", { api.request("GET", "/api/lessons") }) { data ->
             val lessons = data.optJSONArray("lessons") ?: JSONArray()
@@ -1608,6 +1609,10 @@ private fun ImportScreen(dash: JSONObject?, onError: (String) -> Unit, onCommit:
 private fun SecurityScreen(api: BudgetApi, store: Store, onTheme: (String) -> Unit, onError: (String) -> Unit, onDeleted: () -> Unit) {
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
+    var secret by remember { mutableStateOf("") }
+    var authenticatorCode by remember { mutableStateOf("") }
+    var recovery by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
     Text("Theme follows this device and your account.")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("system", "light", "dark").forEach { choice ->
@@ -1623,22 +1628,62 @@ private fun SecurityScreen(api: BudgetApi, store: Store, onTheme: (String) -> Un
             val session = sessions.getJSONObject(index)
             Text(session.optString("device_label").ifBlank { "Session" })
             if (session.isNull("revoked_at")) {
+                val current = session.optBoolean("current")
                 TextButton(onClick = {
-                    scope.launch { runIo(onError) { api.request("DELETE", "/api/auth/sessions/${session.optString("id")}"); onError("That session was signed out.") } }
-                }) { Text("Sign that device out") }
+                    scope.launch {
+                        runIo(onError) {
+                            api.request("DELETE", "/api/auth/sessions/${session.optString("id")}")
+                            if (current) onDeleted() else onError("That session was signed out.")
+                        }
+                    }
+                }) { Text(if (current) "Sign out this session" else "Sign that device out") }
             }
         }
     }
-    OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+    Text("The password is required again to change the authenticator. A signed-in session by itself cannot replace it.")
+    OutlinedTextField(password, { password = it }, label = { Text("Current password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
     Button(onClick = {
         scope.launch {
             runIo(onError) {
-                api.request("DELETE", "/api/me", JSONObject().put("password", password).put("confirm", "DELETE"))
+                val result = api.request("POST", "/api/auth/mfa/setup", JSONObject().put("password", password))
+                secret = result.optString("secret")
+                onError("Add the secret to an authenticator, then enter a new code from that app.")
+            }
+        }
+    }) { Text("Start setup") }
+    if (secret.isNotBlank()) {
+        Text("Authenticator secret $secret")
+        OutlinedTextField(authenticatorCode, { authenticatorCode = it }, label = { Text("Authentication code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+        Button(onClick = {
+            scope.launch {
+                runIo(onError) {
+                    val result = api.request("POST", "/api/auth/mfa/enable", JSONObject().put("password", password).put("code", authenticatorCode.trim()))
+                    val codes = result.optJSONArray("recoveryCodes") ?: JSONArray()
+                    recovery = (0 until codes.length()).joinToString(", ") { codes.optString(it) }
+                    secret = ""
+                    onError("Recovery codes, shown once.")
+                }
+            }
+        }) { Text("Enable authenticator") }
+    }
+    if (recovery.isNotBlank()) Text("Recovery codes, shown once: $recovery")
+    TextButton(onClick = {
+        scope.launch { runIo(onError) { api.request("POST", "/api/auth/mfa/disable", JSONObject().put("password", password)); recovery = ""; onError("Authenticator turned off.") } }
+    }) { Text("Turn off authenticator") }
+    OutlinedTextField(confirm, { confirm = it }, label = { Text("Type DELETE") }, modifier = Modifier.fillMaxWidth())
+    Button(onClick = {
+        if (confirm != "DELETE") {
+            onError("Type DELETE to confirm.")
+            return@Button
+        }
+        scope.launch {
+            runIo(onError) {
+                api.request("DELETE", "/api/me", JSONObject().put("password", password).put("confirm", confirm))
                 onDeleted()
             }
         }
     }) { Text("Delete account") }
-    Text("Deletion removes the user and a household you alone own. It asks for the password and the confirmation word.")
+    Text("Deletion removes the user and a household you alone own, including transactions and attachments. A shared household you still own is kept until the other members are gone. Signing out or uninstalling the app does not delete the server account.")
 }
 
 @Composable
@@ -1712,6 +1757,247 @@ private fun RemoteScreen(key: String, load: suspend () -> JSONObject, content: @
     if (data == null && error.isBlank()) Text("Loading…")
     if (error.isNotBlank() && data == null) Text(error)
     data?.let { content(it) }
+}
+
+@Composable
+private fun SetupScreen(api: BudgetApi, hid: String, onError: (String) -> Unit, onStatus: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<JSONObject?>(null) }
+    var householdName by remember { mutableStateOf("") }
+    var currency by remember { mutableStateOf("USD") }
+    var localeName by remember { mutableStateOf("en-US") }
+    var timeZone by remember { mutableStateOf("America/Chicago") }
+    var weekStart by remember { mutableStateOf("0") }
+    var approach by remember { mutableStateOf("zero") }
+    var accountName by remember { mutableStateOf("") }
+    var opening by remember { mutableStateOf("") }
+    var openingDate by remember { mutableStateOf(LocalDate.now().toString()) }
+    var categoryName by remember { mutableStateOf("") }
+    var incomeName by remember { mutableStateOf("") }
+    var incomeAmount by remember { mutableStateOf("") }
+    var incomeDate by remember { mutableStateOf(LocalDate.now().toString()) }
+    var billName by remember { mutableStateOf("") }
+    var billAmount by remember { mutableStateOf("") }
+    var billDate by remember { mutableStateOf(LocalDate.now().toString()) }
+    var goalName by remember { mutableStateOf("") }
+    var goalAmount by remember { mutableStateOf("") }
+    var inviteEmail by remember { mutableStateOf("") }
+    var verifyToken by remember { mutableStateOf("") }
+    var accountKey by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var categoryKey by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var incomeKey by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var billKey by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var goalKey by remember { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    LaunchedEffect(hid) {
+        try { state = withContext(Dispatchers.IO) { api.request("GET", "/api/households/$hid/onboarding") } }
+        catch (caught: Exception) { onError(caught.message ?: "Setup could not be loaded.") }
+    }
+    val current = state
+    if (current == null) { Text("Loading setup…"); return }
+    if (current.optBoolean("demo")) { Text(current.optString("note").ifBlank { "This is the sample household. Its records are fictional and are not your setup." }); return }
+    val step = current.optString("step")
+    val order = listOf("who", "preferences", "verify", "accounts", "import", "categories", "income", "bills", "goal", "invite", "review")
+    Text(current.optString("policy"))
+    Text("Bank linking is not available. You can continue without it.")
+    Text(order.getOrElse(order.indexOf(step)) { step }.replaceFirstChar { it.titlecase() })
+    val index = order.indexOf(step)
+    if (index > 0) TextButton(onClick = {
+        scope.launch { runIo(onError) { state = api.request("PATCH", "/api/households/$hid/onboarding", JSONObject().put("version", state?.optInt("version")).put("step", order[index - 1])) } }
+    }) { Text("Previous step") }
+    fun patch(body: JSONObject, message: String) {
+        scope.launch {
+            runIo(onError) {
+                body.put("version", state?.optInt("version"))
+                state = api.request("PATCH", "/api/households/$hid/onboarding", body)
+                onStatus(message)
+            }
+        }
+    }
+    fun add(kind: String, draftName: String, fallbackKey: String, payload: JSONObject, message: String, rotate: (String) -> Unit) {
+        scope.launch {
+            runIo(onError) {
+                var working = state ?: return@runIo
+                var key = working.optJSONObject("draft")?.optString(draftName).orEmpty()
+                if (key.isBlank()) {
+                    key = fallbackKey
+                    working = api.request("PATCH", "/api/households/$hid/onboarding", JSONObject()
+                        .put("version", working.optInt("version")).put("draft", JSONObject().put(draftName, key)))
+                    state = working
+                }
+                val result = api.request("POST", "/api/households/$hid/onboarding/resources", JSONObject()
+                    .put("version", working.optInt("version")).put("kind", kind).put("setupKey", key).put("payload", payload))
+                val saved = result.optJSONObject("onboarding") ?: working
+                val nextKey = java.util.UUID.randomUUID().toString()
+                val stepId = mapOf("account" to "accounts", "category" to "categories", "income" to "income", "bill" to "bills", "goal" to "goal")[kind]
+                state = api.request("PATCH", "/api/households/$hid/onboarding", JSONObject()
+                    .put("version", saved.optInt("version")).put("draft", JSONObject().put(draftName, nextKey)).put("complete", stepId).put("step", stepId))
+                rotate(nextKey)
+                onStatus(if (result.optBoolean("duplicate")) "$message The earlier save was kept." else message)
+            }
+        }
+    }
+    when (step) {
+        "who" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("individual" to "Individual", "couple" to "Couple", "family" to "Family", "freelancer" to "Freelancer", "mixed" to "Household and business").forEach { (id, label) ->
+                Button(onClick = { patch(JSONObject().put("who", JSONObject().put("kind", id)).put("step", "preferences"), "$label saved.") }) { Text(label) }
+            }
+        }
+        "preferences" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Changing these preferences does not create income or change a balance.")
+            OutlinedTextField(householdName, { householdName = it }, label = { Text("Household name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(currency, { currency = it }, label = { Text("Currency") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(localeName, { localeName = it }, label = { Text("Locale") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(timeZone, { timeZone = it }, label = { Text("Time zone") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(weekStart, { weekStart = it }, label = { Text("Week start") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(approach, { approach = it }, label = { Text("Budget approach") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                val start = weekStart.toIntOrNull()
+                if (householdName.isBlank()) onError("Enter a household name.")
+                else if (currency.trim().length != 3) onError("Enter a 3-letter currency.")
+                else if (start == null || start !in 0..6) onError("Week start is 0 for Sunday through 6 for Saturday.")
+                else if (approach !in setOf("zero", "category", "envelope", "flex")) onError("Use zero, category, envelope, or flex.")
+                else patch(JSONObject().put("preferences", JSONObject()
+                    .put("householdName", householdName.trim()).put("currency", currency.trim()).put("locale", localeName.trim())
+                    .put("timeZone", timeZone.trim()).put("weekStart", start).put("approach", approach.trim())).put("step", "verify"), "Preferences saved.")
+            }) { Text("Save preferences") }
+        }
+        "verify" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(if (current.optBoolean("emailVerified")) "Email verified." else "Open the verification link or paste its token. Development mail is the local outbox, not SMTP delivery.")
+            OutlinedTextField(verifyToken, { verifyToken = it }, label = { Text("Verification token") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                scope.launch {
+                    runIo(onError) {
+                        api.request("POST", "/api/auth/verify-email", JSONObject().put("token", verifyToken.trim()), auth = false)
+                        state = api.request("GET", "/api/households/$hid/onboarding")
+                        onStatus("Email verified.")
+                    }
+                }
+            }) { Text("Verify email") }
+            TextButton(onClick = { scope.launch { runIo(onError) { api.request("POST", "/api/auth/verify-email/resend", JSONObject()); onStatus("A new verification message was created.") } } }) { Text("Resend verification") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "verify").put("step", "accounts"), "Continuing without verification.") }) { Text("Continue without verifying") }
+        }
+        "accounts" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(accountName, { accountName = it }, label = { Text("Account name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(opening, { opening = it }, label = { Text("Opening balance") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(openingDate, { openingDate = it }, label = { Text("Opening date") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                try {
+                    val payload = JSONObject().put("spaceId", current.optString("spaceId")).put("name", accountName.trim()).put("kind", "checking")
+                    if (opening.isNotBlank()) payload.put("openingBalanceMinor", parseDollars(opening)).put("openingDate", openingDate)
+                    val key = accountKey
+                    add("account", "accountSetupKey", key, payload, "Account saved.") { accountKey = it }
+                } catch (caught: Exception) { onError(caught.message ?: "Enter an amount.") }
+            }) { Text("Add account") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "accounts").put("step", "import"), "Accounts skipped.") }) { Text("Skip this step") }
+        }
+        "import" -> Column {
+            Text("Bank linking is not available. You can continue. A file import stays optional.")
+            Button(onClick = { patch(JSONObject().put("skip", "import").put("step", "categories"), "Import skipped.") }) { Text("Skip this step") }
+        }
+        "categories" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("The starter categories are the same records the plan uses. Using them does not assign money.")
+            Button(onClick = { patch(JSONObject().put("complete", "categories").put("step", "income"), "Starter categories kept.") }) { Text("Use the starter categories") }
+            OutlinedTextField(categoryName, { categoryName = it }, label = { Text("Category name") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { add("category", "categorySetupKey", categoryKey, JSONObject().put("spaceId", current.optString("spaceId")).put("name", categoryName.trim()).put("group", "Spending"), "Category saved.") { categoryKey = it } }) { Text("Add category") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "categories").put("step", "income"), "Categories skipped.") }) { Text("Skip this step") }
+        }
+        "income" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Expected income is not cash, Ready to Assign, or net worth.")
+            OutlinedTextField(incomeName, { incomeName = it }, label = { Text("Income name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(incomeAmount, { incomeAmount = it }, label = { Text("Expected amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(incomeDate, { incomeDate = it }, label = { Text("First date") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                val accountId = cashAccountId(current)
+                if (accountId.isBlank()) onError("Add an account before expected income.")
+                else try {
+                    add("income", "incomeSetupKey", incomeKey, JSONObject().put("spaceId", current.optString("spaceId")).put("accountId", accountId).put("name", incomeName.trim()).put("kind", "salary").put("amountMinor", parseDollars(incomeAmount)).put("cadence", "monthly").put("startDate", incomeDate), "Expected income was saved.") { incomeKey = it }
+                } catch (caught: Exception) { onError(caught.message ?: "Enter an amount.") }
+            }) { Text("Save expected income") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "income").put("step", "bills"), "Income skipped.") }) { Text("Skip this step") }
+        }
+        "bills" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("A bill is a schedule. It does not post a transaction.")
+            OutlinedTextField(billName, { billName = it }, label = { Text("Bill name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(billAmount, { billAmount = it }, label = { Text("Bill amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(billDate, { billDate = it }, label = { Text("Next date") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                try {
+                    add("bill", "billSetupKey", billKey, JSONObject().put("spaceId", current.optString("spaceId")).put("name", billName.trim()).put("cadence", "monthly").put("nextDate", billDate).put("amountMinor", parseDollars(billAmount)).put("direction", "outflow").put("type", "bill"), "Bill saved.") { billKey = it }
+                } catch (caught: Exception) { onError(caught.message ?: "Enter an amount.") }
+            }) { Text("Save bill") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "bills").put("step", "goal"), "Bills skipped.") }) { Text("Skip this step") }
+        }
+        "goal" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("The goal uses an envelope that already exists. Saving it does not move money.")
+            OutlinedTextField(goalName, { goalName = it }, label = { Text("Goal name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(goalAmount, { goalAmount = it }, label = { Text("Goal amount") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                val bucketId = expenseBucketId(current)
+                if (bucketId.isBlank()) onError("Use a category before adding a goal.")
+                else try {
+                    add("goal", "goalSetupKey", goalKey, JSONObject().put("spaceId", current.optString("spaceId")).put("bucketId", bucketId).put("name", goalName.trim()).put("targetMinor", parseDollars(goalAmount)).put("purpose", "goal"), "Goal saved.") { goalKey = it }
+                } catch (caught: Exception) { onError(caught.message ?: "Enter an amount.") }
+            }) { Text("Save goal") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "goal").put("step", "invite"), "Goal skipped.") }) { Text("Skip this step") }
+        }
+        "invite" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(if (current.optBoolean("emailVerified")) "The invited person joins only if they sign in with this email." else "Verify your email before inviting someone.")
+            OutlinedTextField(inviteEmail, { inviteEmail = it }, label = { Text("Invitation email") }, modifier = Modifier.fillMaxWidth())
+            Button(onClick = {
+                scope.launch { runIo(onError) {
+                    api.request("POST", "/api/households/$hid/invitations", JSONObject().put("email", inviteEmail.trim()).put("role", "editor"))
+                    state = api.request("PATCH", "/api/households/$hid/onboarding", JSONObject().put("version", state?.optInt("version")).put("complete", "invite"))
+                    onStatus("Invitation created.")
+                } }
+            }) { Text("Send invitation") }
+            TextButton(onClick = { patch(JSONObject().put("skip", "invite").put("step", "review"), "Invitation skipped.") }) { Text("Skip this step") }
+        }
+        else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (current.optBoolean("finished")) Text("Setup is finished. Optional steps can still be completed.")
+            val review = current.optJSONObject("review")
+            Text("Actual balances")
+            val balances = review?.optJSONArray("actualBalances") ?: JSONArray()
+            if (balances.length() == 0) Text("No opening balance has been entered.")
+            for (item in 0 until balances.length()) {
+                val row = balances.getJSONObject(item)
+                Text("${row.optString("name")} ${money(row.optLong("balanceMinor"), false)}")
+            }
+            Text("Expected future income")
+            val income = review?.optJSONArray("expectedIncome") ?: JSONArray()
+            if (income.length() == 0) Text("No expected income has been saved.")
+            for (item in 0 until income.length()) {
+                val row = income.getJSONObject(item)
+                Text("${row.optString("name")} ${money(row.optLong("amountMinor"), false)}. ${row.optString("note")}")
+            }
+            Text("Budget allocations")
+            val allocations = review?.optJSONObject("allocations")
+            Text("Ready to Assign ${money(allocations?.optLong("readyToAssignMinor") ?: 0, false)}. Already given a job ${money(allocations?.optLong("givenAJobMinor") ?: 0, false)}.")
+            Text("Not finished")
+            val left = review?.optJSONArray("notFinished") ?: JSONArray()
+            if (left.length() == 0) Text("Every optional step is either done or skipped, and the email is verified.")
+            for (item in 0 until left.length()) Text(left.optString(item))
+            if (current.optBoolean("finished")) Text("Enter the rest of BudgetCents from the other tabs.")
+            else Button(onClick = { patch(JSONObject().put("finish", true), "Setup finished.") }) { Text("Finish setup") }
+        }
+    }
+}
+
+private fun cashAccountId(state: JSONObject): String {
+    val balances = state.optJSONObject("review")?.optJSONArray("actualBalances") ?: return ""
+    for (index in 0 until balances.length()) {
+        val row = balances.getJSONObject(index)
+        if (row.optString("kind") in setOf("checking", "savings", "cash")) return row.optString("id")
+    }
+    return ""
+}
+
+private fun expenseBucketId(state: JSONObject): String {
+    val buckets = state.optJSONArray("buckets") ?: return ""
+    for (index in 0 until buckets.length()) {
+        val row = buckets.getJSONObject(index)
+        if (row.optString("kind") == "expense") return row.optString("id")
+    }
+    return ""
 }
 
 private suspend fun runIo(onError: (String) -> Unit, block: suspend () -> Unit) {

@@ -6,12 +6,11 @@ import { Field, Notice } from "../ui.js";
 
 export function Auth() {
   const session = useSession();
-  const navigate = useNavigate();
   const [mode, setMode] = useState<"login" | "register" | "reset">("login");
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [mfa, setMfa] = useState(false);
-  if (session.user && session.householdId) return <Navigate to="/" replace />;
+  if (session.user && session.householdId) return <Navigate to={session.user.onboardingStep === "done" ? "/" : "/setup"} replace />;
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -20,15 +19,8 @@ export function Auth() {
     const data = new FormData(event.currentTarget);
     try {
       if (mode === "reset") {
-        const token = String(data.get("token") ?? "");
-        if (!token) {
-          const result = await api<{ message?: string; devResetToken?: string }>("/api/auth/forgot", { method: "POST", body: JSON.stringify({ email: data.get("email") }) });
-          setNote(result.devResetToken ? `Development reset token: ${result.devResetToken}` : result.message ?? "If that email has an account, a reset was created.");
-          return;
-        }
-        await api("/api/auth/reset", { method: "POST", body: JSON.stringify({ token, password: data.get("password") }) });
-        setMode("login");
-        setNote("Password updated. Sign in with the new one.");
+        const result = await api<{ message?: string }>("/api/auth/forgot", { method: "POST", body: JSON.stringify({ email: data.get("email") }) });
+        setNote(result.message ?? "If that email has an account, a reset message was created.");
         return;
       }
       if (mode === "register") {
@@ -49,7 +41,6 @@ export function Auth() {
         localStorage.setItem("budgetcents.token", result.token!);
       }
       await session.refresh();
-      navigate("/");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.");
     }
@@ -83,8 +74,7 @@ export function Auth() {
             <Field label="Currency"><input name="currency" defaultValue="USD" maxLength={3} /></Field>
           </> : null}
           <Field label="Email"><input name="email" type="email" required autoComplete="username" /></Field>
-          <Field label={mode === "reset" ? "New password" : "Password"}><input name="password" type="password" required={mode !== "reset"} minLength={8} autoComplete={mode === "login" ? "current-password" : "new-password"} /></Field>
-          {mode === "reset" ? <Field label="Reset token, if you already have one"><input name="token" /></Field> : null}
+          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. In development, that message is in <Link to="/dev/mail">Development mail</Link>.</p>}
           {mfa ? <Field label="Authentication code"><input name="code" inputMode="numeric" autoComplete="one-time-code" /></Field> : null}
           {error ? <Notice kind="bad">{error}</Notice> : null}
           {note ? <Notice>{note}</Notice> : null}
@@ -97,13 +87,12 @@ export function Auth() {
             const result = await api<{ token: string }>("/api/auth/demo", { method: "POST" });
             localStorage.setItem("budgetcents.token", result.token);
             await session.refresh();
-            navigate("/");
           } catch (caught) { setError(caught instanceof Error ? caught.message : "Sample household is unavailable."); }
         }}>
           <button className="btn-secondary" type="submit">Open the sample household</button>
           <p className="muted">Alex Rivera’s numbers are sample data, not a live bank connection.</p>
         </form>
-        <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link></p>
+        <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link> · <Link to="/dev/mail">Development mail</Link></p>
       </section>
     </div>
   );

@@ -446,7 +446,7 @@ export function mountIncome(app: Hono, db: Database, hooks: IncomeHooks) {
   });
 }
 
-async function createIncomeSource(db: Database, me: Actor, householdId: string, raw: unknown, hooks: IncomeHooks) {
+export async function createIncomeSource(db: Database, me: Actor, householdId: string, raw: unknown, hooks: IncomeHooks, forcedId?: string) {
   const member = await requireMember(db, me.id, householdId);
   assertBudget(member);
   const body = sourceSchema.parse(raw);
@@ -456,7 +456,7 @@ async function createIncomeSource(db: Database, me: Actor, householdId: string, 
   if (String(account.space_id) !== body.spaceId) throw new ApiError(400, "That account is in a different space.");
   assertCashAccount(account);
   await assertOwner(db, member.householdId, body.ownerUserId);
-  const sourceId = id();
+  const sourceId = forcedId ?? id();
   const now = nowIso();
   await db.tx(async () => {
     await lockHousehold(db, member.householdId);
@@ -802,7 +802,7 @@ function billSchedule(body: z.infer<typeof billSchema>): RepeatingSchedule {
   });
 }
 
-export async function createBill(db: Database, me: Actor, householdId: string, raw: unknown, hooks: IncomeHooks) {
+export async function createBill(db: Database, me: Actor, householdId: string, raw: unknown, hooks: IncomeHooks, forcedId?: string) {
   const member = await requireMember(db, me.id, householdId);
   assertBudget(member);
   const body = billSchema.parse(raw);
@@ -816,7 +816,7 @@ export async function createBill(db: Database, me: Actor, householdId: string, r
     const bucket = await db.query(`SELECT id FROM buckets WHERE id = $1 AND household_id = $2 AND space_id = $3`, [body.bucketId, member.householdId, body.spaceId]);
     if (!bucket.length) throw new ApiError(404, "Not found");
   }
-  const scheduleId = id();
+  const scheduleId = forcedId ?? id();
   const nextDate = expandSchedule(schedule, schedule.startDate, schedule.endDate ?? addDays(schedule.startDate, 3700))[0]?.date ?? schedule.startDate;
   await db.tx(async () => {
     await db.query(

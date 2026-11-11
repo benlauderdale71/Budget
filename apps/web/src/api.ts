@@ -28,6 +28,13 @@ function writeQueue(queue: QueuedOp[]) {
 
 export function setQueueOwner(userId: string | null) {
   if (userId) localStorage.setItem(OWNER, userId);
+  else localStorage.removeItem(OWNER);
+}
+
+export function clearLocalSession() {
+  localStorage.removeItem("budgetcents.token");
+  localStorage.removeItem("budgetcents.household");
+  setQueueOwner(null);
 }
 
 function currentOwner(): string | null {
@@ -100,7 +107,7 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
     data = null;
   }
   if (response.status === 401) {
-    localStorage.removeItem("budgetcents.token");
+    clearLocalSession();
     window.dispatchEvent(new Event("budgetcents-unauthorized"));
     throw new ApiError(401, data?.error ?? "Sign in again.");
   }

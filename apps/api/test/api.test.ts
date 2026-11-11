@@ -23,6 +23,10 @@ function auth(token: string, extra?: Record<string, string>) {
   return { authorization: `Bearer ${token}`, "content-type": "application/json", ...extra };
 }
 
+async function markVerified(email: string) {
+  await db.query(`UPDATE users SET email_verified_at = $1 WHERE email = $2`, [new Date().toISOString(), email.toLowerCase()]);
+}
+
 describe("BudgetCents API", () => {
   it("keeps a card split and its payment as one purchase", async () => {
     const api = await app();
@@ -110,6 +114,7 @@ describe("BudgetCents API", () => {
       method: "POST", headers: auth(token),
       body: JSON.stringify({ spaceId, name: "Private", kind: "cash", visibility: "private", openingBalanceMinor: 5000, openingDate: "2026-11-01" }),
     }));
+    await markVerified("owner@example.com");
     const invite = await json(await api.request(`/api/households/${hid}/invitations`, {
       method: "POST", headers: auth(token),
       body: JSON.stringify({ email: "guest@example.com", role: "editor" }),
@@ -239,6 +244,7 @@ describe("authorization, validation, and idempotency", () => {
       method: "POST", headers: auth(owner.token),
       body: JSON.stringify({ spaceId: personal.body.id, bucketId: privateBucket.body.id, periodKey: "2026-11", amountMinor: 1200 }),
     });
+    await markVerified("owner-reset@example.com");
     const invite = await json(await api.request(`/api/households/${owner.hid}/invitations`, {
       method: "POST", headers: auth(owner.token),
       body: JSON.stringify({ email: "admin-reset@example.com", role: "admin" }),
