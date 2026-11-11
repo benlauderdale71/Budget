@@ -253,20 +253,7 @@ fun FeatureScreen(
                 }
             }
         }
-        "import" -> ImportScreen(dash, onError) { text, accountId ->
-            scope.launch {
-                runIo(onError) {
-                    val preview = api.request("POST", "/api/households/$hid/import/preview", JSONObject()
-                        .put("spaceId", dash?.optString("spaceId")).put("format", "csv").put("text", text))
-                    val rows = preview.optJSONArray("rows") ?: JSONArray()
-                    val numbers = org.json.JSONArray()
-                    for (index in 0 until rows.length()) if ((rows.getJSONObject(index).optJSONArray("errors")?.length() ?: 0) == 0) numbers.put(rows.getJSONObject(index).optInt("rowNumber"))
-                    val committed = api.request("POST", "/api/households/$hid/import/${preview.optString("batchId")}/commit", JSONObject().put("accountId", accountId).put("rowNumbers", numbers))
-                    onStatus("Imported ${committed.optInt("created")} rows. Review them before relying on the categories.")
-                    onChanged()
-                }
-            }
-        }
+        "import" -> ImportScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
         else -> Text("That screen is not on this build.")
     }
 }
@@ -1620,19 +1607,121 @@ private fun AssistantScreen(onError: (String) -> Unit, onAsk: (String) -> Unit) 
 }
 
 @Composable
-private fun ImportScreen(dash: JSONObject?, onError: (String) -> Unit, onCommit: (String, String) -> Unit) {
-    var text by remember { mutableStateOf("Date,Amount,Payee\n") }
+private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy: Boolean, onError: (String) -> Unit, onStatus: (String) -> Unit, onChanged: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf("Date,Payee,Amount,Category,Notes,Tags\n") }
     var accountId by remember { mutableStateOf("") }
+    var format by remember { mutableStateOf("csv") }
+    var profile by remember { mutableStateOf("") }
+    var createMissing by remember { mutableStateOf(false) }
+    var includeMatches by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<JSONObject?>(null) }
+    var batchId by remember { mutableStateOf("") }
+    var canUndo by remember { mutableStateOf(false) }
     val accounts = dash?.optJSONArray("accounts") ?: JSONArray()
-    Text("Choose the account these rows belong to. Nothing is imported until you commit.")
+    val budget = dash?.optJSONObject("budget")
+    val sources = listOf("" to "Generic", "mint" to "Mint", "ynab" to "YNAB", "monarch" to "Monarch", "simplifi" to "Simplifi", "rocket" to "Rocket Money", "everydollar" to "EveryDollar", "empower" to "Empower", "goodbudget" to "Goodbudget")
+    Text("1. Choose a source. 2. Preview the rows. 3. Confirm. Preview does not change cash.")
+    if (budget != null) Text("Cash ${money(budget.optLong("cashPoolMinor"), privacy)} · Spending ${money(budget.optLong("spendingMinor"), privacy)}")
+    Text("Format")
+    listOf("csv" to "CSV", "ofx" to "OFX", "qif" to "QIF").forEach { (id, label) ->
+        TextButton(onClick = { format = id }) { Text(if (format == id) "Selected · $label" else label) }
+    }
+    Text("Source")
+    sources.forEach { (id, label) ->
+        TextButton(onClick = { profile = id }) { Text(if (profile == id) "Selected · $label" else label) }
+    }
+    Text("Account")
     for (index in 0 until accounts.length()) {
         val account = accounts.getJSONObject(index)
         TextButton(onClick = { accountId = account.optString("id") }) {
             Text(if (account.optString("id") == accountId) "Selected · ${account.optString("name")}" else account.optString("name"))
         }
     }
-    OutlinedTextField(text, { text = it }, label = { Text("CSV") }, modifier = Modifier.fillMaxWidth())
-    Button(onClick = { if (accountId.isBlank()) onError("Choose an account.") else onCommit(text, accountId) }) { Text("Preview and import") }
+    OutlinedTextField(text, { text = it }, label = { Text("CSV, OFX, or QIF") }, modifier = Modifier.fillMaxWidth())
+    TextButton(onClick = { createMissing = !createMissing }) { Text(if (createMissing) "Create missing categories" else "Do not create categories") }
+    TextButton(onClick = { includeMatches = !includeMatches }) { Text(if (includeMatches) "Possible matches will be imported" else "Possible matches stay out") }
+    Button(onClick = {
+        if (accountId.isBlank()) onError("Choose an account.")
+        else scope.launch {
+            runIo(onError) {
+                val body = JSONObject().put("spaceId", dash?.optString("spaceId")).put("format", format).put("text", text)
+                if (profile.isNotBlank()) body.put("profile", profile)
+                val next = api.request("POST", "/api/households/$hid/import/preview", body)
+                preview = next
+                batchId = next.optString("batchId")
+                canUndo = false
+                onStatus("Preview only. Nothing was posted.")
+            }
+        }
+    }) { Text("Preview") }
+    val shown = preview
+    if (shown != null) {
+        Text(shown.optString("note"))
+        val explanations = shown.optJSONArray("explanations") ?: shown.optJSONArray("missing") ?: JSONArray()
+        for (index in 0 until explanations.length()) Text(explanations.optString(index))
+        val balances = shown.optJSONArray("balances") ?: JSONArray()
+        for (index in 0 until balances.length()) {
+            val balance = balances.getJSONObject(index)
+            Text("Balance in the file on ${balance.optString("date")}: ${money(balance.optLong("balanceMinor"), privacy)}. This is not posted.")
+        }
+        val categories = shown.optJSONArray("categories") ?: JSONArray()
+        for (index in 0 until categories.length()) {
+            val category = categories.getJSONObject(index)
+            val match = category.optJSONObject("match")
+            Text(if (match == null) "${category.optString("name")} is not in this plan." else "${category.optString("name")} uses ${match.optString("name")}.")
+        }
+        val rows = shown.optJSONArray("rows") ?: JSONArray()
+        val limit = minOf(rows.length(), 12)
+        for (index in 0 until limit) {
+            val row = rows.getJSONObject(index)
+            val amount = if (row.isNull("amountMinor")) "" else money(row.optLong("amountMinor"), privacy)
+            val errors = row.optJSONArray("errors")
+            val problem = when {
+                (errors?.length() ?: 0) > 0 -> errors?.optString(0) ?: ""
+                row.optBoolean("duplicate") -> "Already imported"
+                row.optBoolean("possibleMatch") -> "Same date, payee, and amount"
+                else -> ""
+            }
+            Text("${row.optString("date")} ${row.optString("payee")} $amount $problem".trim())
+        }
+        if (rows.length() > limit) Text("${rows.length() - limit} more rows are included when they have no error.")
+        Button(onClick = {
+            scope.launch {
+                runIo(onError) {
+                    val numbers = JSONArray()
+                    for (index in 0 until rows.length()) {
+                        val row = rows.getJSONObject(index)
+                        if ((row.optJSONArray("errors")?.length() ?: 0) > 0 || row.optBoolean("duplicate")) continue
+                        if (row.optBoolean("possibleMatch") && !includeMatches) continue
+                        numbers.put(row.optInt("rowNumber"))
+                    }
+                    if (numbers.length() == 0) {
+                        onError("Nothing eligible was selected.")
+                        return@runIo
+                    }
+                    val committed = api.request("POST", "/api/households/$hid/import/$batchId/commit", JSONObject()
+                        .put("accountId", accountId)
+                        .put("rowNumbers", numbers)
+                        .put("createMissingCategories", createMissing))
+                    canUndo = true
+                    onStatus(committed.optString("note"))
+                    onChanged()
+                }
+            }
+        }) { Text("Import selected") }
+        if (canUndo && batchId.isNotBlank()) {
+            TextButton(onClick = {
+                scope.launch {
+                    runIo(onError) {
+                        val undone = api.request("POST", "/api/households/$hid/import/$batchId/revert")
+                        onStatus(undone.optString("note"))
+                        onChanged()
+                    }
+                }
+            }) { Text("Undo this import") }
+        }
+    }
 }
 
 @Composable

@@ -16,6 +16,12 @@ The income plan compares expected pay with amounts you intend to give each categ
 
 Underfunded targets can be previewed. The preview will not spend expected income and will not assign more than Ready to Assign.
 
+## Import
+
+Open Import, choose the file type, and pick a source when the export came from Mint, YNAB, Monarch, Simplifi, Rocket Money, EveryDollar, Empower, or Goodbudget. Map only columns the file has. Preview lists every row, the categories it found, and a balance from the file. Nothing is posted yet. A balance is not turned into a transaction. A row whose splits do not add up to the amount stays out, and the difference is not given to the last category. Categories, notes, tags, and splits are kept when the export has them. Fields the export does not have stay blank. This is not a complete copy of the other app.
+
+Choose the account, leave a possible match unchecked unless you mean to add it, and confirm. One confirmed file creates the selected transactions once. Confirming the same selection again does not add them a second time. A different selection after confirmation is refused. Undo removes rows that were not edited, reconciled, locked, or tied to a receipt. A category created for the import is archived only when nothing else uses it.
+
 ## Activity
 
 Record an expense, income, refund, transfer, or card payment. Split an expense across categories. A card payment is not a second expense. A refund lowers spending and is not income.

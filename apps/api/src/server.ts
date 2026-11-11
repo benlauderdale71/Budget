@@ -1,6 +1,5 @@
 import { serve } from "@hono/node-server";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordFillPoll, runDueFills } from "./fills.js";
@@ -26,7 +25,8 @@ app.use("*", async (c, next) => {
   const send = async (filePath: string) => {
     const info = await stat(filePath);
     if (!info.isFile()) throw new Error("missing");
-    return new Response(createReadStream(filePath) as unknown as ReadableStream, {
+    const bytes = await readFile(filePath);
+    return new Response(bytes, {
       headers: { "content-type": contentType(filePath), "cache-control": filePath.endsWith(".html") ? "no-cache" : "public, max-age=3600" },
     });
   };

@@ -117,6 +117,9 @@ a { color: var(--teal); }
 .grid.two { grid-template-columns: 1.2fr 0.8fr; }
 .receipt-preview { width: 100%; min-height: 240px; max-height: 70vh; object-fit: contain; background: white; border: 1px solid var(--line); }
 .receipt-line { display: grid; grid-template-columns: 1.3fr 0.6fr 0.7fr 0.7fr 1fr auto; gap: 8px; margin-bottom: 8px; align-items: center; }
+.wizard-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; padding: 0; list-style: none; }
+.wizard-steps li { padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.wizard-steps li[aria-current="step"] { background: var(--teal-soft); color: var(--navy); font-weight: 650; }
 .grid.three { grid-template-columns: repeat(3, 1fr); }
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, clearLocalSession, downloadFile } from "../api.js";
 import { parseAmount } from "../format.js";
@@ -20,7 +20,7 @@ const moreLinks = [
   ["/assistant", "Assistant", "Answers from ledger facts"],
   ["/household", "Sharing", "People, roles, and spaces"],
   ["/rules", "Rules", "Payee rules that do not override a lock"],
-  ["/import", "Import", "CSV, OFX, and QIF"],
+  ["/import", "Import", "Preview a file, then confirm"],
   ["/providers", "Connections", "What is live and what is not"],
   ["/cases", "Requests", "Cancellation notes, with no biller contacted"],
   ["/credit", "Credit", "A score you type, not a bureau report"],
@@ -59,53 +59,213 @@ export function Assistant() {
   );
 }
 
+type ImportSplit = { category: string; amountMinor: number; role: string };
+type ImportGroup = {
+  groupKey: string;
+  rowNumbers: number[];
+  date?: string;
+  payee: string;
+  amountMinor?: number;
+  notes?: string;
+  tags?: string[];
+  splits?: ImportSplit[];
+  errors: string[];
+  warnings?: string[];
+  duplicate: boolean;
+  possibleMatch: boolean;
+};
+type ImportPreview = {
+  batchId: string;
+  rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; notes?: string; tags?: string[]; errors: string[]; duplicate: boolean; possibleMatch: boolean; splits?: ImportSplit[] }[];
+  groups: ImportGroup[];
+  categories: { name: string; kind: string; count: number; conflict: boolean; ambiguous: boolean; match: { id: string; name: string } | null }[];
+  balances: { account: string; date: string; balanceMinor: number }[];
+  columns: Record<string, string> | null;
+  explanations: string[];
+  present: string[];
+  note: string;
+};
+
+function columnValue(data: FormData, name: string) {
+  const value = String(data.get(name) || "").trim();
+  return value || undefined;
+}
+
 export function ImportPage() {
   const session = useSession();
-  const accounts = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId]);
-  const [preview, setPreview] = useState<{ batchId: string; rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; duplicate?: boolean; possibleMatch?: boolean; errors: string[] }[]; missing: string[] } | null>(null);
+  const accounts = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  const spaceId = session.spaceId ?? accounts.data?.spaceId;
+  useEffect(() => { if (accounts.data?.spaceId) session.adoptSpace(accounts.data.spaceId); }, [accounts.data?.spaceId]);
+  const recent = useLoad(() => spaceId
+    ? api<{ batch: { id: string; status: string; note: string; commit: Record<string, unknown> | null } | null }>(scoped(session.householdId, "/import/recent", spaceId))
+    : Promise.resolve({ batch: null }), [session.householdId, spaceId, session.tick]);
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [categoryMap, setCategoryMap] = useState<Record<string, string>>({});
+  const [createMissing, setCreateMissing] = useState(false);
+  const [committed, setCommitted] = useState<{ batchId: string; body: Record<string, unknown>; note: string } | null>(null);
   const form = useFormError();
+  const step = preview && committed?.batchId === preview.batchId ? "Confirm" : preview ? "Preview" : "Source";
+  useEffect(() => {
+    const batch = recent.data?.batch;
+    if (!batch?.commit) return;
+    setCommitted((current) => current ?? { batchId: batch.id, body: batch.commit!, note: batch.note });
+  }, [recent.data]);
+  const buckets = accounts.data?.buckets.filter((bucket) => !bucket.archived) ?? [];
+  function toggleRow(rowNumber: number) {
+    if (!preview) return;
+    const group = preview.groups.find((item) => item.rowNumbers.includes(rowNumber));
+    if (!group || group.duplicate || group.errors.length) return;
+    setSelected((current) => {
+      const on = group.rowNumbers.every((number) => current.includes(number));
+      return on ? current.filter((number) => !group.rowNumbers.includes(number)) : [...new Set([...current, ...group.rowNumbers])];
+    });
+  }
+  async function commit(batchId: string, body: Record<string, unknown>) {
+    const saved = await api<{ note: string; created: number; duplicate: boolean }>(scoped(session.householdId, `/import/${batchId}/commit`), { method: "POST", body: JSON.stringify(body) });
+    setCommitted({ batchId, body, note: saved.note });
+    session.bump();
+  }
+  async function runAction(action: () => Promise<void>) {
+    form.setError("");
+    try {
+      await action();
+    } catch (caught) {
+      form.setError(caught instanceof Error ? caught.message : "That did not save.");
+    }
+  }
   return (
-    <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. A file that does not contain categories, tags, splits, or notes leaves those blank. They are not invented.">
-      <ol>
-        <li>Choose the source and the file.</li>
-        <li>Map date, amount, and payee when the headers differ from the profile.</li>
-        <li>Read what this export does not contain.</li>
-        <li>Leave duplicates and broken rows unchecked.</li>
-        <li>Confirm the account. Committing the same batch again does not create a second copy.</li>
+    <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. Categories, notes, tags, and splits are kept when the file has them. Fields that are missing stay blank.">
+      <ol className="wizard-steps">
+        <li aria-current={step === "Source" ? "step" : undefined}>1. Source and columns</li>
+        <li aria-current={step === "Preview" ? "step" : undefined}>2. Preview</li>
+        <li aria-current={step === "Confirm" ? "step" : undefined}>3. Confirm</li>
       </ol>
+      {accounts.data ? <p>Cash <Money minor={accounts.data.budget.cashPoolMinor} /> · Ready to Assign <Money minor={accounts.data.budget.readyToAssignMinor} /> · Spending <Money minor={accounts.data.budget.spendingMinor} /></p> : null}
+      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+      {recent.error ? <Notice kind="bad">{recent.error}</Notice> : null}
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         const file = data.get("file") as File;
         const text = await file.text();
         const mapping: Record<string, string> = {};
-        if (String(data.get("dateColumn") || "").trim()) mapping.date = String(data.get("dateColumn"));
-        if (String(data.get("amountColumn") || "").trim()) mapping.amount = String(data.get("amountColumn"));
-        if (String(data.get("payeeColumn") || "").trim()) mapping.payee = String(data.get("payeeColumn"));
-        setPreview(await api(scoped(session.householdId, "/import/preview"), { method: "POST", body: JSON.stringify({ spaceId: accounts.data?.spaceId, profile: data.get("profile") || undefined, format: data.get("format"), text, mapping }) }));
+        for (const [field, key] of [
+          ["dateColumn", "date"], ["amountColumn", "amount"], ["outflowColumn", "debit"], ["inflowColumn", "credit"],
+          ["payeeColumn", "payee"], ["categoryColumn", "category"], ["notesColumn", "notes"], ["tagsColumn", "tags"],
+          ["splitsColumn", "splits"], ["splitGroupColumn", "splitGroup"], ["balanceColumn", "balance"], ["currencyColumn", "currency"],
+        ] as const) {
+          const value = columnValue(data, field);
+          if (value) mapping[key] = value;
+        }
+        const next = await api<ImportPreview>(scoped(session.householdId, "/import/preview"), { method: "POST", body: JSON.stringify({
+          spaceId: accounts.data?.spaceId,
+          profile: data.get("profile") || undefined,
+          format: data.get("format"),
+          text,
+          mapping,
+          dateOrder: data.get("dateOrder"),
+          decimal: data.get("decimal"),
+          inflowSign: data.get("inflowSign"),
+        }) });
+        const chosen: number[] = [];
+        for (const group of next.groups) {
+          if (!group.duplicate && !group.possibleMatch && group.errors.length === 0) chosen.push(...group.rowNumbers);
+        }
+        const mapped: Record<string, string> = {};
+        for (const category of next.categories) {
+          if (category.match && !category.ambiguous && !category.conflict) mapped[category.name] = category.match.id;
+        }
+        setPreview(next);
+        setSelected(chosen);
+        setCategoryMap(mapped);
+        setCreateMissing(false);
       })}>
-        <Field label="Format"><select name="format"><option value="csv">CSV</option><option value="ofx">OFX</option><option value="qif">QIF</option></select></Field>
-        <Field label="Source"><select name="profile"><option value="">Generic columns</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
-        <Field label="Date column"><input name="dateColumn" placeholder="Use the source default" /></Field>
-        <Field label="Amount column"><input name="amountColumn" placeholder="Use the source default" /></Field>
-        <Field label="Payee column"><input name="payeeColumn" placeholder="Use the source default" /></Field>
-        <Field label="File"><input name="file" type="file" required accept=".csv,.ofx,.qfx,.qif,text/csv,text/plain" /></Field>
-        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+        <h2>Source</h2>
+        <div className="grid two">
+          <Field label="Format"><select name="format" aria-label="Format"><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option></select></Field>
+          <Field label="Source"><select name="profile" aria-label="Source"><option value="">Generic columns</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
+          <Field label="Date order"><select name="dateOrder" aria-label="Date order"><option value="mdy">Month/day/year</option><option value="dmy">Day/month/year</option></select></Field>
+          <Field label="Decimal mark"><select name="decimal" aria-label="Decimal mark"><option value="period">1,234.56</option><option value="comma">1.234,56</option></select></Field>
+          <Field label="Sign"><select name="inflowSign" aria-label="Sign"><option value="positive_in">Positive amounts are income</option><option value="positive_out">Positive amounts are expenses</option></select></Field>
+        </div>
+        <h2>Map columns</h2>
+        <p className="muted">Leave a box blank to use the source profile or a matching header. A blank field is not invented.</p>
+        <div className="grid two">
+          <Field label="Date column"><input name="dateColumn" aria-label="Date column" placeholder="Date" /></Field>
+          <Field label="Amount column"><input name="amountColumn" aria-label="Amount column" placeholder="Amount" /></Field>
+          <Field label="Outflow column"><input name="outflowColumn" aria-label="Outflow column" placeholder="Outflow" /></Field>
+          <Field label="Inflow column"><input name="inflowColumn" aria-label="Inflow column" placeholder="Inflow" /></Field>
+          <Field label="Payee column"><input name="payeeColumn" aria-label="Payee column" placeholder="Payee" /></Field>
+          <Field label="Category column"><input name="categoryColumn" aria-label="Category column" placeholder="Category" /></Field>
+          <Field label="Notes column"><input name="notesColumn" aria-label="Notes column" placeholder="Notes" /></Field>
+          <Field label="Tags column"><input name="tagsColumn" aria-label="Tags column" placeholder="Tags" /></Field>
+          <Field label="Splits column"><input name="splitsColumn" aria-label="Splits column" placeholder="Splits" /></Field>
+          <Field label="Split group column"><input name="splitGroupColumn" aria-label="Split group column" placeholder="Split Group" /></Field>
+          <Field label="Balance column"><input name="balanceColumn" aria-label="Balance column" placeholder="Balance" /></Field>
+          <Field label="Currency column"><input name="currencyColumn" aria-label="Currency column" placeholder="Currency" /></Field>
+        </div>
+        <Field label="File"><input name="file" type="file" required accept=".csv,.ofx,.qfx,.qif,text/csv,text/plain" aria-label="Import file" /></Field>
         <button className="btn" type="submit" disabled={!accounts.data}>Preview</button>
       </form>
       {preview ? <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
-        const rowNumbers = preview.rows.filter((row) => data.get(`row-${row.rowNumber}`) === "on").map((row) => row.rowNumber);
-        const result = await api<{ created: number }>(scoped(session.householdId, `/import/${preview.batchId}/commit`), { method: "POST", body: JSON.stringify({ accountId: data.get("accountId"), rowNumbers }) });
-        setPreview(null);
-        session.bump();
-        form.setError("");
-        alert(`Imported ${result.created}. They need review before they change a category you already confirmed.`);
+        if (!selected.length) {
+          form.setError("Select at least one row. Nothing was imported.");
+          return;
+        }
+        const body = {
+          accountId: String(data.get("accountId")),
+          rowNumbers: selected,
+          categoryMap: Object.fromEntries(Object.entries(categoryMap).filter(([, value]) => value)),
+          createMissingCategories: createMissing,
+        };
+        if (preview) await commit(preview.batchId, body);
       })}>
-        <p>This export does not include: {preview.missing.join(" ")} A later import of the same rows is skipped when the date, payee, and amount already match, or when a provider id matches. This import is not an undo button. A full household backup is the supported way to restore a previous copy.</p>
-        <Field label="Account"><select name="accountId" required>{accounts.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        {preview.rows.slice(0, 40).map((row) => <label key={row.rowNumber} className="link-row"><span><input type="checkbox" name={`row-${row.rowNumber}`} defaultChecked={!row.duplicate && !row.possibleMatch && !row.errors.length} disabled={!!row.duplicate || row.errors.length > 0} /> {row.date} {row.payee} {row.duplicate ? "(already imported)" : row.possibleMatch ? "(same date, payee, and amount already in the register — check this only if it is the bank copy you want to match)" : row.errors.join(", ")}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>)}
+        <h2>Preview</h2>
+        <p>{preview.note}</p>
+        <p>In this file: {preview.present.length ? preview.present.join(", ") : "no optional fields"}.</p>
+        <ul>{preview.explanations.map((item) => <li key={item}>{item}</li>)}</ul>
+        {preview.columns ? <p className="muted">Columns in use: {Object.entries(preview.columns).filter(([, value]) => value).map(([key, value]) => `${key} = ${value}`).join(", ")}.</p> : null}
+        {preview.balances.map((balance) => <p key={`${balance.account}-${balance.date}`}>Balance in the file for {balance.account} on {balance.date}: <Money minor={balance.balanceMinor} />. This is not posted.</p>)}
+        {preview.categories.length ? <div>
+          <h2>Categories</h2>
+          {preview.categories.map((category) => <Field key={category.name} label={category.name}>
+            <select aria-label={`Category ${category.name}`} value={categoryMap[category.name] ?? ""} onChange={(event) => setCategoryMap((current) => ({ ...current, [category.name]: event.target.value }))}>
+              <option value="">{category.match ? "Create if allowed" : "Not in this plan"}</option>
+              {buckets.filter((bucket) => bucket.kind === category.kind).map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}
+            </select>
+            {category.conflict ? <span className="muted"> This name is used for both income and spending.</span> : null}
+            {category.ambiguous ? <span className="muted"> More than one category has this name. Choose one.</span> : null}
+          </Field>)}
+          <label className="field"><span><input type="checkbox" checked={createMissing} aria-label="Create categories that are not in the plan" onChange={(event) => setCreateMissing(event.target.checked)} /> Create categories that are not in the plan</span></label>
+        </div> : null}
+        <Field label="Account"><select name="accountId" aria-label="Account" required>{accounts.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        {preview.rows.slice(0, 60).map((row) => {
+          const group = preview.groups.find((item) => item.rowNumbers.includes(row.rowNumber));
+          const status = row.duplicate ? "Already imported" : row.possibleMatch ? "Same date, payee, and amount already in the register" : row.errors.join(" ");
+          const detail = [
+            row.splits?.map((split) => split.category).join(", "),
+            row.notes,
+            row.tags?.join(", "),
+            group?.warnings?.join(" "),
+          ].filter(Boolean).join(" · ");
+          return <label key={row.rowNumber} className="link-row"><span><input type="checkbox" aria-label={`Import row ${row.rowNumber}`} checked={selected.includes(row.rowNumber)} disabled={row.duplicate || row.errors.length > 0} onChange={() => toggleRow(row.rowNumber)} /> {row.date} {row.payee} {status} {detail}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>;
+        })}
+        {preview.rows.length > 60 ? <p>{preview.rows.length - 60} more rows stay selected when they have no error.</p> : null}
         <button className="btn" type="submit">Import selected</button>
       </form> : null}
+      {committed ? <article className="card" style={{ marginTop: 16 }} aria-label="Import result">
+        <h2>Confirm</h2>
+        <p>{committed.note}</p>
+        <div className="row">
+          <button className="btn-secondary" type="button" onClick={() => runAction(async () => { await commit(committed.batchId, committed.body); })}>Confirm this import again</button>
+          <button className="btn-secondary" type="button" onClick={() => runAction(async () => {
+            const undone = await api<{ note: string }>(scoped(session.householdId, `/import/${committed.batchId}/revert`), { method: "POST" });
+            setCommitted({ ...committed, note: undone.note });
+            session.bump();
+          })}>Undo this import</button>
+        </div>
+      </article> : null}
     </Page>
   );
 }

@@ -1,4 +1,4 @@
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, duplicateKey, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
@@ -35,6 +35,7 @@ import {
   financialRoadmap,
   neededForTarget,
 } from "./finance.js";
+import { decorateGroups, decorateRows, importFingerprint, readStoredImport, summarizeCategories, type StoredImport } from "./import-batch.js";
 import { readerStatus } from "./ocr.js";
 import { textPdf } from "./pdf.js";
 import { mountReceipts } from "./receipts.js";
@@ -1380,51 +1381,297 @@ export function createApp(db: Database) {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ spaceId: z.string(), profile: z.string().optional(), format: z.enum(["csv", "ofx", "qif"]), text: z.string().max(2_000_000), mapping: z.record(z.string()).optional() }).parse(await c.req.json());
-    const profile = IMPORT_PROFILES.find((item) => item.id === body.profile);
-    let rows: { rowNumber: number; date?: string; amountMinor?: number; payee?: string; fitId?: string; errors: string[]; duplicateKey?: string }[] = [];
-    if (body.format === "csv") rows = mapCsv(body.text, { ...(profile?.map ?? {}), ...body.mapping, date: body.mapping?.date ?? profile?.map.date ?? "Date", amount: body.mapping?.amount ?? profile?.map.amount ?? "Amount", payee: body.mapping?.payee ?? profile?.map.payee ?? "Payee" });
-    if (body.format === "ofx") rows = parseOfx(body.text).map((txn, index) => ({ rowNumber: index + 1, ...txn, errors: txn.date ? [] : ["Missing date"], duplicateKey: duplicateKey({ date: txn.date, amountMinor: txn.amountMinor, description: txn.payee, account: "" }) }));
-    if (body.format === "qif") rows = parseQif(body.text).map((txn, index) => ({ rowNumber: index + 1, ...txn, errors: [], duplicateKey: duplicateKey({ date: txn.date, amountMinor: txn.amountMinor, description: txn.payee, account: "" }) }));
-    const existing = await db.query(`SELECT date, amount_minor, payee, provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId]);
-    const keys = new Set(existing.map((txn) => duplicateKey({ date: String(txn.date), amountMinor: num(txn.amount_minor), description: String(txn.payee), account: "" })));
-    const providerIds = new Set(existing.map((txn) => str(txn.provider_transaction_id)).filter((value): value is string => !!value));
+    const body = z.object({
+      spaceId: z.string(),
+      profile: z.string().optional(),
+      format: z.enum(["csv", "ofx", "qif"]),
+      text: z.string().max(2_000_000),
+      mapping: z.record(z.string().max(80)).optional(),
+      dateOrder: z.enum(["mdy", "dmy"]).optional(),
+      decimal: z.enum(["period", "comma"]).optional(),
+      inflowSign: z.enum(["positive_in", "positive_out"]).optional(),
+    }).parse(await c.req.json());
+    const profileId = body.profile?.trim() || undefined;
+    const profile = profileId ? IMPORT_PROFILES.find((item) => item.id === profileId) : undefined;
+    if (profileId && !profile) throw new ApiError(400, "Choose a supported source.");
     await assertSpace(me.id, member.householdId, body.spaceId);
-    const preview = rows.map((row) => {
-      const sameProvider = !!row.fitId && providerIds.has(row.fitId);
-      const sameLine = row.duplicateKey ? keys.has(row.duplicateKey) : false;
-      return { ...row, duplicate: sameProvider, possibleMatch: !sameProvider && sameLine };
-    });
+    const map: ColumnMap = { ...(profile?.map ?? {}), ...cleanImportColumns(body.mapping) };
+    let rows = body.format === "csv"
+      ? mapCsv(body.text, map, { dateOrder: body.dateOrder, decimal: body.decimal, inflowSign: body.inflowSign })
+      : rowsFromBank(body.format === "ofx" ? parseOfx(body.text) : parseQif(body.text));
+    if (rows.length > 5000) throw new ApiError(400, "This file has more than 5,000 rows. Split it and import each part. Nothing was imported.");
+    const groups = groupImportRows(rows);
+    const existing = await db.query(`SELECT date, amount_minor, payee, provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId]);
+    const decorated = decorateGroups(groups, existing.map((txn) => ({ date: String(txn.date), amountMinor: num(txn.amount_minor), payee: String(txn.payee), fitId: str(txn.provider_transaction_id) })));
+    const buckets = await db.query(`SELECT id, name, kind, archived FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, body.spaceId]);
+    const explanations = importFieldReport(rows, [
+      ...(profile?.missing ?? []),
+      ...(body.format === "ofx" ? ["OFX has no categories, tags, or splits. Those were not invented. A transfer that does not name both accounts is left out."] : []),
+      ...(body.format === "qif" ? ["QIF categories, memos, check numbers, and split lines are kept when the file contains them. Budget assignments are not in a QIF."] : []),
+      ...(!profile && body.format === "csv" ? ["Columns whose headers match Date, Payee, Amount, Category, Notes, Tags, Splits, Split Group, or Balance are read. Anything else stays blank until you map it."] : []),
+    ]).absent;
+    const report = importFieldReport(rows, []);
+    const stored: StoredImport = { version: 2, rows, groups };
     const batchId = id();
-    await db.query(`INSERT INTO import_batches (id, household_id, space_id, source, status, preview_json, created_at) VALUES ($1,$2,$3,$4,'preview',$5,$6)`, [batchId, member.householdId, body.spaceId, body.profile ?? body.format, JSON.stringify(preview), nowIso()]);
-    return c.json({ batchId, rows: preview, missing: profile?.missing ?? ["Map the columns you have. Fields that are not in the file are left blank and are not invented."], profiles: IMPORT_PROFILES.map((item) => ({ id: item.id, label: item.label, missing: item.missing })) });
+    await db.query(`INSERT INTO import_batches (id, household_id, space_id, source, status, preview_json, created_at) VALUES ($1,$2,$3,$4,'preview',$5,$6)`, [batchId, member.householdId, body.spaceId, profileId ?? body.format, JSON.stringify(stored), nowIso()]);
+    return c.json({
+      batchId,
+      rows: decorateRows(rows, decorated),
+      groups: decorated,
+      categories: summarizeCategories(groups, buckets.map((bucket) => ({ id: String(bucket.id), name: String(bucket.name), kind: String(bucket.kind), archived: num(bucket.archived) === 1 }))),
+      balances: report.balances,
+      columns: body.format === "csv" ? resolvedColumnMap(body.text, map) : null,
+      missing: explanations,
+      explanations,
+      present: report.present,
+      reversible: true,
+      note: `${report.note} Nothing was posted. A balance in the file is shown for comparison and does not change the account.`,
+      profiles: IMPORT_PROFILES.map((item) => ({ id: item.id, label: item.label, missing: item.missing })),
+    });
+  });
+
+  app.get("/api/households/:hid/import/recent", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const spaceId = c.req.query("spaceId");
+    if (!spaceId) throw new ApiError(400, "Choose a space.");
+    await assertSpace(me.id, member.householdId, spaceId);
+    const rows = await db.query(
+      `SELECT * FROM import_batches WHERE household_id = $1 AND space_id = $2 AND status IN ('committed', 'reverted') ORDER BY COALESCE(committed_at, created_at) DESC LIMIT 1`,
+      [member.householdId, spaceId],
+    );
+    if (!rows.length) return c.json({ batch: null });
+    const stored = readStoredImport(String(rows[0].preview_json));
+    const status = String(rows[0].status);
+    return c.json({
+      batch: {
+        id: String(rows[0].id),
+        status,
+        source: String(rows[0].source),
+        note: status === "reverted"
+          ? "This import was already undone."
+          : `Imported ${stored.result?.created ?? 0}. They need review. Unchanged rows can be undone. A second confirm does not add them again.`,
+        commit: stored.commit ?? null,
+      },
+    });
   });
 
   app.post("/api/households/:hid/import/:batchId/commit", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ accountId: z.string(), rowNumbers: z.array(z.number().int()) }).parse(await c.req.json());
+    const body = z.object({
+      accountId: z.string(),
+      rowNumbers: z.array(z.number().int()).max(5000),
+      categoryMap: z.record(z.string().max(80)).optional(),
+      createMissingCategories: z.boolean().optional(),
+    }).parse(await c.req.json());
+    if (Object.keys(body.categoryMap ?? {}).length > 200) throw new ApiError(400, "Map fewer categories at once. Nothing was imported.");
     const account = await mustAccount(me.id, member.householdId, body.accountId);
-    const batches = await db.query(`SELECT * FROM import_batches WHERE id = $1 AND household_id = $2 AND status = 'preview'`, [c.req.param("batchId"), member.householdId]);
-    if (!batches.length) throw new ApiError(404, "Not found");
-    await assertSpace(me.id, member.householdId, String(batches[0].space_id));
-    if (String(account.space_id) !== String(batches[0].space_id)) throw new ApiError(400, "Choose an account in the same space as the import.");
-    const rows = JSON.parse(String(batches[0].preview_json)) as { rowNumber: number; date?: string; amountMinor?: number; payee?: string; fitId?: string; errors: string[]; duplicate?: boolean }[];
-    let created = 0;
-    await db.tx(async () => {
-      for (const row of rows) {
-        if (!body.rowNumbers.includes(row.rowNumber) || row.errors.length || row.duplicate || !row.date || row.amountMinor == null) continue;
-        const saved = await insertTransaction(me, member.householdId, {
-          spaceId: String(batches[0].space_id), date: row.date, accountId: body.accountId, amountMinor: row.amountMinor,
-          type: row.amountMinor >= 0 ? "income" : "expense", payee: row.payee || "Imported", splits: [], bankStatus: "posted", importBatchId: String(batches[0].id), reviewStatus: "needs_review",
-          providerTransactionId: row.fitId, opId: `import:${batches[0].id}:${row.rowNumber}`,
-        });
-        if (!saved.duplicate) created += 1;
+    const fingerprint = importFingerprint(body.accountId, body.rowNumbers, body.categoryMap ?? {}, body.createMissingCategories === true);
+    const outcome = await db.tx(async () => {
+      const batches = await db.query(`SELECT * FROM import_batches WHERE id = $1 AND household_id = $2 FOR UPDATE`, [c.req.param("batchId"), member.householdId]);
+      if (!batches.length) throw new ApiError(404, "Not found");
+      await assertSpace(me.id, member.householdId, String(batches[0].space_id));
+      if (String(account.space_id) !== String(batches[0].space_id)) throw new ApiError(400, "Choose an account in the same space as the import.");
+      const stored = readStoredImport(String(batches[0].preview_json));
+      const status = String(batches[0].status);
+      if (status === "reverted") throw new ApiError(409, "This import was undone. Preview the file again. Nothing was imported.");
+      if (status === "committed") {
+        if (!stored.fingerprint || stored.fingerprint === fingerprint) {
+          return {
+            created: stored.result?.created ?? 0,
+            skipped: stored.result?.skipped ?? 0,
+            duplicate: true,
+            transactionIds: stored.result?.transactionIds ?? [],
+            createdCategories: stored.result?.createdCategories ?? [],
+            reversible: true,
+            note: "This import was already confirmed. A second confirm did not add rows.",
+          };
+        }
+        throw new ApiError(409, "This import was already confirmed with a different selection. Undo it or preview the file again. Nothing else was imported.");
       }
-      await db.query(`UPDATE import_batches SET status = 'committed', committed_at = $1 WHERE id = $2 AND household_id = $3`, [nowIso(), batches[0].id, member.householdId]);
+      if (status !== "preview") throw new ApiError(404, "Not found");
+      const selected = new Set(body.rowNumbers);
+      const chosen = stored.groups.filter((group) => (group.rowNumbers ?? []).some((rowNumber) => selected.has(rowNumber)));
+      if (!chosen.length) throw new ApiError(400, "Select at least one row. Nothing was imported.");
+      for (const group of chosen) {
+        if (!(group.rowNumbers ?? []).every((rowNumber) => selected.has(rowNumber))) throw new ApiError(400, "Select every line of a split, or leave the whole split out. Nothing was imported.");
+        if ((group.errors ?? []).length) throw new ApiError(400, `${group.errors[0]} Nothing was imported.`);
+        if (!group.date || group.amountMinor == null) throw new ApiError(400, "A selected row is missing a date or amount. Nothing was imported.");
+      }
+      const existing = await db.query(`SELECT provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0 AND provider_transaction_id IS NOT NULL`, [member.householdId]);
+      const seenFit = new Set(existing.map((row) => String(row.provider_transaction_id)));
+      const importing = [];
+      let skipped = 0;
+      for (const group of chosen) {
+        if (group.fitId && seenFit.has(group.fitId)) {
+          skipped += 1;
+          continue;
+        }
+        if (group.currency && group.currency.toUpperCase() !== String(account.currency).toUpperCase()) {
+          throw new ApiError(400, `A row is in ${group.currency.toUpperCase()} and the account is ${account.currency}. BudgetCents does not convert currencies during import. Nothing was imported.`);
+        }
+        if (group.fitId) seenFit.add(group.fitId);
+        importing.push(group);
+      }
+      const buckets = await db.query(`SELECT id, name, kind, archived FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, batches[0].space_id]);
+      const uses = importing.flatMap((group) => group.opening ? [] : (group.splits ?? []).map((split) => ({ name: split.category, kind: split.role === "income" ? "income" as const : "expense" as const })));
+      const plan = planCategoryAssignments(uses, buckets.map((bucket) => ({ id: String(bucket.id), name: String(bucket.name), kind: String(bucket.kind), archived: num(bucket.archived) === 1 })), body.categoryMap ?? {}, body.createMissingCategories === true);
+      if (plan.errors.length) throw new ApiError(400, `${plan.errors[0]} Nothing was imported.`);
+      if (plan.assignments.some((assignment) => assignment.create)) {
+        try {
+          assertBudget(member);
+        } catch (error) {
+          if (error instanceof ApiError) throw new ApiError(403, `${error.message} Nothing was imported.`);
+          throw error;
+        }
+      }
+      const bucketFor = new Map<string, string>();
+      const createdCategories: { id: string; name: string }[] = [];
+      for (const assignment of plan.assignments) {
+        const key = assignment.name.trim().toLowerCase().replace(/\s+/g, " ");
+        if (assignment.bucketId) {
+          bucketFor.set(key, assignment.bucketId);
+          continue;
+        }
+        const bucketId = id();
+        const income = assignment.kind === "income";
+        await db.query(
+          `INSERT INTO buckets (id, household_id, space_id, name, group_name, kind, flex_role, envelope_style, rollover, rollover_cap_minor, icon, purpose, target_json, display_order, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,NULL,NULL,NULL,$10,$11)`,
+          [bucketId, member.householdId, batches[0].space_id, assignment.name, income ? "Income" : "Imported", assignment.kind, income ? "income" : "flexible", income ? "none" : "regular", income ? "none" : "both", 200 + createdCategories.length, nowIso()],
+        );
+        await db.query(`INSERT INTO bucket_revisions (bucket_id, household_id, version, updated_at) VALUES ($1,$2,1,$3)`, [bucketId, member.householdId, nowIso()]);
+        bucketFor.set(key, bucketId);
+        createdCategories.push({ id: bucketId, name: assignment.name });
+      }
+      const transactionIds: string[] = [];
+      let created = 0;
+      for (const group of importing) {
+        const splits = group.opening ? [] : (group.splits ?? []).map((split) => {
+          const bucketId = bucketFor.get(split.category.trim().toLowerCase().replace(/\s+/g, " "));
+          if (!bucketId) throw new ApiError(400, `${split.category} is not in this plan. Nothing was imported.`);
+          return { bucketId, amountMinor: split.amountMinor, role: split.role, memo: split.memo };
+        });
+        const saved = await insertTransaction(me, member.householdId, {
+          spaceId: String(batches[0].space_id),
+          date: group.date!,
+          accountId: body.accountId,
+          amountMinor: group.amountMinor!,
+          type: group.opening ? "opening" : group.amountMinor! >= 0 ? "income" : "expense",
+          payee: group.payee || "Imported",
+          originalDescription: group.originalDescription,
+          splits,
+          notes: group.notes,
+          tags: group.tags ?? [],
+          checkNumber: group.checkNumber,
+          bankStatus: "posted",
+          reviewStatus: "needs_review",
+          categoryLocked: splits.length > 0,
+          importBatchId: String(batches[0].id),
+          providerTransactionId: group.fitId,
+          opId: `import:${batches[0].id}:${group.groupKey}`,
+        });
+        if ("updated" in saved && saved.updated) throw new ApiError(409, "That provider id is already imported. Nothing new was added.");
+        if ("duplicate" in saved && saved.duplicate) {
+          skipped += 1;
+          if (saved.id) transactionIds.push(saved.id);
+          continue;
+        }
+        created += 1;
+        if (saved.id) transactionIds.push(saved.id);
+      }
+      const result = { created, skipped, transactionIds, createdCategories };
+      const next: StoredImport = {
+        ...stored,
+        fingerprint,
+        result,
+        commit: {
+          accountId: body.accountId,
+          rowNumbers: body.rowNumbers,
+          categoryMap: body.categoryMap ?? {},
+          createMissingCategories: body.createMissingCategories === true,
+        },
+      };
+      await db.query(`UPDATE import_batches SET status = 'committed', committed_at = $1, preview_json = $2 WHERE id = $3 AND household_id = $4`, [nowIso(), JSON.stringify(next), batches[0].id, member.householdId]);
+      await audit(db, member.householdId, me.id, "import.commit", `Imported ${created} from ${String(batches[0].source)}`, "import_batch", String(batches[0].id));
+      return {
+        ...result,
+        duplicate: false,
+        reversible: true,
+        note: created === 0
+          ? "Those rows were already imported. Nothing new was added."
+          : `Imported ${created}. They need review. Unchanged rows can be undone. A second confirm does not add them again.`,
+      };
     });
-    return c.json({ created });
+    return c.json(outcome);
+  });
+
+  app.post("/api/households/:hid/import/:batchId/revert", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const outcome = await db.tx(async () => {
+      const batches = await db.query(`SELECT * FROM import_batches WHERE id = $1 AND household_id = $2 FOR UPDATE`, [c.req.param("batchId"), member.householdId]);
+      if (!batches.length) throw new ApiError(404, "Not found");
+      await assertSpace(me.id, member.householdId, String(batches[0].space_id));
+      const status = String(batches[0].status);
+      if (status === "reverted") return { reverted: 0, kept: [], keptCategories: [], archivedCategories: [], already: true, note: "This import was already undone." };
+      if (status !== "committed") throw new ApiError(400, "Preview the file and confirm it before undoing it. Nothing was changed.");
+      const stored = readStoredImport(String(batches[0].preview_json));
+      const txns = await db.query(`SELECT * FROM transactions WHERE household_id = $1 AND import_batch_id = $2 AND deleted = 0`, [member.householdId, batches[0].id]);
+      const kept: { id: string; reason: string }[] = [];
+      const remove: string[] = [];
+      for (const txn of txns) {
+        const accountRows = await db.query(`SELECT visibility, owner_user_id, space_id FROM accounts WHERE id = $1 AND household_id = $2`, [txn.account_id, member.householdId]);
+        if (!accountRows.length || !canSeeAccount(me.id, { visibility: String(accountRows[0].visibility), owner_user_id: str(accountRows[0].owner_user_id) ?? null }) || String(accountRows[0].space_id) !== String(batches[0].space_id)) {
+          kept.push({ id: String(txn.id), reason: "It is on an account you cannot change." });
+          continue;
+        }
+        if (num(txn.reconciled) === 1 || num(txn.locked) === 1) {
+          kept.push({ id: String(txn.id), reason: "It is reconciled or locked." });
+          continue;
+        }
+        if (num(txn.version) > 1) {
+          kept.push({ id: String(txn.id), reason: "It was edited after import." });
+          continue;
+        }
+        const attachments = await db.query(`SELECT id FROM attachments WHERE transaction_id = $1 LIMIT 1`, [txn.id]);
+        if (attachments.length) {
+          kept.push({ id: String(txn.id), reason: "A receipt is attached." });
+          continue;
+        }
+        remove.push(String(txn.id));
+      }
+      for (const txnId of remove) {
+        await db.query(`UPDATE transactions SET deleted = 1, version = version + 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0`, [nowIso(), txnId, member.householdId]);
+      }
+      const keptCategories: { id: string; name: string; reason: string }[] = [];
+      const archivedCategories: string[] = [];
+      for (const category of stored.result?.createdCategories ?? []) {
+        const live = await db.query(`SELECT s.id FROM splits s JOIN transactions t ON t.id = s.transaction_id WHERE s.bucket_id = $1 AND t.deleted = 0 LIMIT 1`, [category.id]);
+        const assigned = await db.query(`SELECT id FROM assignments WHERE bucket_id = $1 LIMIT 1`, [category.id]);
+        const goals = await db.query(`SELECT id FROM goals WHERE bucket_id = $1 LIMIT 1`, [category.id]);
+        if (live.length || assigned.length || goals.length) {
+          keptCategories.push({ id: category.id, name: category.name, reason: "It is used by another record." });
+          continue;
+        }
+        await db.query(`UPDATE buckets SET archived = 1 WHERE id = $1 AND household_id = $2 AND archived = 0`, [category.id, member.householdId]);
+        archivedCategories.push(category.name);
+      }
+      await db.query(`UPDATE import_batches SET status = 'reverted' WHERE id = $1 AND household_id = $2`, [batches[0].id, member.householdId]);
+      await audit(db, member.householdId, me.id, "import.revert", `Undid ${remove.length} imported rows`, "import_batch", String(batches[0].id));
+      return {
+        reverted: remove.length,
+        kept,
+        keptCategories,
+        archivedCategories,
+        already: false,
+        note: "Unchanged rows from this import were removed. Reconciled, locked, edited, or receipt-linked rows were kept.",
+      };
+    });
+    return c.json(outcome);
   });
 
   app.post("/api/households/:hid/assistant", async (c) => {
@@ -2282,6 +2529,17 @@ export function createApp(db: Database) {
   });
 
   return app;
+}
+
+function cleanImportColumns(mapping: Record<string, string> | undefined): ColumnMap {
+  const out: ColumnMap = {};
+  if (!mapping) return out;
+  const keys = ["date", "amount", "debit", "credit", "payee", "description", "category", "account", "notes", "checkNumber", "tags", "splits", "splitGroup", "balance", "currency"] as const;
+  for (const key of keys) {
+    const value = mapping[key];
+    if (value?.trim()) out[key] = value.trim();
+  }
+  return out;
 }
 
 const TRANSACTION_TYPES = new Set([
