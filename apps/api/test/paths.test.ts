@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { repositoryRoot, resolveStaticFile, resolveWebRoot } from "../src/paths.js";
+import { shouldServeAppShell } from "../src/static-fallback.js";
 
 describe("web root resolution", () => {
   it("resolves the repository root from the API source directory", () => {
@@ -33,5 +34,18 @@ describe("web root resolution", () => {
     expect(resolveStaticFile(root, "/%2e%2e/%2e%2e/etc/passwd").allowed).toBe(false);
     const sibling = resolveStaticFile(`${root}`, "/../" + root.split("/").pop() + "-evil/secret");
     expect(sibling.allowed).toBe(false);
+  });
+});
+
+describe("app shell fallback", () => {
+  it("serves the shell for navigation and not for a missing asset", () => {
+    expect(shouldServeAppShell({ pathname: "/plan", fetchMode: "navigate", fetchDest: "document" })).toBe(true);
+    expect(shouldServeAppShell({ pathname: "/import", fetchDest: "document" })).toBe(true);
+    expect(shouldServeAppShell({ pathname: "/settings" })).toBe(true);
+    expect(shouldServeAppShell({ pathname: "/assets/index-missing.js", fetchDest: "script" })).toBe(false);
+    expect(shouldServeAppShell({ pathname: "/assets/index-missing.css", fetchDest: "style" })).toBe(false);
+    expect(shouldServeAppShell({ pathname: "/icon-missing.png", fetchDest: "image" })).toBe(false);
+    expect(shouldServeAppShell({ pathname: "/assets/index-missing.js" })).toBe(false);
+    expect(shouldServeAppShell({ pathname: "/api/me", fetchDest: "empty" })).toBe(false);
   });
 });

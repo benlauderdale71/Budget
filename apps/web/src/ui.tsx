@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { formatMoney } from "./format.js";
 import { useSession } from "./session.js";
 
@@ -22,8 +22,10 @@ export function Loading({ label = "Loading" }: { label?: string }) {
 }
 
 export function ErrorNote({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.focus(); }, [message]);
   return (
-    <div className="banner bad" role="alert">
+    <div ref={ref} className="banner bad" role="alert" tabIndex={-1}>
       <p>{message}</p>
       {onRetry ? <button className="btn-secondary" onClick={onRetry}>Try again</button> : null}
     </div>
@@ -45,7 +47,7 @@ export function Money({ minor, currency, tone = true }: { minor: number; currenc
   const hidden = user?.privacyMode ?? false;
   const code = currency || householdCurrency;
   const className = !tone || hidden ? "money" : minor < 0 ? "money neg" : minor > 0 ? "money pos" : "money";
-  return <span className={className}>{formatMoney(minor, code, hidden)}</span>;
+  return <span className={className} aria-label={hidden ? "Amount hidden" : undefined}>{formatMoney(minor, code, hidden)}</span>;
 }
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -58,21 +60,64 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 }
 
 export function Notice({ children, kind = "ok" }: { children: ReactNode; kind?: "ok" | "bad" | "demo" }) {
-  return <div className={`banner ${kind}`} role="status">{children}</div>;
+  const ref = useRef<HTMLDivElement>(null);
+  const label = typeof children === "string" || typeof children === "number" ? String(children) : "";
+  useEffect(() => {
+    if (kind === "bad") ref.current?.focus();
+  }, [kind, label]);
+  return <div ref={ref} tabIndex={kind === "bad" ? -1 : undefined} className={`banner ${kind}`} role={kind === "bad" ? "alert" : "status"}>{children}</div>;
+}
+
+function focusable(root: ParentNode) {
+  return [...root.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])")];
 }
 
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const root = dialogRef.current;
+    const items = root ? focusable(root) : [];
+    const field = items.find((item) => item.tagName === "INPUT" || item.tagName === "SELECT" || item.tagName === "TEXTAREA");
+    (field ?? items[0])?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const current = focusable(dialogRef.current);
+      if (!current.length) {
+        event.preventDefault();
+        return;
+      }
+      const index = current.indexOf(document.activeElement as HTMLElement);
+      const atStart = index <= 0;
+      const atEnd = index === -1 || index === current.length - 1;
+      if (event.shiftKey ? atStart : atEnd) {
+        event.preventDefault();
+        current[event.shiftKey ? current.length - 1 : 0]?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKey);
+      restore?.focus();
+    };
+  }, []);
   return (
-    <div className="dialog-back" role="presentation" onMouseDown={onClose}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
+    <div className="dialog-back" onMouseDown={() => closeRef.current()}>
+      <div ref={dialogRef} className="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} onMouseDown={(event) => event.stopPropagation()}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
-          <h2 style={{ margin: 0 }}>{title}</h2>
-          <button className="btn-quiet" onClick={onClose}>Close</button>
+          <h2 id={titleId} style={{ margin: 0 }}>{title}</h2>
+          <button className="btn-quiet" type="button" onClick={() => closeRef.current()}>Close</button>
         </div>
         {children}
       </div>
@@ -103,6 +148,7 @@ export function Spark({ points, label }: { points: { date: string; balanceMinor:
       <details>
         <summary>Projection table</summary>
         <table>
+          <caption>Projection amounts</caption>
           <thead><tr><th>Date</th><th className="num">Balance</th></tr></thead>
           <tbody>
             {points.filter((_, index) => index % Math.ceil(points.length / 8) === 0 || index === points.length - 1).map((point) => (
@@ -170,6 +216,7 @@ export function SankeyChart({ links }: { links: { source: string; target: string
         ))}
       </svg>
       <table>
+        <caption>Cash flow amounts</caption>
         <thead><tr><th>From</th><th>To</th><th className="num">Amount</th></tr></thead>
         <tbody>{positive.map((link) => <tr key={`${link.source}-${link.target}`}><td>{link.source}</td><td>{link.target}</td><td className="num"><Money minor={link.amountMinor} /></td></tr>)}</tbody>
       </table>

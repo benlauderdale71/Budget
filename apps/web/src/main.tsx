@@ -6,7 +6,22 @@ import { SessionProvider } from "./session.js";
 import "./styles.css";
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloading || sessionStorage.getItem("budgetcents.reload") !== "1") return;
+    sessionStorage.removeItem("budgetcents.reload");
+    reloading = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker.register("/sw.js").then((registration) => {
+    const announce = () => {
+      if (registration.waiting && navigator.serviceWorker.controller) window.dispatchEvent(new Event("budgetcents-update"));
+    };
+    announce();
+    registration.addEventListener("updatefound", () => {
+      registration.installing?.addEventListener("statechange", announce);
+    });
+  }).catch(() => undefined);
 }
 
 createRoot(document.getElementById("root")!).render(

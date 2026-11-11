@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { parseAmount, todayISO } from "../format.js";
-import { scoped, useSession } from "../session.js";
+import { scoped, useAccess, useSession } from "../session.js";
 import type { Account, Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Modal, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
@@ -10,12 +10,16 @@ const PAGE = 25;
 
 export function Activity() {
   const session = useSession();
+  const access = useAccess();
+  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const pageChanged = useRef(false);
   const [params, setParams] = useSearchParams();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Txn | null>(null);
   const [offset, setOffset] = useState(0);
   const [matchId, setMatchId] = useState("");
   const [note, setNote] = useState("");
+  const [noteBad, setNoteBad] = useState(false);
   const [viewName, setViewName] = useState("");
   const [renaming, setRenaming] = useState("");
   const query = params.get("q") ?? "";
@@ -26,6 +30,10 @@ export function Activity() {
   const ids = params.get("ids") ?? "";
   const sort = params.get("sort") === "payee" ? "payee" : "date";
   useEffect(() => { setOffset(0); }, [query, review, accountId, bucketId, tag, ids, sort]);
+  useEffect(() => {
+    if (!pageChanged.current) return;
+    summaryRef.current?.focus();
+  }, [offset]);
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const views = useLoad(() => api<{ views: { id: string; name: string; query: Record<string, string> }[] }>(scoped(session.householdId, "/views")), [session.householdId, session.tick]);
   const list = useLoad(() => api<{ total: number; offset: number; transactions: Txn[]; nextOffset: number | null }>(scoped(session.householdId, `/transactions?limit=${PAGE}&offset=${offset}&sort=${sort}${query ? `&q=${encodeURIComponent(query)}` : ""}${review ? `&review=${encodeURIComponent(review)}` : ""}${accountId ? `&accountId=${encodeURIComponent(accountId)}` : ""}${bucketId ? `&bucketId=${encodeURIComponent(bucketId)}` : ""}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}${ids ? `&ids=${encodeURIComponent(ids)}` : ""}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, query, review, accountId, bucketId, tag, ids, sort, offset]);
@@ -43,14 +51,16 @@ export function Activity() {
   async function act(label: string, run: () => Promise<void>) {
     try {
       await run();
+      setNoteBad(false);
       setNote(label);
       session.bump();
     } catch (caught) {
+      setNoteBad(true);
       setNote(caught instanceof Error ? caught.message : "That change was not saved.");
     }
   }
   return (
-    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" onClick={() => { setEditing(null); setOpen(true); }}>Add</button>}>
+    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" type="button" disabled={!access.canWrite} onClick={() => { setEditing(null); setOpen(true); }}>Add</button>}>
       {ids ? <p><button className="btn-quiet" type="button" onClick={() => { const next = new URLSearchParams(params); next.delete("ids"); replaceFilters(next); }}>Show the whole register</button></p> : null}
       <div className="row">
         <label className="field">Account
@@ -78,8 +88,8 @@ export function Activity() {
         {views.data?.views.map((view) => (
           <span key={view.id} className="chip">
             <button type="button" onClick={() => { setOffset(0); setParams(new URLSearchParams(Object.entries(view.query).filter(([, value]) => value))); }}>{view.name}</button>
-            <button type="button" onClick={() => setRenaming(renaming === view.id ? "" : view.id)}>Rename</button>
-            <button type="button" onClick={() => act("Deleted that view.", () => api(scoped(session.householdId, `/views/${view.id}`), { method: "DELETE" }).then(() => undefined))}>Delete</button>
+            <button type="button" aria-label={`Rename ${view.name}`} onClick={() => setRenaming(renaming === view.id ? "" : view.id)}>Rename</button>
+            <button type="button" aria-label={`Delete ${view.name}`} onClick={() => act("Deleted that view.", () => api(scoped(session.householdId, `/views/${view.id}`), { method: "DELETE" }).then(() => undefined))}>Delete</button>
             {renaming === view.id ? (
               <form onSubmit={(event) => { event.preventDefault(); const name = String(new FormData(event.currentTarget).get("name") || ""); void act("Renamed that view.", async () => { await api(scoped(session.householdId, `/views/${view.id}`), { method: "PATCH", body: JSON.stringify({ name, query: view.query }) }); setRenaming(""); }); }}>
                 <input name="name" defaultValue={view.name} aria-label="New view name" />
@@ -89,12 +99,13 @@ export function Activity() {
           </span>
         ))}
       </div>
-      <p className="muted">{list.data.total} in this view. Showing {visible.length === 0 ? "0" : `${(list.data.offset ?? offset) + 1}–${(list.data.offset ?? offset) + visible.length}`}.</p>
-      {note ? <Notice>{note}</Notice> : null}
+      <p className="muted" ref={summaryRef} tabIndex={-1}>{list.data.total} in this view. Showing {visible.length === 0 ? "0" : `${(list.data.offset ?? offset) + 1}–${(list.data.offset ?? offset) + visible.length}`}.</p>
+      {note ? <Notice kind={noteBad ? "bad" : "ok"}>{note}</Notice> : null}
       {visible.length === 0 ? <p className="muted">No transactions match.</p> : (
-        <div className="card" style={{ overflowX: "auto" }}>
+        <div className="card table-wrap">
           <table>
-            <thead><tr><th>Date</th><th>Payee</th><th>Account</th><th>Review</th><th className="num">Amount</th><th></th></tr></thead>
+            <caption>Transactions in this view</caption>
+            <thead><tr><th>Date</th><th>Payee</th><th>Account</th><th>Review</th><th className="num">Amount</th><th>Actions</th></tr></thead>
             <tbody>
               {visible.map((txn) => (
                 <tr key={txn.id}>
@@ -112,14 +123,14 @@ export function Activity() {
                   <td>{txn.reviewStatus === "needs_review" ? "Needs review" : txn.reconciled ? "Reconciled" : "Reviewed"}</td>
                   <td className="num"><Money minor={txn.amountMinor} /></td>
                   <td>
-                    <button className="btn-quiet" onClick={() => { setEditing(txn); setOpen(true); }}>Edit</button>
-                    <button className="btn-quiet" onClick={() => act("A copy was added and marked for review. The original was not changed, and its bank id was not copied.", () => api(scoped(session.householdId, `/transactions/${txn.id}/duplicate`), { method: "POST" }).then(() => undefined))}>Duplicate</button>
-                    <button className="btn-quiet" onClick={() => setMatchId(matchId === txn.id ? "" : txn.id)}>{matchId === txn.id ? "Selected to match" : "Match"}</button>
-                    {matchId && matchId !== txn.id ? <button className="btn-quiet" onClick={() => act("Matched. Notes, tags, and review stayed on the first transaction. A bank id was copied only when the first record did not have one, and the second copy is no longer in the totals.", async () => {
+                    <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Edit ${txn.payee} on ${txn.date}`} onClick={() => { setEditing(txn); setOpen(true); }}>Edit</button>
+                    <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Duplicate ${txn.payee} on ${txn.date}`} onClick={() => act("A copy was added and marked for review. The original was not changed, and its bank id was not copied.", () => api(scoped(session.householdId, `/transactions/${txn.id}/duplicate`), { method: "POST" }).then(() => undefined))}>Duplicate</button>
+                    <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-pressed={matchId === txn.id} aria-label={matchId === txn.id ? `${txn.payee} on ${txn.date} is selected to match` : `Match ${txn.payee} on ${txn.date}`} onClick={() => setMatchId(matchId === txn.id ? "" : txn.id)}>{matchId === txn.id ? "Selected to match" : "Match"}</button>
+                    {matchId && matchId !== txn.id ? <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Match ${txn.payee} on ${txn.date} with the selected transaction`} onClick={() => act("Matched. Notes, tags, and review stayed on the first transaction. A bank id was copied only when the first record did not have one, and the second copy is no longer in the totals.", async () => {
                       await api(scoped(session.householdId, `/transactions/${matchId}/match`), { method: "POST", body: JSON.stringify({ otherId: txn.id }) });
                       setMatchId("");
                     })}>Match with selected</button> : null}
-                    {txn.matchedArchivedId ? <button className="btn-quiet" onClick={() => act("The hidden record is back in the register, and a receipt that moved comes back with it.", () => api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" }).then(() => undefined))}>Unmatch</button> : null}
+                    {txn.matchedArchivedId ? <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Unmatch ${txn.payee} on ${txn.date}`} onClick={() => act("The hidden record is back in the register, and a receipt that moved comes back with it.", () => api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" }).then(() => undefined))}>Unmatch</button> : null}
                   </td>
                 </tr>
               ))}
@@ -128,8 +139,8 @@ export function Activity() {
         </div>
       )}
       <div className="row">
-        {offset > 0 ? <button className="btn-secondary" onClick={() => setOffset(Math.max(0, offset - PAGE))}>Previous page</button> : null}
-        {list.data.nextOffset != null ? <button className="btn-secondary" onClick={() => setOffset(list.data?.nextOffset ?? offset)}>Next page</button> : null}
+        {offset > 0 ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(Math.max(0, offset - PAGE)); }}>Previous page</button> : null}
+        {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
       {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
     </Page>
@@ -139,6 +150,9 @@ export function Activity() {
 function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onClose }: { accounts: Account[]; buckets: Dashboard["buckets"]; expenses: Txn[]; currency: string; spaceId: string; existing: Txn | null; onClose: () => void }) {
   const session = useSession();
   const form = useFormError();
+  const amountHelp = useId();
+  const addSplitRef = useRef<HTMLButtonElement>(null);
+  const splitsRef = useRef<HTMLFieldSetElement>(null);
   const [type, setType] = useState(existing?.type ?? "expense");
   const [splits, setSplits] = useState(existing?.splits.length ? existing.splits.map((split) => ({ bucketId: split.bucketId ?? "", amount: (split.amountMinor / 100).toFixed(2) })) : [{ bucketId: "", amount: "" }]);
   const spendBuckets = buckets.filter((bucket) => !bucket.systemRole && bucket.kind === (type === "income" ? "income" : "expense"));
@@ -186,23 +200,33 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
         </select></Field>
         <Field label="Date"><input name="date" type="date" required defaultValue={existing?.date ?? todayISO()} /></Field>
         <Field label="Payee"><input name="payee" required defaultValue={existing?.payee ?? ""} /></Field>
-        <Field label="Amount"><input name="amount" required inputMode="decimal" defaultValue={existing ? (Math.abs(existing.amountMinor) / 100).toFixed(2) : ""} /></Field>
+        <Field label="Amount"><input name="amount" required inputMode="decimal" aria-describedby={amountHelp} defaultValue={existing ? (Math.abs(existing.amountMinor) / 100).toFixed(2) : ""} /></Field>
+        <p id={amountHelp} className="muted">Dollars and cents, such as 12.34. The type chooses income or spending.</p>
         <Field label="Account"><select name="accountId" required defaultValue={existing?.accountId ?? ""}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
         {type === "transfer" || type === "cc_payment" ? <Field label="Other account"><select name="counterAccountId" required defaultValue={existing?.counterAccountId ?? ""}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field> : null}
         {type !== "transfer" && type !== "cc_payment" ? (
-          <fieldset>
+          <fieldset ref={splitsRef}>
             <legend>Splits</legend>
             {splits.map((split, index) => (
               <div className="split-row" key={index}>
-                <select aria-label="Category" value={split.bucketId} onChange={(event) => setSplits(splits.map((item, itemIndex) => itemIndex === index ? { ...item, bucketId: event.target.value } : item))}>
+                <select aria-label={`Category for split ${index + 1}`} value={split.bucketId} onChange={(event) => setSplits(splits.map((item, itemIndex) => itemIndex === index ? { ...item, bucketId: event.target.value } : item))}>
                   <option value="">Uncategorized</option>
                   {spendBuckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}
                 </select>
-                <input aria-label="Split amount" value={split.amount} onChange={(event) => setSplits(splits.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} />
-                <button type="button" className="btn-quiet" onClick={() => setSplits(splits.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+                <input aria-label={`Amount for split ${index + 1}`} inputMode="decimal" value={split.amount} onChange={(event) => setSplits(splits.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} />
+                <button type="button" className="btn-quiet" aria-label={`Remove split ${index + 1}`} onClick={() => {
+                  setSplits(splits.filter((_, itemIndex) => itemIndex !== index));
+                  addSplitRef.current?.focus();
+                }}>Remove</button>
               </div>
             ))}
-            <button type="button" className="btn-secondary" onClick={() => setSplits([...splits, { bucketId: "", amount: "" }])}>Add split</button>
+            <button ref={addSplitRef} type="button" className="btn-secondary" onClick={() => {
+              setSplits([...splits, { bucketId: "", amount: "" }]);
+              requestAnimationFrame(() => {
+                const rows = splitsRef.current?.querySelectorAll("select");
+                rows?.[rows.length - 1]?.focus();
+              });
+            }}>Add split</button>
           </fieldset>
         ) : null}
         {type === "refund" || type === "reimbursement" ? (

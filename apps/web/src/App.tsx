@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { useSession } from "./session.js";
+import { useAccess, useSession } from "./session.js";
 import { DevMail, ResetPassword, VerifyEmail } from "./pages/AccountAccess.js";
 import { Auth, Invite } from "./pages/Auth.js";
 import { Setup } from "./pages/Setup.js";
@@ -13,6 +14,10 @@ import { Receipts } from "./pages/Receipts.js";
 import { Investments, Reports, Retirement, Wealth } from "./pages/Wealth.js";
 import { Assistant, Cases, Checklists, Credit, Household, ImportPage, Learn, More, Providers, Rules, Settings } from "./pages/Tools.js";
 import { AccountDeletion, PrivacyPolicy } from "./pages/Legal.js";
+
+interface InstallPrompt extends Event {
+  prompt: () => Promise<void>;
+}
 
 const primary = [
   ["/", "Home"],
@@ -28,9 +33,38 @@ const groups: { title: string; links: [string, string][] }[] = [
   { title: "Household", links: [["/setup", "Setup"], ["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
 ];
 
+const ROLE_LABEL: Record<string, string> = {
+  readonly: "Read-only",
+  coach: "Coach",
+  planner: "Planner",
+  accountant: "Accountant",
+};
+
 function Shell({ children }: { children: React.ReactNode }) {
   const session = useSession();
+  const access = useAccess();
   const navigate = useNavigate();
+  const [updateReady, setUpdateReady] = useState(false);
+  const [install, setInstall] = useState<InstallPrompt | null>(null);
+  const [standalone, setStandalone] = useState(false);
+  useEffect(() => {
+    const onUpdate = () => setUpdateReady(true);
+    const onInstall = (event: Event) => {
+      event.preventDefault();
+      setInstall(event as InstallPrompt);
+    };
+    const onInstalled = () => { setInstall(null); setStandalone(true); };
+    const display = window.matchMedia("(display-mode: standalone)");
+    setStandalone(display.matches);
+    window.addEventListener("budgetcents-update", onUpdate);
+    window.addEventListener("beforeinstallprompt", onInstall);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("budgetcents-update", onUpdate);
+      window.removeEventListener("beforeinstallprompt", onInstall);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
   if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
   if (!session.user || !session.householdId) return <Navigate to="/login" replace />;
   const household = session.households.find((item) => item.id === session.householdId);
@@ -58,6 +92,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           }}>
             <label className="sr" htmlFor="search">Search transactions</label>
             <input id="search" className="search" name="q" placeholder="Search payee or note" />
+            <button className="btn-secondary" type="submit">Search</button>
           </form>
           <div className="topbar-controls">
             <label className="sr" htmlFor="household">Household</label>
@@ -70,10 +105,16 @@ function Shell({ children }: { children: React.ReactNode }) {
             <button className="btn-quiet" onClick={() => session.signOut()}>Sign out</button>
           </div>
         </header>
-        <main id="main" className="content">
+        <main id="main" className="content" tabIndex={-1}>
           {household && Number(household.is_demo) === 1 ? <div className="banner demo">Sample household. The people, balances, and prices are fictional and stay separate from a household you create.</div> : null}
-          {session.offline ? <div className="banner bad" role="status">This browser is offline. You can still draft a transaction; it stays on the device until the connection returns.{session.queued ? ` ${session.queued} waiting.` : ""}</div> : null}
+          {access.readOnly ? <div className="banner" role="status">{ROLE_LABEL[access.role] ?? "Read-only"} access can view shared accounts and the plan. Private accounts stay with their owner. Saving, importing, and deleting stay with an owner, admin, editor, or contributor.</div> : null}
+          {session.offline ? <div className="banner bad" role="status">This browser is offline. BudgetCents can open, but account totals are not kept on this device. A transaction saved while its account is on screen stays here until the connection returns. Other changes are not saved offline.{session.queued ? ` ${session.queued} waiting.` : ""}</div> : null}
           {session.syncError ? <div className="banner bad" role="alert">{session.syncError}</div> : null}
+          {updateReady ? <div className="banner" role="status">A new version is ready. Unsent transactions stay on this device. <button className="btn-secondary" type="button" onClick={() => {
+            sessionStorage.setItem("budgetcents.reload", "1");
+            navigator.serviceWorker.getRegistration().then((registration) => registration?.waiting?.postMessage("skip-waiting"));
+          }}>Reload to update</button></div> : null}
+          {!standalone && install ? <div className="banner" role="status">Install BudgetCents on this device. It opens in its own window. The installed copy still needs a completed online load before it can start offline. <button className="btn-secondary" type="button" onClick={() => { void install.prompt(); setInstall(null); }}>Install</button></div> : null}
           {children}
         </main>
       </div>

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
+import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import type { HouseholdRow, User } from "./types.js";
 
 interface SessionValue {
@@ -23,6 +23,21 @@ interface SessionValue {
 }
 
 const SessionContext = createContext<SessionValue | null>(null);
+const PROFILE = "budgetcents.profile";
+
+function writeProfile(user: User, households: HouseholdRow[], householdId: string, spaceId?: string) {
+  localStorage.setItem(PROFILE, JSON.stringify({ user, households, householdId, spaceId }));
+}
+
+function readProfile(): { user: User; households: HouseholdRow[]; householdId: string; spaceId?: string } | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROFILE) || "null") as { user?: User; households?: HouseholdRow[]; householdId?: string; spaceId?: string } | null;
+    if (!parsed?.user?.id || !parsed.households || !parsed.householdId) return null;
+    return { user: parsed.user, households: parsed.households, householdId: parsed.householdId, spaceId: parsed.spaceId };
+  } catch {
+    return null;
+  }
+}
 
 function applyTheme(theme: string) {
   const dark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -53,11 +68,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem("budgetcents.household");
     const next = data.households.find((item) => item.id === stored)?.id ?? data.households[0]?.id ?? "";
     setHouseholdId(next);
+    const storedSpace = next ? localStorage.getItem(`budgetcents.space.${next}`) ?? undefined : undefined;
     if (next) {
       localStorage.setItem("budgetcents.household", next);
-      setSpaceId(localStorage.getItem(`budgetcents.space.${next}`) ?? undefined);
+      setSpaceId(storedSpace);
     }
+    writeProfile(data.user, data.households, next, storedSpace);
     api("/api/devices", { method: "POST", body: JSON.stringify({ name: "Web browser", platform: "web" }) }).catch(() => undefined);
+  }
+
+  function restoreProfile() {
+    const cached = readProfile();
+    if (!cached) return false;
+    setUser(cached.user);
+    setHouseholds(cached.households);
+    setHouseholdId(cached.householdId);
+    setSpaceId(cached.spaceId);
+    setQueueOwner(cached.user.id);
+    applyTheme(cached.user.theme);
+    return true;
   }
 
   useEffect(() => {
@@ -66,7 +95,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setReady(true);
       return;
     }
-    refresh().catch(() => localStorage.removeItem("budgetcents.token")).finally(() => setReady(true));
+    refresh().catch((error: unknown) => {
+      const denied = error instanceof ApiError && error.status === 401;
+      if (!denied && error instanceof ApiError && restoreProfile()) return;
+      localStorage.removeItem("budgetcents.token");
+      localStorage.removeItem(PROFILE);
+    }).finally(() => setReady(true));
     const onAuth = () => { setUser(null); setHouseholdId(""); setQueueOwner(null); };
     const onOff = () => setOffline(true);
     const onOn = () => {
@@ -122,10 +156,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 
+const READ_ONLY_ROLES = new Set(["readonly", "coach", "planner", "accountant"]);
+
 export function useSession() {
   const value = useContext(SessionContext);
   if (!value) throw new Error("Session missing");
   return value;
+}
+
+export function useAccess() {
+  const session = useSession();
+  const role = session.households.find((item) => item.id === session.householdId)?.role ?? "";
+  return {
+    role,
+    readOnly: READ_ONLY_ROLES.has(role),
+    canWrite: !READ_ONLY_ROLES.has(role),
+    canBudget: role !== "contributor" && !READ_ONLY_ROLES.has(role),
+  };
 }
 
 export function scoped(householdId: string, suffix: string, spaceId?: string) {

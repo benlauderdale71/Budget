@@ -136,10 +136,13 @@ export function Paychecks() {
             <span>{source.name} · {labelOf(CADENCES, source.cadence)}{source.paused ? " · Paused" : ""}</span>
             <span className="row">
               {source.cadence === "irregular" && source.amountMinor === 0 ? <span className="muted">Amounts are on the dates</span> : <Money minor={source.amountMinor} />}
-              <button className="btn-quiet" onClick={() => { setOpenId(source.id); setEditing(null); }}>Open</button>
-              <button className="btn-quiet" onClick={() => { setEditing(source); setOpenId(null); }}>Edit</button>
-              <button className="btn-quiet" onClick={() => flag(session, source, source.paused ? "resume" : "pause").then(session.bump).catch((error: unknown) => form.setError(error instanceof Error ? error.message : "That did not save."))}>{source.paused ? "Resume" : "Pause"}</button>
-              <button className="btn-quiet" onClick={() => flag(session, source, "archive").then(session.bump).catch((error: unknown) => form.setError(error instanceof Error ? error.message : "That did not save."))}>Archive</button>
+              <button className="btn-quiet" type="button" aria-label={`Open ${source.name}`} onClick={() => { setOpenId(source.id); setEditing(null); }}>Open</button>
+              <button className="btn-quiet" type="button" aria-label={`Edit ${source.name}`} onClick={() => { setEditing(source); setOpenId(null); }}>Edit</button>
+              <button className="btn-quiet" type="button" aria-label={source.paused ? `Resume ${source.name}` : `Pause ${source.name}`} onClick={() => flag(session, source, source.paused ? "resume" : "pause").then(session.bump).catch((error: unknown) => form.setError(error instanceof Error ? error.message : "That did not save."))}>{source.paused ? "Resume" : "Pause"}</button>
+              <button className="btn-quiet" type="button" aria-label={`Archive ${source.name}`} onClick={() => {
+                if (!window.confirm(`Archive ${source.name}? Recorded pay stays in the register. Expected dates that were not recorded are no longer shown.`)) return;
+                flag(session, source, "archive").then(session.bump).catch((error: unknown) => form.setError(error instanceof Error ? error.message : "That did not save."));
+              }}>Archive</button>
             </span>
           </li>
         ))}

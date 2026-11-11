@@ -7,6 +7,7 @@ import { createApp, demoLoginAllowed } from "./http.js";
 import { openDatabase } from "./db.js";
 import { ensureDemo } from "./seed.js";
 import { contentType, resolveStaticFile, resolveWebRoot } from "./paths.js";
+import { shouldServeAppShell } from "./static-fallback.js";
 
 const db = await openDatabase();
 if (process.env.SEED_DEMO !== "false") await ensureDemo(db);
@@ -33,6 +34,12 @@ app.use("*", async (c, next) => {
   try {
     return await send(resolved.file);
   } catch {
+    const shell = shouldServeAppShell({
+      pathname: url.pathname,
+      fetchDest: c.req.header("sec-fetch-dest"),
+      fetchMode: c.req.header("sec-fetch-mode"),
+    });
+    if (!shell) return c.text("Not found", 404);
     try {
       return await send(join(webRoot, "index.html"));
     } catch {

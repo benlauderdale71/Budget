@@ -126,9 +126,9 @@ export function Bills() {
             <span>{item.name} · {item.scheduleMode ?? item.cadence} · next {item.nextDate}{item.paused ? " · Paused" : ""}</span>
             <span className="row">
               <Money minor={item.direction === "inflow" ? item.amountMinor : -item.amountMinor} />
-              <button className="btn-quiet" onClick={() => { setEditing(item); setCadence(item.scheduleMode ?? item.cadence); }}>Edit</button>
-              <button className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/skip`), { method: "POST" }); session.bump(); }}>Skip next</button>
-              {item.direction === "outflow" && item.bucketId ? <button className="btn-quiet" onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/reserve`), { method: "POST" }); session.bump(); }}>Reserve from cash</button> : null}
+              <button className="btn-quiet" type="button" aria-label={`Edit ${item.name}`} onClick={() => { setEditing(item); setCadence(item.scheduleMode ?? item.cadence); }}>Edit</button>
+              <button className="btn-quiet" type="button" aria-label={`Skip the next date for ${item.name}`} onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/skip`), { method: "POST" }); session.bump(); }}>Skip next</button>
+              {item.direction === "outflow" && item.bucketId ? <button className="btn-quiet" type="button" aria-label={`Reserve cash for ${item.name}`} onClick={async () => { await api(scoped(session.householdId, `/schedules/${item.id}/reserve`), { method: "POST" }); session.bump(); }}>Reserve from cash</button> : null}
             </span>
           </li>
         ))}

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, clearLocalSession, downloadFile } from "../api.js";
 import { parseAmount } from "../format.js";
-import { scoped, useSession } from "../session.js";
+import { scoped, useAccess, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
@@ -93,6 +93,10 @@ function columnValue(data: FormData, name: string) {
 
 export function ImportPage() {
   const session = useSession();
+  const access = useAccess();
+  const previewRef = useRef<HTMLHeadingElement>(null);
+  const confirmRef = useRef<HTMLHeadingElement>(null);
+  const confirmFromAction = useRef(false);
   const accounts = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const spaceId = session.spaceId ?? accounts.data?.spaceId;
   useEffect(() => { if (accounts.data?.spaceId) session.adoptSpace(accounts.data.spaceId); }, [accounts.data?.spaceId]);
@@ -106,6 +110,8 @@ export function ImportPage() {
   const [committed, setCommitted] = useState<{ batchId: string; body: Record<string, unknown>; note: string } | null>(null);
   const form = useFormError();
   const step = preview && committed?.batchId === preview.batchId ? "Confirm" : preview ? "Preview" : "Source";
+  useEffect(() => { if (preview) previewRef.current?.focus(); }, [preview?.batchId]);
+  useEffect(() => { if (committed && confirmFromAction.current) confirmRef.current?.focus(); }, [committed?.batchId, committed?.note]);
   useEffect(() => {
     const batch = recent.data?.batch;
     if (!batch?.commit) return;
@@ -123,6 +129,7 @@ export function ImportPage() {
   }
   async function commit(batchId: string, body: Record<string, unknown>) {
     const saved = await api<{ note: string; created: number; duplicate: boolean }>(scoped(session.householdId, `/import/${batchId}/commit`), { method: "POST", body: JSON.stringify(body) });
+    confirmFromAction.current = true;
     setCommitted({ batchId, body, note: saved.note });
     session.bump();
   }
@@ -136,7 +143,7 @@ export function ImportPage() {
   }
   return (
     <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. Categories, notes, tags, and splits are kept when the file has them. Fields that are missing stay blank.">
-      <ol className="wizard-steps">
+      <ol className="wizard-steps" aria-label="Import steps">
         <li aria-current={step === "Source" ? "step" : undefined}>1. Source and columns</li>
         <li aria-current={step === "Preview" ? "step" : undefined}>2. Preview</li>
         <li aria-current={step === "Confirm" ? "step" : undefined}>3. Confirm</li>
@@ -181,6 +188,8 @@ export function ImportPage() {
         setCreateMissing(false);
       })}>
         <h2>Source</h2>
+        <fieldset>
+        <legend>How to read the file</legend>
         <div className="grid two">
           <Field label="Format"><select name="format" aria-label="Format"><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option></select></Field>
           <Field label="Source"><select name="profile" aria-label="Source"><option value="">Generic columns</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
@@ -188,7 +197,10 @@ export function ImportPage() {
           <Field label="Decimal mark"><select name="decimal" aria-label="Decimal mark"><option value="period">1,234.56</option><option value="comma">1.234,56</option></select></Field>
           <Field label="Sign"><select name="inflowSign" aria-label="Sign"><option value="positive_in">Positive amounts are income</option><option value="positive_out">Positive amounts are expenses</option></select></Field>
         </div>
+        </fieldset>
         <h2>Map columns</h2>
+        <fieldset>
+        <legend>Columns in the file</legend>
         <p className="muted">Leave a box blank to use the source profile or a matching header. A blank field is not invented.</p>
         <div className="grid two">
           <Field label="Date column"><input name="dateColumn" aria-label="Date column" placeholder="Date" /></Field>
@@ -204,15 +216,13 @@ export function ImportPage() {
           <Field label="Balance column"><input name="balanceColumn" aria-label="Balance column" placeholder="Balance" /></Field>
           <Field label="Currency column"><input name="currencyColumn" aria-label="Currency column" placeholder="Currency" /></Field>
         </div>
+        </fieldset>
         <Field label="File"><input name="file" type="file" required accept=".csv,.ofx,.qfx,.qif,text/csv,text/plain" aria-label="Import file" /></Field>
-        <button className="btn" type="submit" disabled={!accounts.data}>Preview</button>
+        <button className="btn" type="submit" disabled={!accounts.data || !access.canWrite}>Preview</button>
       </form>
       {preview ? <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
-        if (!selected.length) {
-          form.setError("Select at least one row. Nothing was imported.");
-          return;
-        }
+        if (!selected.length) throw new Error("Select at least one row. Nothing was imported.");
         const body = {
           accountId: String(data.get("accountId")),
           rowNumbers: selected,
@@ -221,7 +231,7 @@ export function ImportPage() {
         };
         if (preview) await commit(preview.batchId, body);
       })}>
-        <h2>Preview</h2>
+        <h2 ref={previewRef} tabIndex={-1}>Preview</h2>
         <p>{preview.note}</p>
         <p>In this file: {preview.present.length ? preview.present.join(", ") : "no optional fields"}.</p>
         <ul>{preview.explanations.map((item) => <li key={item}>{item}</li>)}</ul>
@@ -249,18 +259,19 @@ export function ImportPage() {
             row.tags?.join(", "),
             group?.warnings?.join(" "),
           ].filter(Boolean).join(" · ");
-          return <label key={row.rowNumber} className="link-row"><span><input type="checkbox" aria-label={`Import row ${row.rowNumber}`} checked={selected.includes(row.rowNumber)} disabled={row.duplicate || row.errors.length > 0} onChange={() => toggleRow(row.rowNumber)} /> {row.date} {row.payee} {status} {detail}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>;
+          return <label key={row.rowNumber} className="link-row"><span><input type="checkbox" aria-label={`Import ${row.date ?? "undated"} ${row.payee || "row"}, row ${row.rowNumber}`} checked={selected.includes(row.rowNumber)} disabled={row.duplicate || row.errors.length > 0 || !access.canWrite} onChange={() => toggleRow(row.rowNumber)} /> {row.date} {row.payee} {status} {detail}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>;
         })}
         {preview.rows.length > 60 ? <p>{preview.rows.length - 60} more rows stay selected when they have no error.</p> : null}
-        <button className="btn" type="submit">Import selected</button>
+        <button className="btn" type="submit" disabled={!access.canWrite}>Import selected</button>
       </form> : null}
       {committed ? <article className="card" style={{ marginTop: 16 }} aria-label="Import result">
-        <h2>Confirm</h2>
+        <h2 ref={confirmRef} tabIndex={-1}>Confirm</h2>
         <p>{committed.note}</p>
         <div className="row">
-          <button className="btn-secondary" type="button" onClick={() => runAction(async () => { await commit(committed.batchId, committed.body); })}>Confirm this import again</button>
-          <button className="btn-secondary" type="button" onClick={() => runAction(async () => {
+          <button className="btn-secondary" type="button" disabled={!access.canWrite} onClick={() => runAction(async () => { await commit(committed.batchId, committed.body); })}>Confirm this import again</button>
+          <button className="btn-secondary" type="button" disabled={!access.canWrite} onClick={() => runAction(async () => {
             const undone = await api<{ note: string }>(scoped(session.householdId, `/import/${committed.batchId}/revert`), { method: "POST" });
+            confirmFromAction.current = true;
             setCommitted({ ...committed, note: undone.note });
             session.bump();
           })}>Undo this import</button>
@@ -470,6 +481,7 @@ export function Settings() {
   const [password, setPassword] = useState("");
   const [codes, setCodes] = useState<string[]>([]);
   const [token, setToken] = useState("");
+  const [saved, setSaved] = useState("");
   const form = useFormError();
   if (!session.user) return null;
   return (
@@ -477,11 +489,13 @@ export function Settings() {
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         await session.patchMe({ displayName: data.get("displayName"), theme: data.get("theme"), aiEnabled: data.get("ai") === "on", labelMode: data.get("labelMode") });
+        setSaved("Settings saved.");
       })}>
         <Field label="Name"><input name="displayName" defaultValue={session.user.displayName} /></Field>
         <Field label="Theme"><select name="theme" defaultValue={session.user.theme}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></Field>
         <Field label="Labels"><select name="labelMode" defaultValue={session.user.labelMode}><option value="categories">Categories</option><option value="envelopes">Envelopes</option></select></Field>
         <label className="field"><span><input type="checkbox" name="ai" defaultChecked={session.user.aiEnabled} /> Assistant can answer from ledger facts</span></label>
+        {saved ? <Notice>{saved}</Notice> : null}
         <button className="btn" type="submit">Save</button>
       </form>
       <section className="card" style={{ marginTop: 16 }}>
@@ -513,7 +527,7 @@ export function Settings() {
       </section>
       <section className="card" style={{ marginTop: 16 }}>
         <h2>Sessions</h2>
-        <ul>{sessions.data?.sessions.filter((item) => !item.revoked_at).map((item) => <li key={item.id}>{item.current ? "This session" : item.device_label || "Session"} · {item.created_at} <button className="btn-quiet" onClick={async () => {
+        <ul>{sessions.data?.sessions.filter((item) => !item.revoked_at).map((item) => <li key={item.id}>{item.current ? "This session" : item.device_label || "Session"} · {item.created_at} <button className="btn-quiet" type="button" aria-label={item.current ? "Sign out this session" : `Revoke ${item.device_label || "session"} from ${item.created_at}`} onClick={async () => {
           const result = await api<{ current: boolean }>(`/api/auth/sessions/${item.id}`, { method: "DELETE" });
           if (result.current) await session.signOut();
           else session.bump();
@@ -548,7 +562,7 @@ function RestoreBackup() {
   const [done, setDone] = useState("");
   return (
     <div>
-      <label className="btn-secondary">Choose a backup file<input name="backup" type="file" accept="application/json,.json" hidden onChange={async (event) => {
+      <label className="btn-secondary file-button">Choose a backup file<input name="backup" type="file" accept="application/json,.json" aria-label="Choose a backup file" onChange={async (event) => {
         const file = event.target.files?.[0];
         event.target.value = "";
         setError("");

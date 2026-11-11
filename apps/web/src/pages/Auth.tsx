@@ -60,9 +60,9 @@ export function Auth() {
           <li>Bank, credit, and negotiation connections stay off until you configure a provider.</li>
         </ul>
       </section>
-      <section className="auth-panel">
+      <main className="auth-panel">
         <div className="wordmark" style={{ marginBottom: 16 }}>Budget<i>Cents</i></div>
-        <div className="chips" role="tablist" aria-label="Account">
+        <div className="chips" role="group" aria-label="Account">
           <button className="chip" aria-pressed={mode === "login"} onClick={() => setMode("login")}>Sign in</button>
           <button className="chip" aria-pressed={mode === "register"} onClick={() => setMode("register")}>Create household</button>
           <button className="chip" aria-pressed={mode === "reset"} onClick={() => setMode("reset")}>Reset password</button>
@@ -74,7 +74,8 @@ export function Auth() {
             <Field label="Currency"><input name="currency" defaultValue="USD" maxLength={3} /></Field>
           </> : null}
           <Field label="Email"><input name="email" type="email" required autoComplete="username" /></Field>
-          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. In development, that message is in <Link to="/dev/mail">Development mail</Link>.</p>}
+          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} aria-describedby={mode === "register" ? "password-help" : undefined} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. In development, that message is in <Link to="/dev/mail">Development mail</Link>.</p>}
+          {mode === "register" ? <p id="password-help" className="muted">At least 10 characters. A password manager can fill or paste this.</p> : null}
           {mfa ? <Field label="Authentication code"><input name="code" inputMode="numeric" autoComplete="one-time-code" /></Field> : null}
           {error ? <Notice kind="bad">{error}</Notice> : null}
           {note ? <Notice>{note}</Notice> : null}
@@ -93,7 +94,7 @@ export function Auth() {
           <p className="muted">Alex Rivera’s numbers are sample data, not a live bank connection.</p>
         </form>
         <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link> · <Link to="/dev/mail">Development mail</Link></p>
-      </section>
+      </main>
     </div>
   );
 }

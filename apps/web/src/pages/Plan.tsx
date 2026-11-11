@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { api } from "../api.js";
 import { formatMoney, minorToInput, monthLabel, parseAmount, percentBpsFromInput, todayISO } from "../format.js";
-import { scoped, useSession } from "../session.js";
+import { scoped, useAccess, useSession } from "../session.js";
 import type { Bucket, Dashboard } from "../types.js";
 import { ErrorNote, Field, Loading, Modal, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
@@ -9,6 +9,7 @@ type View = "zero" | "envelope" | "flex" | "income";
 
 export function Plan() {
   const session = useSession();
+  const access = useAccess();
   const [view, setView] = useState<View>("zero");
   const [move, setMove] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -33,8 +34,8 @@ export function Plan() {
   }
 
   return (
-    <Page title={monthLabel(dash.budget.periodKey)} lede={`Ready to Assign is ${session.user?.privacyMode ? "hidden" : "the cash that still needs a job"}. The ${label} names are a view of the same balances.`} actions={<button className="btn-secondary" onClick={() => setMove(true)}>Move money</button>}>
-      <div className="chips" aria-label="Plan view">
+    <Page title={monthLabel(dash.budget.periodKey)} lede={`Ready to Assign is ${session.user?.privacyMode ? "hidden" : "the cash that still needs a job"}. The ${label} names are a view of the same balances.`} actions={<button className="btn-secondary" type="button" disabled={!access.canBudget} onClick={() => setMove(true)}>Move money</button>}>
+      <div className="chips" role="group" aria-label="Plan view">
         {([["zero", "Zero-based"], ["envelope", "Envelopes"], ["flex", "Flex"], ["income", "Income plan"]] as const).map(([id, name]) => (
           <button key={id} className="chip" aria-pressed={view === id} onClick={() => setView(id)}>{name}</button>
         ))}
@@ -50,7 +51,7 @@ export function Plan() {
             session.bump();
           }
         }}>Preview underfunded targets</button>
-        <NewBucket spaceId={dash.spaceId} />
+        <NewBucket spaceId={dash.spaceId} locked={!access.canBudget} />
       </div>
       {view === "income" ? <IncomePlan currency={dash.household.currency} buckets={dash.buckets} /> : null}
       {view === "envelope" ? (
@@ -59,9 +60,9 @@ export function Plan() {
             <article key={row.bucketId} className="envelope">
               <span className="kicker">{row.group}</span>
               <strong>{row.name}</strong>
-              <button className="btn-secondary" type="button" onClick={() => setEditing(row.bucketId)}>Edit</button>
+              <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Edit ${row.name}`} onClick={() => setEditing(row.bucketId)}>Edit</button>
               <Money minor={row.availableMinor} />
-              <AssignField currency={dash.household.currency} value={row.assignedMinor} disabled={!!session.user?.privacyMode} onSave={(text) => assign(row.bucketId, text)} />
+              <AssignField name={row.name} currency={dash.household.currency} value={row.assignedMinor} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onSave={(text) => assign(row.bucketId, text)} />
             </article>
           ))}
         </div>
@@ -70,11 +71,11 @@ export function Plan() {
         ["fixed", "non_monthly", "flexible"].map((role) => (
           <section key={role} style={{ marginTop: 16 }}>
             <h2>{role === "non_monthly" ? "Non-monthly" : role[0].toUpperCase() + role.slice(1)}</h2>
-            <BucketTable rows={rows.filter((row) => dash.buckets.find((bucket) => bucket.id === row.bucketId)?.flexRole === role)} buckets={dash.buckets} currency={dash.household.currency} hidden={!!session.user?.privacyMode} onAssign={assign} onEdit={setEditing} />
+            <BucketTable rows={rows.filter((row) => dash.buckets.find((bucket) => bucket.id === row.bucketId)?.flexRole === role)} buckets={dash.buckets} currency={dash.household.currency} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onAssign={assign} onEdit={setEditing} />
           </section>
         ))
       ) : null}
-      {view === "zero" ? <BucketTable rows={rows} buckets={dash.buckets} currency={dash.household.currency} hidden={!!session.user?.privacyMode} onAssign={assign} onEdit={setEditing} /> : null}
+      {view === "zero" ? <BucketTable rows={rows} buckets={dash.buckets} currency={dash.household.currency} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onAssign={assign} onEdit={setEditing} /> : null}
       <ArchivedCategories buckets={dash.buckets} />
       <Fills dash={dash} />
       {editing && dash.buckets.some((bucket) => bucket.id === editing) ? <EditCategory bucket={dash.buckets.find((bucket) => bucket.id === editing) as Bucket} currency={dash.household.currency} periodKey={dash.budget.periodKey} funding={dash.funding} onClose={() => setEditing(null)} /> : null}
@@ -83,26 +84,30 @@ export function Plan() {
   );
 }
 
-function AssignField({ value, currency, disabled, onSave }: { value: number; currency: string; disabled: boolean; onSave: (text: string) => Promise<void> }) {
+function AssignField({ name, value, currency, privacy, locked, onSave }: { name: string; value: number; currency: string; privacy: boolean; locked: boolean; onSave: (text: string) => Promise<void> }) {
   const [text, setText] = useState(minorToInput(value, currency));
   const [error, setError] = useState("");
+  const errorId = useId();
   return (
     <label className="field">
       <span>Assigned</span>
-      <input value={disabled ? "Hidden" : text} disabled={disabled} onChange={(event) => setText(event.target.value)} onBlur={async () => {
-        if (disabled || text === minorToInput(value, currency)) return;
+      <input aria-label={`Assigned to ${name}`} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} value={privacy ? "Hidden" : text} disabled={privacy || locked} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }} onBlur={async () => {
+        if (privacy || locked || text === minorToInput(value, currency)) return;
         try { setError(""); await onSave(text); } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not assign."); }
       }} />
-      {error ? <span role="alert">{error}</span> : null}
+      {error ? <span id={errorId} role="alert">{error}</span> : null}
     </label>
   );
 }
 
-function BucketTable({ rows, buckets, currency, hidden, onAssign, onEdit }: { rows: Dashboard["budget"]["buckets"]; buckets: Bucket[]; currency: string; hidden: boolean; onAssign: (id: string, text: string) => Promise<void>; onEdit: (id: string) => void }) {
+function BucketTable({ rows, buckets, currency, privacy, locked, onAssign, onEdit }: { rows: Dashboard["budget"]["buckets"]; buckets: Bucket[]; currency: string; privacy: boolean; locked: boolean; onAssign: (id: string, text: string) => Promise<void>; onEdit: (id: string) => void }) {
   if (!rows.length) return <p className="muted">Nothing in this group.</p>;
   return (
-    <div className="card" style={{ overflowX: "auto" }}>
+    <div className="card table-wrap">
       <table>
+        <caption>Categories this month</caption>
         <thead><tr><th>Name</th><th className="num">Assigned</th><th className="num">Activity</th><th className="num">Available</th></tr></thead>
         <tbody>
           {rows.map((row) => {
@@ -110,8 +115,8 @@ function BucketTable({ rows, buckets, currency, hidden, onAssign, onEdit }: { ro
             const rule = bucket?.displayRollover ?? bucket?.rollover;
             return (
               <tr key={row.bucketId}>
-                <td>{row.name}{row.creditOverspendMinor ? " · card overspend" : ""}{rule && rule !== "both" ? ` · rollover ${rule}` : ""} <button className="btn-secondary" type="button" onClick={() => onEdit(row.bucketId)}>Edit</button></td>
-                <td className="num"><AssignField currency={currency} value={row.assignedMinor} disabled={hidden} onSave={(text) => onAssign(row.bucketId, text)} /></td>
+                <td>{row.name}{row.creditOverspendMinor ? " · card overspend" : ""}{rule && rule !== "both" ? ` · rollover ${rule}` : ""} <button className="btn-secondary" type="button" disabled={locked} aria-label={`Edit ${row.name}`} onClick={() => onEdit(row.bucketId)}>Edit</button></td>
+                <td className="num"><AssignField name={row.name} currency={currency} value={row.assignedMinor} privacy={privacy} locked={locked} onSave={(text) => onAssign(row.bucketId, text)} /></td>
                 <td className="num"><Money minor={-row.activityMinor} /></td>
                 <td className="num"><Money minor={row.availableMinor} /></td>
               </tr>
@@ -123,11 +128,11 @@ function BucketTable({ rows, buckets, currency, hidden, onAssign, onEdit }: { ro
   );
 }
 
-function NewBucket({ spaceId }: { spaceId: string }) {
+function NewBucket({ spaceId, locked }: { spaceId: string; locked: boolean }) {
   const session = useSession();
   const [open, setOpen] = useState(false);
   const form = useFormError();
-  if (!open) return <button className="btn" onClick={() => setOpen(true)}>New category</button>;
+  if (!open) return <button className="btn" type="button" disabled={locked} onClick={() => setOpen(true)}>New category</button>;
   return (
     <Modal title="New category" onClose={() => setOpen(false)}>
       <form onSubmit={(event) => form.run(event, async () => {
@@ -296,7 +301,7 @@ function ArchivedCategories({ buckets }: { buckets: Bucket[] }) {
               target: bucket.target ?? null, effectivePeriod: new Date().toISOString().slice(0, 7),
             }) });
             session.bump();
-          }}>Restore</button>
+          }}>Restore {bucket.name}</button>
         </div>
       ))}
     </section>
@@ -318,6 +323,7 @@ const FILL_CADENCES: [string, string][] = [
 
 function Fills({ dash }: { dash: Dashboard }) {
   const session = useSession();
+  const access = useAccess();
   const [editing, setEditing] = useState<FillRow | null>(null);
   const [draftKey, setDraftKey] = useState(0);
   const choices = dash.buckets.filter((bucket) => !bucket.systemRole && !bucket.archived && bucket.kind === "expense");
@@ -327,13 +333,13 @@ function Fills({ dash }: { dash: Dashboard }) {
       <h2>Envelope fills</h2>
       <p className="muted">A fill gives a job to cash that is already in Ready to Assign. It is not a bank transfer. Saved and Scheduled are not applied fills.</p>
       {state.data?.note ? <p className="muted">{state.data.note}</p> : null}
-      <FillEditor key={editing?.id ?? `new-${draftKey}`} dash={dash} choices={choices} existing={editing} onDone={() => { setEditing(null); setDraftKey((value) => value + 1); }} />
+      <FillEditor key={editing?.id ?? `new-${draftKey}`} dash={dash} choices={choices} existing={editing} locked={!access.canBudget} onDone={() => { setEditing(null); setDraftKey((value) => value + 1); }} />
       {(state.data?.fills ?? []).map((fill) => <FillCard key={fill.id} fill={fill} onEdit={() => setEditing(fill)} />)}
     </section>
   );
 }
 
-function FillEditor({ dash, choices, existing, onDone }: { dash: Dashboard; choices: Bucket[]; existing: FillRow | null; onDone: () => void }) {
+function FillEditor({ dash, choices, existing, locked, onDone }: { dash: Dashboard; choices: Bucket[]; existing: FillRow | null; locked: boolean; onDone: () => void }) {
   const session = useSession();
   const form = useFormError();
   const [preview, setPreview] = useState("");
@@ -414,26 +420,26 @@ function FillEditor({ dash, choices, existing, onDone }: { dash: Dashboard; choi
           <Field label="Priority"><input aria-label={`Priority ${index + 1}`} inputMode="numeric" value={line.priority} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, priority: event.target.value } : item))} /></Field>
           <Field label="Take the money from"><select aria-label={`Source ${index + 1}`} value={line.sourceBucketId} onChange={(event) => setLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, sourceBucketId: event.target.value } : item))}><option value="">Ready to Assign</option>{choices.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
           <div className="row">
-            <button className="btn-quiet" type="button" onClick={() => moveLine(index, -1)}>Move up</button>
-            <button className="btn-quiet" type="button" onClick={() => moveLine(index, 1)}>Move down</button>
-            <button className="btn-quiet" type="button" onClick={() => setLines(lines.filter((_, itemIndex) => itemIndex !== index).map((item, itemIndex) => ({ ...item, priority: String(itemIndex + 1) })))}>Remove envelope</button>
+            <button className="btn-quiet" type="button" aria-label={`Move envelope ${index + 1} up`} onClick={() => moveLine(index, -1)}>Move up</button>
+            <button className="btn-quiet" type="button" aria-label={`Move envelope ${index + 1} down`} onClick={() => moveLine(index, 1)}>Move down</button>
+            <button className="btn-quiet" type="button" aria-label={`Remove envelope ${index + 1}`} onClick={() => setLines(lines.filter((_, itemIndex) => itemIndex !== index).map((item, itemIndex) => ({ ...item, priority: String(itemIndex + 1) })))}>Remove envelope</button>
           </div>
         </fieldset>
       ))}
-      <button className="btn-secondary" type="button" onClick={() => setLines([...lines, { bucketId: "", mode: "add", amount: "", percent: "", priority: String(lines.length + 1), sourceBucketId: "" }])}>Add envelope</button>
+      <button className="btn-secondary" type="button" disabled={locked} onClick={() => setLines([...lines, { bucketId: "", mode: "add", amount: "", percent: "", priority: String(lines.length + 1), sourceBucketId: "" }])}>Add envelope</button>
       {preview ? <Notice>{preview}</Notice> : null}
       {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
       <div className="row">
-        <button className="btn-secondary" type="button" onClick={async () => {
+        <button className="btn-secondary" type="button" disabled={locked} onClick={async () => {
           try {
             const result = await api<{ note: string; policyText: string; statusLabel: string; plan: { totalAllocatedMinor: number; readyBeforeMinor: number; readyAfterMinor: number; shortfallMinor: number; explanation: string } | null }>(scoped(session.householdId, "/fills/preview"), { method: "POST", body: JSON.stringify(payload()) });
             const plan = result.plan;
             setPreview(plan ? `${result.note} ${result.policyText} This is a preview, not an applied fill. Ready to Assign ${moneyText(plan.readyBeforeMinor)} becomes ${moneyText(plan.readyAfterMinor)}. Allocated ${moneyText(plan.totalAllocatedMinor)}. Short ${moneyText(plan.shortfallMinor)}. ${plan.explanation}` : result.note);
           } catch (caught) {
-            setPreview(caught instanceof Error ? caught.message : "Could not preview.");
+            form.setError(caught instanceof Error ? caught.message : "Could not preview.");
           }
         }}>Preview</button>
-        <button className="btn" type="submit">{existing ? "Save edit" : "Save fill"}</button>
+        <button className="btn" type="submit" disabled={locked}>{existing ? "Save edit" : "Save fill"}</button>
         {existing ? <button className="btn-quiet" type="button" onClick={onDone}>Cancel edit</button> : null}
       </div>
     </form>
@@ -442,6 +448,7 @@ function FillEditor({ dash, choices, existing, onDone }: { dash: Dashboard; choi
 
 function FillCard({ fill, onEdit }: { fill: FillRow; onEdit: () => void }) {
   const session = useSession();
+  const access = useAccess();
   const [message, setMessage] = useState("");
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
   async function act(path: string, label: string) {
@@ -459,22 +466,23 @@ function FillCard({ fill, onEdit }: { fill: FillRow; onEdit: () => void }) {
       <p>{fill.statusLabel} · {fill.cadence} · next {fill.nextDate ?? "none"} · {fill.shortfallPolicy === "skip" ? "Skip when cash is short" : "Fund in priority order when cash is short"}</p>
       {fill.lastOutcome ? <p>Last result: {fill.lastOutcome.statusLabel}{fill.lastOutcome.date ? ` on ${fill.lastOutcome.date}` : ""} · <Money minor={fill.lastOutcome.allocatedMinor} /></p> : <p>No occurrence has run.</p>}
       <div className="row">
-        <button className="btn" type="button" onClick={() => act(`/fills/${fill.id}/run`, "Run now")}>Run now</button>
-        <button className="btn-secondary" type="button" onClick={() => act(`/fills/${fill.id}/skip`, "Skip")}>Skip next date</button>
+        <button className="btn" type="button" disabled={!access.canBudget} aria-label={`Run ${fill.name} now`} onClick={() => act(`/fills/${fill.id}/run`, "Run now")}>Run now</button>
+        <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Skip the next date for ${fill.name}`} onClick={() => act(`/fills/${fill.id}/skip`, "Skip")}>Skip next date</button>
         {fill.statusLabel === "Paused"
-          ? <button className="btn-secondary" type="button" onClick={() => act(`/fills/${fill.id}/resume`, "Resume")}>Resume</button>
-          : <button className="btn-secondary" type="button" onClick={() => act(`/fills/${fill.id}/pause`, "Pause")}>Pause</button>}
-        <button className="btn-secondary" type="button" onClick={onEdit}>Edit</button>
-        <button className="btn-secondary" type="button" onClick={async () => {
+          ? <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Resume ${fill.name}`} onClick={() => act(`/fills/${fill.id}/resume`, "Resume")}>Resume</button>
+          : <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Pause ${fill.name}`} onClick={() => act(`/fills/${fill.id}/pause`, "Pause")}>Pause</button>}
+        <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Edit ${fill.name}`} onClick={onEdit}>Edit</button>
+        <button className="btn-secondary" type="button" aria-label={`History for ${fill.name}`} onClick={async () => {
           const rows = await api<{ history: HistoryRow[] }>(scoped(session.householdId, `/fills/${fill.id}/history`));
           setHistory(rows.history);
         }}>History</button>
-        <button className="btn-secondary" type="button" onClick={async () => {
+        <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Delete ${fill.name}`} onClick={async () => {
+          if (!window.confirm(`Delete ${fill.name}? The schedule is removed. Money already assigned stays where it is.`)) return;
           await api(scoped(session.householdId, `/fills/${fill.id}`), { method: "DELETE" });
           session.bump();
         }}>Delete</button>
       </div>
-      {message ? <p>{message}</p> : null}
+      {message ? <p role="status">{message}</p> : null}
       {history ? (
         history.length === 0 ? <p>No history yet.</p> : (
           <ul>

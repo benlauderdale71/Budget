@@ -8,6 +8,10 @@ Setup then asks who the plan is for and saves the household name, currency, loca
 
 Add the account where cash sits and an opening balance. On-budget accounts are the ones the plan can assign. Loans, cards you are only tracking, and investments can stay off the plan and still appear in net worth.
 
+Tab through the page. Skip to content jumps past the sidebar. Escape closes a dialog and returns to the button that opened it. Hide amounts is announced as hidden, including the name of the amount.
+
+A production site served over HTTPS can be installed from the browser. The installed window is the same BudgetCents app. After one online load it can open offline, but the balances are not stored on the device. A transaction saved while its account is on screen waits there until the connection returns. Signing out does not send someone else’s waiting transactions.
+
 ## Plan
 
 Ready to Assign is cash that has arrived and has no job. Give it a category. Envelopes and flex groups are the same balances with different labels. Moving money between categories does not move it at the bank.

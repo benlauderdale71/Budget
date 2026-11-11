@@ -34,6 +34,7 @@ export function setQueueOwner(userId: string | null) {
 export function clearLocalSession() {
   localStorage.removeItem("budgetcents.token");
   localStorage.removeItem("budgetcents.household");
+  localStorage.removeItem("budgetcents.profile");
   setQueueOwner(null);
 }
 
@@ -43,11 +44,12 @@ function currentOwner(): string | null {
 
 function remember(path: string, method: string, body: string | undefined, opId?: string) {
   const ownerId = currentOwner();
-  if (!ownerId || method === "GET" || !path.includes("/transactions")) return;
+  if (!ownerId || method === "GET" || !path.includes("/transactions")) return false;
   const queue = readQueue();
-  if (opId && queue.some((item) => item.opId === opId && item.ownerId === ownerId && item.path === path)) return;
+  if (opId && queue.some((item) => item.opId === opId && item.ownerId === ownerId && item.path === path)) return true;
   queue.push({ path, method, body, at: Date.now(), ownerId, opId });
   writeQueue(queue);
+  return true;
 }
 
 export function queuedCount(): number {
@@ -90,15 +92,19 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
   try {
     response = await fetch(path, { ...init, method, body, headers });
   } catch {
-    if (options.queue !== false) remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
-    throw new ApiError(0, "You are offline. A transaction entry was kept on this device and will send when the connection returns.");
+    const kept = options.queue !== false && remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
+    throw new ApiError(0, kept
+      ? "You are offline. This transaction stays on this device and will send when the connection returns."
+      : "You are offline. This change was not saved.");
   }
   let text: string;
   try {
     text = await response.text();
   } catch {
-    if (options.queue !== false) remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
-    throw new ApiError(0, "The server did not finish answering. The entry stays on this device and will be sent again.");
+    const kept = options.queue !== false && remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
+    throw new ApiError(0, kept
+      ? "The server did not finish answering. The transaction stays on this device and will be sent again."
+      : "The server did not finish answering. This change was not saved.");
   }
   let data: { error?: string } | null = null;
   try {
