@@ -157,6 +157,26 @@ describe("saved loan plans", () => {
     const copy = await json(await api.request(`/api/households/${home.hid}/loan-scenarios/${created.body.id}/duplicate`, { method: "POST", headers: auth(home.token), body: "{}" }));
     expect(copy.status).toBe(201);
     expect(copy.body.name).toBe("Copy of Pay faster still");
+    const archived = await json(await api.request(`/api/households/${home.hid}/loan-scenarios/${copy.body.id}/archive`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({ version: copy.body.version }),
+    }));
+    expect(archived.status).toBe(200);
+    expect(archived.body.archived).toBe(true);
+    const visible = await json(await api.request(`/api/households/${home.hid}/loan-scenarios`, { headers: auth(home.token) }));
+    expect(visible.body.scenarios.map((item: { name: string }) => item.name)).not.toContain("Copy of Pay faster still");
+    const withArchived = await json(await api.request(`/api/households/${home.hid}/loan-scenarios?archived=1`, { headers: auth(home.token) }));
+    expect(withArchived.body.scenarios.map((item: { name: string }) => item.name)).toContain("Copy of Pay faster still");
+    const removed = await json(await api.request(`/api/households/${home.hid}/loan-scenarios/${copy.body.id}`, {
+      method: "DELETE",
+      headers: auth(home.token),
+      body: JSON.stringify({ version: archived.body.version }),
+    }));
+    expect(removed.status).toBe(200);
+    const afterDelete = await json(await api.request(`/api/households/${home.hid}/loan-scenarios?archived=1`, { headers: auth(home.token) }));
+    expect(afterDelete.body.scenarios.map((item: { id: string }) => item.id)).not.toContain(copy.body.id);
+    expect(afterDelete.body.scenarios.map((item: { id: string }) => item.id)).toContain(created.body.id);
     const refinance = await json(await api.request(`/api/households/${home.hid}/loan-scenarios`, {
       method: "POST",
       headers: auth(home.token),
