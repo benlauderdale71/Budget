@@ -285,6 +285,7 @@ describe("saved loan plans", () => {
       body: JSON.stringify({ email: "editor@example.com", role: "editor" }),
     }));
     const editor = await household(api, "editor@example.com");
+    await markVerified("editor@example.com");
     const accepted = await json(await api.request(`/api/invitations/${invite.body.token}/accept`, { method: "POST", headers: auth(editor.token) }));
     expect(accepted.status).toBe(200);
     const privateLoan = await json(await api.request(`/api/households/${owner.hid}/accounts`, {
@@ -324,6 +325,7 @@ describe("saved loan plans", () => {
       body: JSON.stringify({ email: "reader@example.com", role: "readonly" }),
     }));
     const reader = await household(api, "reader@example.com");
+    await markVerified("reader@example.com");
     await api.request(`/api/invitations/${readerInvite.body.token}/accept`, { method: "POST", headers: auth(reader.token) });
     const denied = await json(await api.request(`/api/households/${owner.hid}/loan-scenarios`, {
       method: "POST",

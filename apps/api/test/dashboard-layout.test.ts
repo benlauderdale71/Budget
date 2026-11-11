@@ -164,6 +164,7 @@ describe("dashboard layout preferences", () => {
       method: "POST", headers: auth(owner.token), body: JSON.stringify({ email: "layout-reader@example.com", role: "readonly" }),
     }));
     const reader = await household(api, "layout-reader@example.com");
+    await db.query(`UPDATE users SET email_verified_at = $1 WHERE id = $2`, [new Date().toISOString(), reader.userId]);
     const accepted = await json(await api.request(`/api/invitations/${invite.body.token}/accept`, { method: "POST", headers: auth(reader.token) }));
     expect(accepted.status).toBe(200);
     const denied = await json(await api.request(`/api/households/${owner.hid}/transactions`, {

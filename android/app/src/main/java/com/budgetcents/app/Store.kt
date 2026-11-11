@@ -43,6 +43,12 @@ class Store(context: Context) {
     var theme: String
         get() = prefs.getString("theme", "system") ?: "system"
         set(value) { prefs.edit().putString("theme", value).apply() }
+    var pendingInvite: String?
+        get() = prefs.getString("invite", null)
+        set(value) {
+            if (value.isNullOrBlank()) prefs.edit().remove("invite").apply()
+            else prefs.edit().putString("invite", value).apply()
+        }
 
     fun enqueue(path: String, body: String) {
         val owner = userId ?: return

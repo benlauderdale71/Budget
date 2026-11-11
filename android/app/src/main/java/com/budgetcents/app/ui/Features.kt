@@ -202,24 +202,7 @@ fun FeatureScreen(
                 }
             }
         }
-        "household" -> RemoteScreen("household", { api.request("GET", "/api/households/$hid/members") }) { data ->
-            val members = data.optJSONArray("members") ?: JSONArray()
-            for (index in 0 until members.length()) {
-                val person = members.getJSONObject(index)
-                Text("${person.optString("displayName")} · ${person.optString("role")}")
-            }
-            Text("Private accounts stay hidden from other members, including admins.")
-            var email by remember { mutableStateOf("") }
-            OutlinedTextField(email, { email = it }, label = { Text("Invite email") }, modifier = Modifier.fillMaxWidth())
-            Button(onClick = {
-                scope.launch {
-                    runIo(onError) {
-                        val invite = api.request("POST", "/api/households/$hid/invitations", JSONObject().put("email", email.trim()).put("role", "editor"))
-                        onStatus(invite.optString("summary"))
-                    }
-                }
-            }) { Text("Create invite") }
-        }
+        "household" -> SharingScreen(api, store, hid, dash?.optJSONObject("household")?.optString("role") ?: "", onError, onStatus, onChanged, onSignedOut)
         "connections" -> RemoteScreen("connections", { api.request("GET", "/api/providers") }) { data ->
             Text("These services are not live. A stored request is not a completed cancellation, score, or transfer.")
             val providers = data.optJSONArray("providers") ?: JSONArray()
@@ -2060,15 +2043,21 @@ private fun SetupScreen(api: BudgetApi, hid: String, onError: (String) -> Unit, 
             TextButton(onClick = { patch(JSONObject().put("skip", "goal").put("step", "invite"), "Goal skipped.") }) { Text("Skip this step") }
         }
         "invite" -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (current.optBoolean("emailVerified")) "The invited person joins only if they sign in with this email." else "Verify your email before inviting someone.")
+            var inviteRole by remember { mutableStateOf("editor") }
+            Text(if (current.optBoolean("emailVerified")) "The invited person joins only if they sign in with this email. Creating a link does not send email." else "Verify your email before inviting someone.")
             OutlinedTextField(inviteEmail, { inviteEmail = it }, label = { Text("Invitation email") }, modifier = Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("editor" to "Editor", "readonly" to "Read-only", "coach" to "Coach", "planner" to "Planner", "accountant" to "Accountant").forEach { (id, label) ->
+                    TextButton(onClick = { inviteRole = id }) { Text(if (inviteRole == id) "Selected · $label" else label) }
+                }
+            }
             Button(onClick = {
                 scope.launch { runIo(onError) {
-                    api.request("POST", "/api/households/$hid/invitations", JSONObject().put("email", inviteEmail.trim()).put("role", "editor"))
+                    val invite = api.request("POST", "/api/households/$hid/invitations", JSONObject().put("email", inviteEmail.trim()).put("role", inviteRole))
                     state = api.request("PATCH", "/api/households/$hid/onboarding", JSONObject().put("version", state?.optInt("version")).put("complete", "invite"))
-                    onStatus("Invitation created.")
+                    onStatus(invite.optString("note", "Invitation link created."))
                 } }
-            }) { Text("Send invitation") }
+            }) { Text("Create invitation link") }
             TextButton(onClick = { patch(JSONObject().put("skip", "invite").put("step", "review"), "Invitation skipped.") }) { Text("Skip this step") }
         }
         else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

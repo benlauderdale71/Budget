@@ -44,9 +44,17 @@ class MainActivity : FragmentActivity() {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         ensureChannel()
-        val start = intent?.data?.host ?: "home"
-        val linkToken = intent?.data?.getQueryParameter("token")
-        setContent { BudgetApp(this, start, linkToken) }
+        val data = intent?.data
+        val host = data?.host
+        val pathToken = data?.pathSegments?.let { segments ->
+            val invite = segments.indexOf("invite")
+            if (invite >= 0 && invite + 1 < segments.size) segments[invite + 1] else null
+        }
+        val inviteToken = data?.getQueryParameter("token")
+            ?: if (host == "invite") data?.lastPathSegment?.takeIf { it.isNotBlank() && it != "invite" } else null
+            ?: pathToken
+        val start = if (host == "invite" || pathToken != null) "invite" else host ?: "home"
+        setContent { BudgetApp(this, start, if (start == "invite") inviteToken else data?.getQueryParameter("token")) }
     }
 
     fun pickReceipt() {

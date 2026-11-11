@@ -18,6 +18,7 @@ export function Activity() {
   const [editing, setEditing] = useState<Txn | null>(null);
   const [offset, setOffset] = useState(0);
   const [matchId, setMatchId] = useState("");
+  const [commentFor, setCommentFor] = useState<Txn | null>(null);
   const [note, setNote] = useState("");
   const [noteBad, setNoteBad] = useState(false);
   const [viewName, setViewName] = useState("");
@@ -131,6 +132,8 @@ export function Activity() {
                       setMatchId("");
                     })}>Match with selected</button> : null}
                     {txn.matchedArchivedId ? <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Unmatch ${txn.payee} on ${txn.date}`} onClick={() => act("The hidden record is back in the register, and a receipt that moved comes back with it.", () => api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" }).then(() => undefined))}>Unmatch</button> : null}
+                    <button className="btn-quiet" type="button" aria-label={`Comment on ${txn.payee} on ${txn.date}`} onClick={() => setCommentFor(txn)}>Comment</button>
+                    {access.canReview ? <button className="btn-quiet" type="button" aria-label={`Mark ${txn.payee} on ${txn.date} reviewed`} onClick={() => act("Marked reviewed. The amount, category, and balance did not change.", () => api(scoped(session.householdId, `/transactions/${txn.id}/review`), { method: "POST", body: JSON.stringify({ reviewStatus: "reviewed", version: txn.version ?? 1 }) }).then(() => undefined))}>Mark reviewed</button> : null}
                   </td>
                 </tr>
               ))}
@@ -142,8 +145,35 @@ export function Activity() {
         {offset > 0 ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(Math.max(0, offset - PAGE)); }}>Previous page</button> : null}
         {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
+      {commentFor ? <CommentForm txn={commentFor} onClose={() => setCommentFor(null)} onSaved={(message) => { setNoteBad(false); setNote(message); setCommentFor(null); }} /> : null}
       {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
     </Page>
+  );
+}
+
+function CommentForm({ txn, onClose, onSaved }: { txn: Txn; onClose: () => void; onSaved: (message: string) => void }) {
+  const session = useSession();
+  const form = useFormError();
+  const [comments, setComments] = useState<{ id: string; body: string; display_name: string }[]>([]);
+  useEffect(() => {
+    api<{ comments: { id: string; body: string; display_name: string }[]; note: string }>(scoped(session.householdId, `/comments?transactionId=${encodeURIComponent(txn.id)}`))
+      .then((result) => setComments(result.comments))
+      .catch((caught: unknown) => form.setError(caught instanceof Error ? caught.message : "Comments could not be loaded."));
+  }, [session.householdId, txn.id]);
+  return (
+    <Modal title={`Comment on ${txn.payee}`} onClose={onClose}>
+      <p>A comment does not change the transaction, category, or balance.</p>
+      <ul>{comments.map((comment) => <li key={comment.id}>{comment.display_name}: {comment.body}</li>)}</ul>
+      <form onSubmit={(event) => form.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        const result = await api<{ note: string }>(scoped(session.householdId, "/comments"), { method: "POST", body: JSON.stringify({ transactionId: txn.id, body: data.get("body") }) });
+        onSaved(result.note);
+      })}>
+        <Field label="Comment"><textarea name="body" required maxLength={2000} /></Field>
+        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+        <button className="btn" type="submit">Save comment</button>
+      </form>
+    </Modal>
   );
 }
 

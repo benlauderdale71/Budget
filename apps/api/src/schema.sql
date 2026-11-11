@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS households (
   is_demo integer NOT NULL DEFAULT 0,
   time_zone text NOT NULL DEFAULT 'America/Chicago',
   week_start integer NOT NULL DEFAULT 0,
+  member_limit integer,
   created_at text NOT NULL
 );
 
@@ -78,6 +79,8 @@ CREATE TABLE IF NOT EXISTS invitations (
   reveal_summary text NOT NULL,
   created_at text NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS invitations_token_hash ON invitations (token_hash);
 
 CREATE TABLE IF NOT EXISTS accounts (
   id text PRIMARY KEY,
@@ -374,6 +377,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
   entity text,
   entity_id text,
   summary text NOT NULL,
+  visibility text NOT NULL DEFAULT 'shared',
+  owner_user_id text,
   created_at text NOT NULL
 );
 

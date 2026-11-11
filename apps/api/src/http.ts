@@ -1,4 +1,4 @@
-import { BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
@@ -8,6 +8,7 @@ import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, payc
 import { mountLoans } from "./loans.js";
 import { mountOnboarding } from "./onboarding.js";
 import { planRestore } from "./restore.js";
+import { acceptInvitation, changeMemberRole, createInvitation, leaveHousehold, listAccess, previewInvitation, reissueInvitation, removeMember, revokeInvitation, setMemberLimit, transferOwnership, visibleAudit } from "./sharing.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
@@ -120,7 +121,7 @@ export function createApp(db: Database) {
     c.header("X-Frame-Options", "DENY");
     c.header("Cache-Control", "no-store");
     if (c.req.path.startsWith("/api")) {
-      console.info(JSON.stringify({ method: c.req.method, path: c.req.path.split("?")[0], status: c.res.status, ms: Date.now() - started }));
+      console.info(JSON.stringify({ method: c.req.method, path: c.req.path.split("?")[0].replace(/\/api\/invitations\/[^/]+/g, "/api/invitations/:token"), status: c.res.status, ms: Date.now() - started }));
     }
   });
 
@@ -156,6 +157,13 @@ export function createApp(db: Database) {
     return mapUser(rows[0]);
   }
 
+  async function optionalActor(c: { req: { header: (name: string) => string | undefined } }): Promise<Actor | null> {
+    const header = c.req.header("authorization") ?? "";
+    const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
+    if (!token) return null;
+    return actor(c);
+  }
+
   app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus(), devMail: devMailEnabled(), ocr: readerStatus() }));
 
   app.get("/api/dev/outbox", async (c) => {
@@ -174,18 +182,33 @@ export function createApp(db: Database) {
     return c.json({ messages: rows, note: "Development outbox only. This is not proof that SMTP delivered the message." });
   });
 
+  app.post("/api/dev/invitations/:id/expire", async (c) => {
+    if (!devMailEnabled()) throw new ApiError(404, "Not found");
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.query("householdId") ?? "");
+    if (!allows(member.role, "invite")) throw new ApiError(403, "Your role cannot change an invitation.");
+    const rows = await db.query(
+      `UPDATE invitations SET expires_at = $1 WHERE id = $2 AND household_id = $3 AND accepted_at IS NULL RETURNING id`,
+      [new Date(Date.now() - 1000).toISOString(), c.req.param("id"), member.householdId],
+    );
+    if (!rows.length) throw new ApiError(404, "Not found");
+    return c.json({ ok: true, note: "Development only. The invitation is now expired." });
+  });
+
   app.post("/api/auth/register", async (c) => {
     const body = z.object({
       email: z.string().email(),
       password: z.string().min(10),
       displayName: z.string().min(1).max(80),
-      householdName: z.string().min(1).max(80),
+      householdName: z.string().max(80).optional(),
       kind: z.enum(["individual", "couple", "family", "freelancer", "mixed"]).default("individual"),
       currency: z.string().length(3).default("USD"),
       approach: z.enum(["category", "zero", "envelope", "flex"]).default("zero"),
     }).parse(await c.req.json());
     limit(`register:${body.email.toLowerCase()}`, 8);
     const email = body.email.toLowerCase();
+    const householdName = body.householdName?.trim() ?? "";
+    const joining = householdName.length === 0;
     const taken = await db.query(`SELECT id FROM users WHERE email = $1`, [email]);
     if (taken.length) throw new ApiError(400, "An account with that email already exists.");
     const userId = id();
@@ -198,20 +221,28 @@ export function createApp(db: Database) {
     await db.tx(async () => {
       await db.query(
         `INSERT INTO users (id, email, password_hash, display_name, locale, time_zone, budget_approach, onboarding_step, created_at)
-         VALUES ($1,$2,$3,$4,'en-US','America/Chicago',$5,'who',$6)`,
-        [userId, email, passwordHash, body.displayName, body.approach, created],
+         VALUES ($1,$2,$3,$4,'en-US','America/Chicago',$5,$6,$7)`,
+        [userId, email, passwordHash, body.displayName, body.approach, joining ? "done" : "who", created],
       );
-      await db.query(
-        `INSERT INTO households (id, name, kind, currency, budget_approach, time_zone, created_at) VALUES ($1,$2,$3,$4,$5,'America/Chicago',$6)`,
-        [householdId, body.householdName, body.kind, body.currency.toUpperCase(), body.approach, created],
-      );
-      await db.query(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES ($1,$2,'owner',$3)`, [householdId, userId, created]);
-      await db.query(
-        `INSERT INTO spaces (id, household_id, name, kind, currency, created_at) VALUES ($1,$2,'Household','household',$3,$4)`,
-        [spaceId, householdId, body.currency.toUpperCase(), created],
-      );
-      const { insertStarterBuckets } = await import("./finance.js");
-      await insertStarterBuckets(db, householdId, spaceId);
+      if (!joining) {
+        await db.query(
+          `INSERT INTO households (id, name, kind, currency, budget_approach, time_zone, created_at) VALUES ($1,$2,$3,$4,$5,'America/Chicago',$6)`,
+          [householdId, householdName, body.kind, body.currency.toUpperCase(), body.approach, created],
+        );
+        await db.query(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES ($1,$2,'owner',$3)`, [householdId, userId, created]);
+        await db.query(
+          `INSERT INTO spaces (id, household_id, name, kind, currency, created_at) VALUES ($1,$2,'Household','household',$3,$4)`,
+          [spaceId, householdId, body.currency.toUpperCase(), created],
+        );
+        const { insertStarterBuckets } = await import("./finance.js");
+        await insertStarterBuckets(db, householdId, spaceId);
+        await db.query(
+          `INSERT INTO onboarding_states (user_id, household_id, step, completed_json, skipped_json, draft_json, version, finished_at, updated_at)
+           VALUES ($1,$2,'who','[]','[]','{}',1,NULL,$3)`,
+          [userId, householdId, created],
+        );
+        await audit(db, householdId, userId, "register", "Household created");
+      }
       await db.query(
         `INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'verify',$3,$4)`,
         [id(), userId, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
@@ -219,12 +250,6 @@ export function createApp(db: Database) {
       await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
         id(), userId, email, "Verify your BudgetCents email", verificationMessage(origin, verify), created,
       ]);
-      await db.query(
-        `INSERT INTO onboarding_states (user_id, household_id, step, completed_json, skipped_json, draft_json, version, finished_at, updated_at)
-         VALUES ($1,$2,'who','[]','[]','{}',1,NULL,$3)`,
-        [userId, householdId, created],
-      );
-      await audit(db, householdId, userId, "register", "Household created");
     });
     const token = await startSession(userId, c.req.header("user-agent") ?? "web");
     return c.json({ token, user: await publicUser(userId), verificationRequired: true });
@@ -998,18 +1023,35 @@ export function createApp(db: Database) {
 
   app.get("/api/households/:hid/members", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    const people = await db.query(
-      `SELECT u.id, u.display_name, m.role FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.household_id = $1 AND u.deleted_at IS NULL ORDER BY u.display_name`,
-      [member.householdId],
-    );
-    const invitations = ["owner", "admin"].includes(member.role)
-      ? await db.query(`SELECT id, email, role, expires_at, created_at FROM invitations WHERE household_id = $1 AND accepted_at IS NULL AND revoked_at IS NULL`, [member.householdId])
-      : [];
-    return c.json({
-      members: people.map((person) => ({ id: person.id, displayName: person.display_name, role: person.role, you: person.id === me.id })),
-      invitations,
-    });
+    return c.json(await listAccess(db, me, c.req.param("hid")));
+  });
+
+  app.patch("/api/households/:hid/members/:userId", async (c) => {
+    const me = await actor(c);
+    const body = z.object({ role: z.string() }).parse(await c.req.json());
+    return c.json(await changeMemberRole(db, me, c.req.param("hid"), c.req.param("userId"), body.role));
+  });
+
+  app.delete("/api/households/:hid/members/:userId", async (c) => {
+    const me = await actor(c);
+    return c.json(await removeMember(db, me, c.req.param("hid"), c.req.param("userId")));
+  });
+
+  app.post("/api/households/:hid/leave", async (c) => {
+    const me = await actor(c);
+    return c.json(await leaveHousehold(db, me, c.req.param("hid")));
+  });
+
+  app.post("/api/households/:hid/transfer", async (c) => {
+    const me = await actor(c);
+    const body = z.object({ userId: z.string() }).parse(await c.req.json());
+    return c.json(await transferOwnership(db, me, c.req.param("hid"), body.userId));
+  });
+
+  app.patch("/api/households/:hid/sharing", async (c) => {
+    const me = await actor(c);
+    const body = z.object({ memberLimit: z.number().int() }).parse(await c.req.json());
+    return c.json(await setMemberLimit(db, me, c.req.param("hid"), body.memberLimit));
   });
 
   app.post("/api/households/:hid/buckets", async (c) => {
@@ -1208,8 +1250,11 @@ export function createApp(db: Database) {
       throw error;
     }
     const gap = body.targetPortfolioMinor ? contributionGap({ targetPortfolioMinor: body.targetPortfolioMinor, currentPortfolioMinor: body.portfolioMinor, years: Math.max(1, body.retireAge - body.currentAge), growthBps: body.meanReturnBps - body.feeBps }) : null;
-    await db.query(`INSERT INTO scenarios (id, household_id, space_id, name, adjustments_json, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [id(), member.householdId, (await visibleSpaces(me.id, member.householdId))[0].id, "Retirement model", JSON.stringify({ kind: "retirement", body }), nowIso()]);
-    return c.json({ result, contributionGap: gap });
+    const saved = allows(member.role, "finance");
+    if (saved) {
+      await db.query(`INSERT INTO scenarios (id, household_id, space_id, name, adjustments_json, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [id(), member.householdId, (await visibleSpaces(me.id, member.householdId))[0].id, "Retirement model", JSON.stringify({ kind: "retirement", body }), nowIso()]);
+    }
+    return c.json({ result, contributionGap: gap, saved, note: saved ? "This model was saved and is not part of the ledger." : "This calculation was not saved." });
   });
 
   app.get("/api/households/:hid/investments", async (c) => {
@@ -1462,15 +1507,23 @@ export function createApp(db: Database) {
     if (!rows.length) return c.json({ batch: null });
     const stored = readStoredImport(String(rows[0].preview_json));
     const status = String(rows[0].status);
+    let commit = stored.commit ?? null;
+    if (commit?.accountId) {
+      const account = await db.query(`SELECT visibility, owner_user_id FROM accounts WHERE id = $1 AND household_id = $2`, [commit.accountId, member.householdId]);
+      const visible = account.length > 0 && canSeeAccount(me.id, { visibility: String(account[0].visibility), owner_user_id: str(account[0].owner_user_id) ?? null });
+      if (!visible) commit = null;
+    }
     return c.json({
       batch: {
         id: String(rows[0].id),
         status,
         source: String(rows[0].source),
-        note: status === "reverted"
-          ? "This import was already undone."
-          : `Imported ${stored.result?.created ?? 0}. They need review. Unchanged rows can be undone. A second confirm does not add them again.`,
-        commit: stored.commit ?? null,
+        note: commit == null && stored.commit
+          ? "This import is on an account you cannot see."
+          : status === "reverted"
+            ? "This import was already undone."
+            : `Imported ${stored.result?.created ?? 0}. They need review. Unchanged rows can be undone. A second confirm does not add them again.`,
+        commit,
       },
     });
   });
@@ -1855,43 +1908,77 @@ export function createApp(db: Database) {
 
   app.get("/api/households/:hid/audit", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    return c.json({ events: await db.query(`SELECT id, action, entity, entity_id, summary, created_at, user_id FROM audit_events WHERE household_id = $1 ORDER BY created_at DESC LIMIT 100`, [member.householdId]) });
+    return c.json({ events: await visibleAudit(db, me.id, c.req.param("hid")) });
   });
 
   app.post("/api/households/:hid/invitations", async (c) => {
     const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertAdmin(member);
     const body = z.object({ email: z.string().email(), role: z.enum(["admin", "editor", "contributor", "readonly", "coach", "planner", "accountant"]) }).parse(await c.req.json());
-    const verified = await db.query(`SELECT email_verified_at FROM users WHERE id = $1`, [me.id]);
-    if (!verified[0]?.email_verified_at) throw new ApiError(403, "Verify your email before inviting someone.");
-    const token = randomToken();
-    const summary = `You will see shared spaces and shared accounts in ${member.name}. Private accounts stay hidden. Role: ${body.role}.`;
-    await db.query(`INSERT INTO invitations (id, household_id, email, role, token_hash, expires_at, reveal_summary, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [id(), member.householdId, body.email.toLowerCase(), body.role, sha256(token), new Date(Date.now() + 7 * 86_400_000).toISOString(), summary, nowIso()]);
-    return c.json({ token, summary }, 201);
+    const created = await createInvitation(db, me, c.req.param("hid"), body.email, body.role, appOrigin(c));
+    return c.json(created, 201);
+  });
+
+  app.post("/api/households/:hid/invitations/:id/revoke", async (c) => {
+    const me = await actor(c);
+    return c.json(await revokeInvitation(db, me, c.req.param("hid"), c.req.param("id")));
+  });
+
+  app.post("/api/households/:hid/invitations/:id/reissue", async (c) => {
+    const me = await actor(c);
+    const created = await reissueInvitation(db, me, c.req.param("hid"), c.req.param("id"), appOrigin(c));
+    return c.json(created, 201);
+  });
+
+  app.get("/api/invitations/:token", async (c) => {
+    const viewer = await optionalActor(c);
+    return c.json(await previewInvitation(db, c.req.param("token"), viewer));
   });
 
   app.post("/api/invitations/:token/accept", async (c) => {
     const me = await actor(c);
-    const rows = await db.query(`SELECT * FROM invitations WHERE token_hash = $1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > $2`, [sha256(c.req.param("token")), nowIso()]);
-    if (!rows.length) throw new ApiError(400, "That invitation is invalid or expired.");
-    if (String(rows[0].email) !== me.email) throw new ApiError(403, "This invitation was sent to a different email.");
-    const count = await db.query(`SELECT user_id FROM memberships WHERE household_id = $1`, [rows[0].household_id]);
-    if (count.length >= 12) throw new ApiError(400, "This household is at its 12-person sharing limit.");
-    await db.query(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [rows[0].household_id, me.id, rows[0].role, nowIso()]);
-    await db.query(`UPDATE invitations SET accepted_at = $1 WHERE id = $2`, [nowIso(), rows[0].id]);
-    return c.json({ householdId: rows[0].household_id, revealed: rows[0].reveal_summary });
+    return c.json(await acceptInvitation(db, me, c.req.param("token")));
+  });
+
+  app.get("/api/households/:hid/comments", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    if (!allows(member.role, "comment")) throw new ApiError(403, "Your role cannot comment.");
+    const transactionId = c.req.query("transactionId");
+    if (!transactionId) throw new ApiError(400, "Choose a transaction.");
+    await mustTxn(me.id, member.householdId, transactionId);
+    const rows = await db.query(
+      `SELECT c.id, c.body, c.created_at, u.display_name FROM comments c JOIN users u ON u.id = c.user_id WHERE c.household_id = $1 AND c.transaction_id = $2 ORDER BY c.created_at`,
+      [member.householdId, transactionId],
+    );
+    return c.json({ comments: rows, note: "A comment does not change the transaction, category, or balance." });
   });
 
   app.post("/api/households/:hid/comments", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
+    if (!allows(member.role, "comment")) throw new ApiError(403, "Your role cannot comment.");
     const body = z.object({ transactionId: z.string(), body: z.string().min(1).max(2000) }).parse(await c.req.json());
     await mustTxn(me.id, member.householdId, body.transactionId);
     const commentId = id();
     await db.query(`INSERT INTO comments (id, household_id, transaction_id, user_id, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [commentId, member.householdId, body.transactionId, me.id, body.body, nowIso()]);
-    return c.json({ id: commentId }, 201);
+    return c.json({ id: commentId, note: "A comment does not change the transaction, category, or balance." }, 201);
+  });
+
+  app.post("/api/households/:hid/transactions/:id/review", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    if (!allows(member.role, "review")) throw new ApiError(403, "Your role can comment, but it cannot mark a transaction reviewed.");
+    const body = z.object({ reviewStatus: z.enum(["needs_review", "reviewed"]), version: z.number().int() }).parse(await c.req.json());
+    const existing = await mustTxn(me.id, member.householdId, c.req.param("id"));
+    await db.tx(async () => {
+      const updated = await db.query(
+        `UPDATE transactions SET review_status = $1, version = version + 1, updated_at = $2 WHERE id = $3 AND household_id = $4 AND version = $5 AND deleted = 0 RETURNING id`,
+        [body.reviewStatus, nowIso(), existing.id, member.householdId, body.version],
+      );
+      if (!updated.length) throw new ApiError(409, "Someone else changed this transaction. Reload it and try again.");
+      await audit(db, member.householdId, me.id, "transaction.review", body.reviewStatus === "reviewed" ? "Marked a transaction reviewed" : "Marked a transaction for review", "transaction", String(existing.id));
+    });
+    return c.json({ ok: true, note: "Review status changed. The amount, category, and balance did not." });
   });
 
   app.post("/api/households/:hid/reconcile", async (c) => {
@@ -2091,7 +2178,8 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/alerts/read", async (c) => {
     const me = await actor(c);
-    await db.query(`UPDATE alerts SET read_at = $1 WHERE user_id = $2 AND household_id = $3 AND read_at IS NULL`, [nowIso(), me.id, c.req.param("hid")]);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    await db.query(`UPDATE alerts SET read_at = $1 WHERE user_id = $2 AND household_id = $3 AND read_at IS NULL`, [nowIso(), me.id, member.householdId]);
     return c.json({ ok: true });
   });
 

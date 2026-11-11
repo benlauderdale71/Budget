@@ -1,4 +1,4 @@
-import { displayBalance } from "@budgetcents/domain";
+import { allows, displayBalance } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { id, nowIso } from "./crypto.js";
@@ -86,6 +86,9 @@ export function mountOnboarding(app: Hono, db: Database, hooks: OnboardingHooks)
     if (body.skip && !STEP_IDS.has(body.skip)) throw new ApiError(400, "That setup step is not part of this flow.");
     if (body.skip && !STEPS.find((step) => step.id === body.skip)?.optional && body.skip !== "verify") {
       throw new ApiError(400, "Save this step before leaving it. It is part of the required setup.");
+    }
+    if ((body.who || body.preferences) && !allows(member.role, "plan")) {
+      throw new ApiError(403, "Your role cannot change this household.");
     }
     if (body.preferences) assertTimeZone(body.preferences.timeZone);
     const current = await ensureState(db, me.id, member.householdId);

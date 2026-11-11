@@ -406,6 +406,7 @@ describe("resumable setup and account security", () => {
       body: JSON.stringify({ email: member.email, role: "editor" }),
     }));
     expect(invite.status).toBe(201);
+    await db.query(`UPDATE users SET email_verified_at = $1 WHERE email = $2`, [new Date().toISOString(), member.email]);
     await api.request(`/api/invitations/${invite.body?.token}/accept`, { method: "POST", headers: auth(member.token) });
     const blocked = await json(await api.request("/api/me", {
       method: "DELETE",

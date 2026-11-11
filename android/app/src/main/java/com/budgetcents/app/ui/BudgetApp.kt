@@ -80,6 +80,11 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
     var activityIds by remember { mutableStateOf<String?>(null) }
     var activityLabel by remember { mutableStateOf("") }
     var themeName by remember { mutableStateOf(store.theme) }
+    var inviteToken by remember {
+        val incoming = if (start == "invite") linkToken else null
+        if (!incoming.isNullOrBlank()) store.pendingInvite = incoming
+        mutableStateOf(if (!incoming.isNullOrBlank()) incoming else store.pendingInvite)
+    }
     val dark = when (themeName) {
         "dark" -> true
         "light" -> false
@@ -131,7 +136,11 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                     token = store.token
                     themeName = store.theme
                     error = ""
-                    if (openSetup) {
+                    inviteToken = store.pendingInvite
+                    if (!store.pendingInvite.isNullOrBlank()) {
+                        page = "invite"
+                        openSetup = false
+                    } else if (openSetup) {
                         page = "setup"
                         tab = 4
                         openSetup = false
@@ -141,15 +150,38 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
             }
             return@MaterialTheme
         }
+        if (store.householdId.isNullOrBlank()) {
+            Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (!inviteToken.isNullOrBlank()) {
+                    InviteScreen(api, store, inviteToken!!, { _ -> page = null; reload() }, {
+                        store.pendingInvite = null
+                        inviteToken = null
+                    }, {
+                        store.clearSession()
+                        token = null
+                    }) { error = it }
+                } else {
+                    Text("You are signed in without a household. Open an invitation, or sign out and create one.")
+                    TextButton(onClick = { store.clearSession(); token = null }) { Text("Sign out") }
+                }
+                if (error.isNotBlank()) Text(error)
+            }
+            return@MaterialTheme
+        }
         LaunchedEffect(linkToken) {
             if (start == "verify" && !linkToken.isNullOrBlank()) {
                 try {
                     withContext(Dispatchers.IO) {
                         api.request("POST", "/api/auth/verify-email", JSONObject().put("token", linkToken), auth = false)
                     }
-                    status = "Email verified. Setup continues from the saved step."
-                    page = "setup"
-                    tab = 4
+                    if (!store.pendingInvite.isNullOrBlank()) {
+                        status = "Email verified. The invitation stays pending until you accept it."
+                        page = "invite"
+                    } else {
+                        status = "Email verified. Setup continues from the saved step."
+                        page = "setup"
+                        tab = 4
+                    }
                 } catch (caught: Exception) {
                     error = caught.message ?: "That verification link did not work."
                 }
@@ -195,7 +227,25 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                         }
                         TextButton(onClick = { reload() }) { Text("Try again") }
                     }
-                    if (page != null) {
+                    val householdRole = dash?.optJSONObject("household")?.optString("role") ?: ""
+                    if (!writesAllowed(householdRole) && householdRole.isNotBlank()) {
+                        Text("${roleTitle(householdRole)} access can view shared records. It cannot change household money. Your dashboard, privacy, and security settings stay yours.")
+                    }
+                    if (page == "invite" && !inviteToken.isNullOrBlank()) {
+                        InviteScreen(api, store, inviteToken!!, { accepted ->
+                            if (accepted.isNotBlank()) store.householdId = accepted
+                            page = null
+                            reload()
+                        }, {
+                            store.pendingInvite = null
+                            inviteToken = null
+                            page = null
+                        }, {
+                            store.clearSession()
+                            token = null
+                            page = null
+                        }) { error = it }
+                    } else if (page != null) {
                         FeatureScreen(page!!, api, store, dash, store.privacy, { page = null }, { reload() }, { error = it }, { error = ""; status = it }, {
                             store.clearSession(); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
                         }, { name ->
@@ -210,7 +260,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                         }
                     } else when (tab) {
                         0 -> DashboardHome(dash, store.privacy, api, store, LocalConfiguration.current.screenWidthDp)
-                        1 -> PlanTab(dash, store.privacy, { bucketId, amount ->
+                        1 -> PlanTab(dash, store.privacy, plansAllowed(householdRole), { bucketId, amount ->
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
@@ -232,7 +282,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                                 }.onSuccess { status = "Moved. No bank transaction was created."; reload() }.onFailure { error = it.message ?: "Could not move money." }
                             }
                         }
-                        2 -> ActivityTab(txns, dash, store.privacy, activityIds != null, activityLabel, {
+                        2 -> ActivityTab(txns, dash, store.privacy, writesAllowed(householdRole), activityIds != null, activityLabel, {
                             activityIds = null
                             activityLabel = ""
                             reload()
@@ -311,7 +361,7 @@ private fun SignIn(
     done: (String?) -> Unit,
 ) {
     var base by remember { mutableStateOf(store.baseUrl) }
-    var mode by remember { mutableStateOf(if (start == "reset" || start == "verify") start else "login") }
+    var mode by remember { mutableStateOf(if (start == "reset" || start == "verify" || start == "invite") start else "login") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -328,16 +378,17 @@ private fun SignIn(
         Text("Same household as the web app. The emulator reaches a computer at 10.0.2.2.", color = Ink)
         OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("login" to "Sign in", "register" to "Create household", "reset" to "Reset password", "verify" to "Verify email").forEach { (id, label) ->
+            listOf("login" to "Sign in", "invite" to "Join a household", "register" to "Create household", "reset" to "Reset password", "verify" to "Verify email").forEach { (id, label) ->
                 TextButton(onClick = { mode = id; note = "" }) { Text(label) }
             }
         }
-        if (mode == "register") {
+        if (mode == "register" || mode == "invite") {
             OutlinedTextField(name, { name = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(household, { household = it }, label = { Text("Household name") }, modifier = Modifier.fillMaxWidth())
+            if (mode == "invite") Text("This account joins an existing household. It does not create a new one. Accept the invitation after you verify your email.")
+            else OutlinedTextField(household, { household = it }, label = { Text("Household name") }, modifier = Modifier.fillMaxWidth())
         }
         if (mode != "verify") OutlinedTextField(email, { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
-        if (mode == "login" || mode == "register" || mode == "reset") {
+        if (mode == "login" || mode == "register" || mode == "reset" || mode == "invite") {
             OutlinedTextField(password, { password = it }, label = { Text(if (mode == "reset") "New password" else "Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         }
         if (mode == "reset") {
@@ -358,17 +409,16 @@ private fun SignIn(
             scope.launch {
                 try {
                     when (mode) {
-                        "register" -> {
+                        "register", "invite" -> {
                             if (password.length < 10) { note = "Use at least 10 characters."; return@launch }
-                            val result = withContext(Dispatchers.IO) {
-                                api.request("POST", "/api/auth/register", JSONObject()
-                                    .put("email", email.trim())
-                                    .put("password", password)
-                                    .put("displayName", name.trim())
-                                    .put("householdName", household.trim()), auth = false)
-                            }
+                            val body = JSONObject()
+                                .put("email", email.trim())
+                                .put("password", password)
+                                .put("displayName", name.trim())
+                            if (mode == "register") body.put("householdName", household.trim())
+                            val result = withContext(Dispatchers.IO) { api.request("POST", "/api/auth/register", body, auth = false) }
                             adoptSession(api, store, result)
-                            onRegistered()
+                            if (store.pendingInvite.isNullOrBlank()) onRegistered()
                             done(null)
                         }
                         "reset" -> {
@@ -393,7 +443,7 @@ private fun SignIn(
                             val result = withContext(Dispatchers.IO) {
                                 api.request("POST", "/api/auth/verify-email", JSONObject().put("token", tokenText.trim()), auth = false)
                             }
-                            note = "Email verified. Sign in to continue from ${result.optString("onboardingStep", "the saved step")}."
+                            note = if (!store.pendingInvite.isNullOrBlank()) "Email verified. The invitation stays pending until you accept it." else "Email verified. Sign in to continue from ${result.optString("onboardingStep", "the saved step")}."
                         }
                         else -> {
                             val result = withContext(Dispatchers.IO) { api.login(email.trim(), password, code.ifBlank { null }) }
@@ -412,7 +462,7 @@ private fun SignIn(
                     done(caught.message ?: "Could not sign in.")
                 }
             }
-        }, modifier = Modifier.fillMaxWidth()) { Text(if (mode == "register") "Create household" else if (mode == "reset") "Continue" else if (mode == "verify") "Verify email" else "Sign in") }
+        }, modifier = Modifier.fillMaxWidth()) { Text(if (mode == "register") "Create household" else if (mode == "invite") "Create account" else if (mode == "reset") "Continue" else if (mode == "verify") "Verify email" else "Sign in") }
         TextButton(onClick = {
             store.baseUrl = base
             scope.launch {
@@ -445,7 +495,8 @@ private suspend fun adoptSession(api: BudgetApi, store: Store, result: JSONObjec
         store.theme = user.optString("theme", store.theme)
     }
     val homes = withContext(Dispatchers.IO) { api.households() }
-    store.householdId = homes.getJSONArray("households").getJSONObject(0).getString("id")
+    val list = homes.optJSONArray("households")
+    store.householdId = if (list == null || list.length() == 0) null else list.getJSONObject(0).optString("id").ifBlank { null }
 }
 
 private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, call: () -> JSONObject) {
@@ -458,7 +509,8 @@ private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, 
             store.theme = user.optString("theme", store.theme)
         }
         val homes = withContext(Dispatchers.IO) { api.households() }
-        store.householdId = homes.getJSONArray("households").getJSONObject(0).getString("id")
+        val list = homes.optJSONArray("households")
+        store.householdId = if (list == null || list.length() == 0) null else list.getJSONObject(0).optString("id").ifBlank { null }
         done(null)
     } catch (caught: Exception) {
         done(caught.message ?: "Could not sign in.")
@@ -467,11 +519,12 @@ private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, 
 
 
 @Composable
-private fun PlanTab(dash: JSONObject?, privacy: Boolean, onAssign: (String, Long) -> Unit, onMove: (String, String, Long) -> Unit) {
+private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssign: (String, Long) -> Unit, onMove: (String, String, Long) -> Unit) {
     if (dash == null) { Text("Loading the plan…"); return }
     val buckets = dash.getJSONArray("buckets")
     val rows = dash.getJSONObject("budget").getJSONArray("buckets")
     Text("Available is cash already assigned. Expected pay is not included, and a move does not create a bank transaction.")
+    if (!writes) Text("This role can view the plan. It cannot assign or move money.")
     var fromId by remember { mutableStateOf("") }
     var toId by remember { mutableStateOf("") }
     var moveText by remember { mutableStateOf("") }
@@ -485,15 +538,18 @@ private fun PlanTab(dash: JSONObject?, privacy: Boolean, onAssign: (String, Long
         val bucketId = row.optString("bucketId")
         var text by remember(bucketId) { mutableStateOf((row.optLong("assignedMinor") / 100.0).let { if (it == 0.0) "" else money(row.optLong("assignedMinor"), false).removePrefix("$") }) }
         Text("${row.optString("name")} available ${money(row.optLong("availableMinor"), privacy)} · ${meta?.optString("flexRole") ?: "category"}")
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(text, { text = it }, label = { Text("Assigned") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
-            Button(onClick = { onAssign(bucketId, parseDollars(text)) }) { Text("Save") }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { fromId = bucketId }) { Text(if (fromId == bucketId) "From this" else "From") }
-            TextButton(onClick = { toId = bucketId }) { Text(if (toId == bucketId) "To this" else "To") }
+        if (writes) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(text, { text = it }, label = { Text("Assigned") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+                Button(onClick = { onAssign(bucketId, parseDollars(text)) }) { Text("Save") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { fromId = bucketId }) { Text(if (fromId == bucketId) "From this" else "From") }
+                TextButton(onClick = { toId = bucketId }) { Text(if (toId == bucketId) "To this" else "To") }
+            }
         }
     }
+    if (!writes) return
     OutlinedTextField(moveText, { moveText = it }, label = { Text("Amount to move") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
     Button(onClick = {
         val amount = runCatching { parseDollars(moveText) }.getOrDefault(0)
@@ -511,6 +567,7 @@ private fun ActivityTab(
     txns: JSONObject?,
     dash: JSONObject?,
     privacy: Boolean,
+    writes: Boolean,
     filtered: Boolean,
     filterLabel: String,
     onShowRegister: () -> Unit,
@@ -533,6 +590,8 @@ private fun ActivityTab(
     activity.onFile = { receipt = it }
     val accounts = dash?.optJSONArray("accounts") ?: JSONArray()
     val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
+    if (!writes) Text("This role can view activity. It cannot add, edit, duplicate, or match transactions.")
+    if (writes) {
     Text("New transaction", style = MaterialTheme.typography.titleMedium)
     Text("Choose the account. A new expense is not charged to the first account.")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -604,6 +663,7 @@ private fun ActivityTab(
         }) { Text("Save") }
     }
     Text("The photo is stored after you save. Open Receipts to read it. Saving here does not change the amount.")
+    }
     val rows = txns?.optJSONArray("transactions")
     var selected by remember { mutableStateOf("") }
     var matchId by remember { mutableStateOf("") }
@@ -621,9 +681,9 @@ private fun ActivityTab(
         TextButton(onClick = { selected = if (selected == id) "" else id }, modifier = Modifier.fillMaxWidth()) {
             Text("${row.optString("date")}  ${row.optString("payee")}  ${money(row.optLong("amountMinor"), privacy)}  ${row.optString("reviewStatus").replace('_', ' ')}")
         }
-        if (selected == id) {
+        if (selected == id && writes) {
             TransactionEditor(row, accounts, buckets, onMessage) { patch -> onUpdate(id, patch) }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (writes) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = { onDuplicate(id) }) { Text("Duplicate") }
                 TextButton(onClick = { matchId = if (matchId == id) "" else id }) { Text(if (matchId == id) "Selected to match" else "Match") }
                 if (matchId.isNotBlank() && matchId != id) TextButton(onClick = { onMatch(matchId, id); matchId = "" }) { Text("Match with selected") }

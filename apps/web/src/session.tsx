@@ -1,3 +1,4 @@
+import { allows } from "@budgetcents/domain/access";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import type { HouseholdRow, User } from "./types.js";
@@ -13,7 +14,7 @@ interface SessionValue {
   offline: boolean;
   queued: number;
   syncError: string;
-  refresh: () => Promise<void>;
+  refresh: (preferHouseholdId?: string) => Promise<void>;
   bump: () => void;
   chooseHousehold: (id: string) => void;
   chooseSpace: (id: string) => void;
@@ -58,7 +59,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const sessionGen = useRef(0);
   userIdRef.current = user?.id ?? null;
 
-  async function refresh() {
+  async function refresh(preferHouseholdId?: string) {
     const data = await api<{ user: User; households: HouseholdRow[] }>("/api/me");
     setUser(data.user);
     setHouseholds(data.households);
@@ -68,14 +69,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setQueued(queuedCount());
     setSyncError(flushed.rejected);
     if (flushed.sent) setTick((item) => item + 1);
+    if (preferHouseholdId) localStorage.setItem("budgetcents.household", preferHouseholdId);
     const stored = localStorage.getItem("budgetcents.household");
     const next = data.households.find((item) => item.id === stored)?.id ?? data.households[0]?.id ?? "";
-    setHouseholdId(next);
-    const storedSpace = next ? localStorage.getItem(`budgetcents.space.${next}`) ?? undefined : undefined;
-    if (next) {
-      localStorage.setItem("budgetcents.household", next);
-      setSpaceId(storedSpace);
+    if (!next) {
+      localStorage.removeItem("budgetcents.household");
+      localStorage.removeItem(PROFILE);
+      setHouseholdId("");
+      setSpaceId(undefined);
+      return;
     }
+    setHouseholdId(next);
+    const storedSpace = localStorage.getItem(`budgetcents.space.${next}`) ?? undefined;
+    localStorage.setItem("budgetcents.household", next);
+    setSpaceId(storedSpace);
     writeProfile(data.user, data.households, next, storedSpace);
     api("/api/devices", { method: "POST", body: JSON.stringify({ name: "Web browser", platform: "web" }) }).catch(() => undefined);
   }
@@ -93,17 +100,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("budgetcents.token");
-    if (!token) {
-      setReady(true);
-      return;
-    }
-    refresh().catch((error: unknown) => {
-      const denied = error instanceof ApiError && error.status === 401;
-      if (!denied && error instanceof ApiError && restoreProfile()) return;
-      localStorage.removeItem("budgetcents.token");
-      localStorage.removeItem(PROFILE);
-    }).finally(() => setReady(true));
     const onAuth = () => { setUser(null); setHouseholdId(""); setQueueOwner(null); };
     const onOff = () => setOffline(true);
     const onOn = () => {
@@ -115,12 +111,31 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       });
     };
     const onQueue = () => setQueued(queuedCount());
+    let accessAt = 0;
+    const onAccess = () => {
+      const now = Date.now();
+      if (now - accessAt < 1000) return;
+      accessAt = now;
+      refresh().catch(() => undefined);
+    };
     window.addEventListener("budgetcents-unauthorized", onAuth);
+    window.addEventListener("budgetcents-access", onAccess);
     window.addEventListener("offline", onOff);
     window.addEventListener("online", onOn);
     window.addEventListener("budgetcents-queue", onQueue);
+    const token = localStorage.getItem("budgetcents.token");
+    if (!token) setReady(true);
+    else {
+      refresh().catch((error: unknown) => {
+        const denied = error instanceof ApiError && error.status === 401;
+        if (!denied && error instanceof ApiError && restoreProfile()) return;
+        localStorage.removeItem("budgetcents.token");
+        localStorage.removeItem(PROFILE);
+      }).finally(() => setReady(true));
+    }
     return () => {
       window.removeEventListener("budgetcents-unauthorized", onAuth);
+      window.removeEventListener("budgetcents-access", onAccess);
       window.removeEventListener("offline", onOff);
       window.removeEventListener("online", onOn);
       window.removeEventListener("budgetcents-queue", onQueue);
@@ -166,8 +181,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 
-const READ_ONLY_ROLES = new Set(["readonly", "coach", "planner", "accountant"]);
-
 export function useSession() {
   const value = useContext(SessionContext);
   if (!value) throw new Error("Session missing");
@@ -179,9 +192,13 @@ export function useAccess() {
   const role = session.households.find((item) => item.id === session.householdId)?.role ?? "";
   return {
     role,
-    readOnly: READ_ONLY_ROLES.has(role),
-    canWrite: !READ_ONLY_ROLES.has(role),
-    canBudget: role !== "contributor" && !READ_ONLY_ROLES.has(role),
+    readOnly: role !== "" && !allows(role, "finance"),
+    canWrite: allows(role, "finance"),
+    canBudget: allows(role, "plan"),
+    canComment: allows(role, "comment"),
+    canReview: allows(role, "review"),
+    canInvite: allows(role, "invite"),
+    canTransfer: allows(role, "transfer"),
   };
 }
 

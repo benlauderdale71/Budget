@@ -17,7 +17,7 @@ import {
 import { ApiError, api } from "../api.js";
 import { DASHBOARD_UNDO_STORAGE, readUndoStacks, withUndoStack, writeUndoStacks, type UndoStacks } from "../dashboard-undo.js";
 import { monthLabel } from "../format.js";
-import { scoped, useSession } from "../session.js";
+import { scoped, useAccess, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
 import { ErrorNote, Loading, Modal, Money, useLoad } from "../ui.js";
 
@@ -37,6 +37,7 @@ function copyCards(cards: readonly DashboardCardPreference[]): DashboardCardPref
 
 export function Home() {
   const session = useSession();
+  const access = useAccess();
   const deviceClass = useDeviceClass();
   const columns = deviceClass === "web-compact" ? 1 : 4;
   const layout = readDashboardLayout(session.user?.dashboardLayout);
@@ -177,7 +178,7 @@ export function Home() {
           ) : null}
           <button id="dashboard-customize" type="button" className="btn-secondary" onClick={() => setCustomizing(true)}>Customize dashboard</button>
           <button id="dashboard-undo-page" type="button" className="btn-secondary" aria-disabled={past.length === 0 || saving} onClick={() => undo("page")}>Undo</button>
-          <Link className="btn" to="/activity">Add transaction</Link>
+          {access.canWrite ? <Link className="btn" to="/activity">Add transaction</Link> : <Link className="btn-secondary" to="/activity">View activity</Link>}
         </div>
       </header>
       {customizing ? null : <LayoutStatus status={status} failed={failed} retry={retry} onRetry={() => { if (retry) void persist(retry.cards, retry.message, retry.mode, retry.focusId); }} />}

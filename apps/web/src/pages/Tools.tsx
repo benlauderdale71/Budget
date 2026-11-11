@@ -310,52 +310,7 @@ export function Rules() {
   );
 }
 
-export function Household() {
-  const session = useSession();
-  const state = useLoad(() => api<{ members: { id: string; displayName: string; role: string; you: boolean }[]; invitations: { id: string; email: string; role: string }[] }>(scoped(session.householdId, "/members")), [session.householdId, session.tick]);
-  const form = useFormError();
-  const [token, setToken] = useState("");
-  if (!state.data) return <Loading />;
-  return (
-    <Page title="Sharing" lede="Owners and admins invite people. A private account stays hidden from everyone else, including an admin. The household can hold 12 people.">
-      <ul>{state.data.members.map((member) => <li key={member.id}>{member.displayName} · {member.role}{member.you ? " · you" : ""}</li>)}</ul>
-      <ul>{state.data.invitations.map((invite) => <li key={invite.id}>{invite.email} · {invite.role} · pending</li>)}</ul>
-      <form className="card" onSubmit={(event) => form.run(event, async () => {
-        const data = new FormData(event.currentTarget);
-        const result = await api<{ token: string; summary: string }>(scoped(session.householdId, "/invitations"), { method: "POST", body: JSON.stringify({ email: data.get("email"), role: data.get("role") }) });
-        setToken(`${window.location.origin}/invite/${result.token} — ${result.summary}`);
-        session.bump();
-      })}>
-        <Field label="Email"><input name="email" type="email" required /></Field>
-        <Field label="Role"><select name="role"><option value="editor">Editor</option><option value="contributor">Contributor</option><option value="readonly">Read only</option><option value="admin">Admin</option><option value="coach">Coach</option><option value="planner">Planner</option><option value="accountant">Accountant</option></select></Field>
-        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-        {token ? <Notice>{token}</Notice> : null}
-        <button className="btn" type="submit">Create invitation</button>
-      </form>
-      <SpaceForm />
-    </Page>
-  );
-}
-
-function SpaceForm() {
-  const session = useSession();
-  const form = useFormError();
-  return (
-    <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
-      const data = new FormData(event.currentTarget);
-      await api(scoped(session.householdId, "/spaces"), { method: "POST", body: JSON.stringify({ name: data.get("name"), kind: data.get("kind"), businessType: data.get("businessType") || undefined }) });
-      session.bump();
-    })}>
-      <h2>Space</h2>
-      <p className="muted">A personal space is visible only to you. A business space keeps its own plan and still rolls into household net worth.</p>
-      <Field label="Name"><input name="name" required /></Field>
-      <Field label="Kind"><select name="kind"><option value="personal">Personal</option><option value="business">Business</option></select></Field>
-      <Field label="Business type"><input name="businessType" /></Field>
-      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-      <button className="btn" type="submit">Add space</button>
-    </form>
-  );
-}
+export { Household } from "./Sharing.js";
 
 export function Providers() {
   const state = useLoad(() => api<{ providers: { id: string; name: string; group: string; status: string; needs: string; capabilities: string[] }[] }>("/api/providers"), []);

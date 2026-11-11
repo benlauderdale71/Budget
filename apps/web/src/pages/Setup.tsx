@@ -427,20 +427,21 @@ export function Setup() {
           const data = new FormData(event.currentTarget);
           setBusy(true);
           setError("");
-          api<{ token: string }>(scoped(session.householdId, "/invitations"), {
+          api<{ token: string; note?: string }>(scoped(session.householdId, "/invitations"), {
             method: "POST",
-            body: JSON.stringify({ email: String(data.get("email") ?? ""), role: "editor" }),
+            body: JSON.stringify({ email: String(data.get("email") ?? ""), role: String(data.get("role") ?? "editor") }),
           }).then(async (result) => {
-            setStatus(`Invitation link: ${window.location.origin}/invite/${result.token}`);
+            setStatus(`${result.note ?? "Invitation link created."} ${window.location.origin}/invite/${result.token}`);
             await save({ complete: "invite" });
           }).catch((caught: unknown) => {
             setError(caught instanceof Error ? caught.message : "The invitation was not created.");
           }).finally(() => setBusy(false));
         }}>
           <h2>Household invitations</h2>
-          {setup.emailVerified ? <p>The invited person joins only if they sign in with this email.</p> : <p>Verify your email before inviting someone.</p>}
+          {setup.emailVerified ? <p>The invited person joins only if they sign in with this email. Creating a link does not send email.</p> : <p>Verify your email before inviting someone.</p>}
           <Field label="Invitation email"><input name="email" type="email" required /></Field>
-          <button className="btn" type="submit" disabled={busy}>Send invitation</button>
+          <Field label="Role"><select name="role" defaultValue="editor"><option value="editor">Editor</option><option value="contributor">Contributor</option><option value="readonly">Read-only</option><option value="admin">Admin</option><option value="coach">Coach</option><option value="planner">Planner</option><option value="accountant">Accountant</option></select></Field>
+          <button className="btn" type="submit" disabled={busy}>Create invitation link</button>
           <button type="button" className="btn-quiet" disabled={busy} onClick={() => void save({ skip: "invite", step: "review" }, "Household invitations skipped.")}>Skip this step</button>
         </form>
       ) : null}

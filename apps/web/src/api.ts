@@ -117,7 +117,12 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
     window.dispatchEvent(new Event("budgetcents-unauthorized"));
     throw new ApiError(401, data?.error ?? "Sign in again.");
   }
-  if (!response.ok) throw new ApiError(response.status, data?.error ?? "The request failed.");
+  if (!response.ok) {
+    if ((response.status === 403 || response.status === 404) && path.startsWith("/api/households/")) {
+      window.dispatchEvent(new Event("budgetcents-access"));
+    }
+    throw new ApiError(response.status, data?.error ?? "The request failed.");
+  }
   return data as T;
 }
 

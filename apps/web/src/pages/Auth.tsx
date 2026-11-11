@@ -1,16 +1,32 @@
 import { useState } from "react";
-import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import { peekReturnPath, rememberReturnPath } from "../return-path.js";
 import { useSession } from "../session.js";
 import { Field, Notice } from "../ui.js";
 
 export function Auth() {
   const session = useSession();
-  const [mode, setMode] = useState<"login" | "register" | "reset">("login");
+  const [params] = useSearchParams();
+  rememberReturnPath(params.get("next"));
+  const destination = peekReturnPath();
+  const [mode, setMode] = useState<"login" | "register" | "join" | "reset">(destination?.startsWith("/invite/") ? "join" : "login");
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [mfa, setMfa] = useState(false);
-  if (session.user && session.householdId) return <Navigate to={session.user.onboardingStep === "done" ? "/" : "/setup"} replace />;
+  if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
+  if (session.user && destination) return <Navigate to={destination} replace />;
+  if (session.user && session.householdId) return <Navigate to={session.user.onboardingStep && session.user.onboardingStep !== "done" ? "/setup" : "/"} replace />;
+  if (session.user && !session.householdId) {
+    return (
+      <main className="content legal">
+        <h1>No household yet</h1>
+        <p>You are signed in as {session.user.email}. Open the invitation you were sent, or sign out and create a household with a new account. Accepting an invitation is a separate step.</p>
+        <p><Link to="/dev/mail">Development mail</Link></p>
+        <button className="btn" type="button" onClick={() => void session.signOut()}>Use a different account</button>
+      </main>
+    );
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -23,12 +39,12 @@ export function Auth() {
         setNote(result.message ?? "If that email has an account, a reset message was created.");
         return;
       }
-      if (mode === "register") {
+      if (mode === "register" || mode === "join") {
         const result = await api<{ token: string }>("/api/auth/register", {
           method: "POST",
           body: JSON.stringify({
             email: data.get("email"), password: data.get("password"), displayName: data.get("displayName"),
-            householdName: data.get("householdName"), currency: data.get("currency") || "USD",
+            householdName: mode === "join" ? undefined : data.get("householdName"), currency: data.get("currency") || "USD",
           }),
         });
         localStorage.setItem("budgetcents.token", result.token);
@@ -64,22 +80,23 @@ export function Auth() {
         <div className="wordmark" style={{ marginBottom: 16 }}>Budget<i>Cents</i></div>
         <div className="chips" role="group" aria-label="Account">
           <button className="chip" aria-pressed={mode === "login"} onClick={() => setMode("login")}>Sign in</button>
+          <button className="chip" aria-pressed={mode === "join"} onClick={() => setMode("join")}>Join a household</button>
           <button className="chip" aria-pressed={mode === "register"} onClick={() => setMode("register")}>Create household</button>
           <button className="chip" aria-pressed={mode === "reset"} onClick={() => setMode("reset")}>Reset password</button>
         </div>
         <form onSubmit={submit} style={{ marginTop: 16 }}>
-          {mode === "register" ? <>
+          {mode === "register" || mode === "join" ? <>
             <Field label="Your name"><input name="displayName" required autoComplete="name" /></Field>
-            <Field label="Household name"><input name="householdName" required /></Field>
+            {mode === "register" ? <Field label="Household name"><input name="householdName" required /></Field> : <p className="muted">This account is only for joining an existing household. It does not create a new one.</p>}
             <Field label="Currency"><input name="currency" defaultValue="USD" maxLength={3} /></Field>
           </> : null}
           <Field label="Email"><input name="email" type="email" required autoComplete="username" /></Field>
-          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "register" ? 10 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} aria-describedby={mode === "register" ? "password-help" : undefined} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. In development, that message is in <Link to="/dev/mail">Development mail</Link>.</p>}
-          {mode === "register" ? <p id="password-help" className="muted">At least 10 characters. A password manager can fill or paste this.</p> : null}
+          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "login" ? 8 : 10} autoComplete={mode === "login" ? "current-password" : "new-password"} aria-describedby={mode === "register" || mode === "join" ? "password-help" : undefined} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. In development, that message is in <Link to="/dev/mail">Development mail</Link>.</p>}
+          {mode === "register" || mode === "join" ? <p id="password-help" className="muted">At least 10 characters. A password manager can fill or paste this.</p> : null}
           {mfa ? <Field label="Authentication code"><input name="code" inputMode="numeric" autoComplete="one-time-code" /></Field> : null}
           {error ? <Notice kind="bad">{error}</Notice> : null}
           {note ? <Notice>{note}</Notice> : null}
-          <button className="btn" type="submit">{mode === "register" ? "Create household" : mode === "reset" ? "Continue" : "Sign in"}</button>
+          <button className="btn" type="submit">{mode === "register" ? "Create household" : mode === "join" ? "Create account" : mode === "reset" ? "Continue" : "Sign in"}</button>
         </form>
         <form style={{ marginTop: 18 }} onSubmit={async (event) => {
           event.preventDefault();
@@ -96,28 +113,5 @@ export function Auth() {
         <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link> · <Link to="/dev/mail">Development mail</Link></p>
       </main>
     </div>
-  );
-}
-
-export function Invite() {
-  const { token } = useParams();
-  const session = useSession();
-  const navigate = useNavigate();
-  const [error, setError] = useState("");
-  if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
-  if (!session.user) return <Navigate to="/login" replace />;
-  return (
-    <main className="content">
-      <h1>Join household</h1>
-      <p className="lede">The invitation is accepted only when this account’s email matches the invitation.</p>
-      {error ? <Notice kind="bad">{error}</Notice> : null}
-      <button className="btn" onClick={async () => {
-        try {
-          await api(`/api/invitations/${token}/accept`, { method: "POST" });
-          await session.refresh();
-          navigate("/");
-        } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not accept."); }
-      }}>Accept invitation</button>
-    </main>
   );
 }

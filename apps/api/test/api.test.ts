@@ -119,11 +119,12 @@ describe("BudgetCents API", () => {
       method: "POST", headers: auth(token),
       body: JSON.stringify({ email: "guest@example.com", role: "editor" }),
     }));
-    expect(invite.body.summary).toMatch(/Private accounts stay hidden/);
+    expect(invite.body.summary).toMatch(/Private accounts stay hidden|Private accounts and personal spaces stay/);
     const guest = await json(await api.request("/api/auth/register", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "guest@example.com", password: "correct-horse", displayName: "Guest", householdName: "Guest own" }),
     }));
+    await markVerified("guest@example.com");
     const accepted = await json(await api.request(`/api/invitations/${invite.body.token}/accept`, { method: "POST", headers: auth(guest.body.token) }));
     expect(accepted.status).toBe(200);
     const guestDash = await json(await api.request(`/api/households/${hid}/dashboard?asOf=2026-11-20`, { headers: auth(guest.body.token) }));
@@ -253,6 +254,7 @@ describe("authorization, validation, and idempotency", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "admin-reset@example.com", password: "correct-horse", displayName: "Admin", householdName: "Admin home" }),
     }));
+    await markVerified("admin-reset@example.com");
     await api.request(`/api/invitations/${invite.body.token}/accept`, { method: "POST", headers: auth(admin.body.token) });
     const stolen = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
       method: "POST", headers: auth(admin.body.token),
@@ -267,6 +269,7 @@ describe("authorization, validation, and idempotency", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email: "editor-reset@example.com", password: "correct-horse", displayName: "Editor", householdName: "Editor home" }),
     }));
+    await markVerified("editor-reset@example.com");
     await api.request(`/api/invitations/${editorInvite.body.token}/accept`, { method: "POST", headers: auth(editor.body.token) });
     const memberReset = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
       method: "POST", headers: auth(editor.body.token),

@@ -29,6 +29,10 @@ function normalize(row: Record<string, unknown>): Record<string, unknown> {
 
 export async function migrate(db: Database): Promise<void> {
   await db.exec(schemaSql);
+  await db.exec(`ALTER TABLE households ADD COLUMN IF NOT EXISTS member_limit integer`);
+  await db.exec(`ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'shared'`);
+  await db.exec(`ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS owner_user_id text`);
+  await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS invitations_token_hash ON invitations (token_hash)`);
 }
 
 export async function openDatabase(databaseUrl = process.env.DATABASE_URL): Promise<Database> {

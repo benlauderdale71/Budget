@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import { peekReturnPath } from "../return-path.js";
 import { useSession } from "../session.js";
 import { Field, Notice } from "../ui.js";
 
@@ -21,8 +22,9 @@ export function VerifyEmail() {
         body: JSON.stringify({ token: token.trim() }),
       });
       if (session.user) await session.refresh();
-      const next = result.onboardingStep && result.onboardingStep !== "done" ? "Setup continues from the saved step." : "You can sign in and continue.";
-      setNote(`Email verified. ${next}`);
+      const next = peekReturnPath();
+      const follow = next ? "Return to the invitation when you are ready. It stays pending until you accept it." : result.onboardingStep && result.onboardingStep !== "done" ? "Setup continues from the saved step." : "You can sign in and continue.";
+      setNote(`Email verified. ${follow}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "That verification link did not work.");
     }
@@ -39,7 +41,7 @@ export function VerifyEmail() {
         {note ? <Notice>{note}</Notice> : null}
         <button className="btn" type="submit">Verify email</button>
       </form>
-      <p>{session.user ? <Link to="/setup">Continue setup</Link> : <Link to="/login">Sign in</Link>} · <Link to="/dev/mail">Development mail</Link></p>
+      <p>{peekReturnPath() ? <Link to={peekReturnPath()!}>Return to the invitation</Link> : session.user ? <Link to="/setup">Continue setup</Link> : <Link to="/login">Sign in</Link>} · <Link to="/dev/mail">Development mail</Link></p>
     </main>
   );
 }

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { useAccess, useSession } from "./session.js";
 import { DevMail, ResetPassword, VerifyEmail } from "./pages/AccountAccess.js";
-import { Auth, Invite } from "./pages/Auth.js";
+import { Auth } from "./pages/Auth.js";
+import { Invite } from "./pages/Invite.js";
 import { Setup } from "./pages/Setup.js";
 import { Home } from "./pages/Home.js";
 import { Plan } from "./pages/Plan.js";
@@ -107,7 +108,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </header>
         <main id="main" className="content" tabIndex={-1}>
           {household && Number(household.is_demo) === 1 ? <div className="banner demo">Sample household. The people, balances, and prices are fictional and stay separate from a household you create.</div> : null}
-          {access.readOnly ? <div className="banner" role="status">{ROLE_LABEL[access.role] ?? "Read-only"} access can view shared accounts and the plan. Private accounts stay with their owner. Saving, importing, and deleting stay with an owner, admin, editor, or contributor.</div> : null}
+          {access.readOnly ? <div className="banner" role="status">{ROLE_LABEL[access.role] ?? "Read-only"} access can view shared accounts and the plan. Private accounts stay with their owner. {access.canReview ? "You can comment and mark a shared transaction for review. That does not change the amount, category, or balance." : "You can comment on a shared transaction. A comment does not change the amount, category, or balance."} Saving, importing, and deleting stay with an owner, admin, editor, or contributor.</div> : null}
           {session.offline ? <div className="banner bad" role="status">This browser is offline. BudgetCents can open, but account totals are not kept on this device. A transaction saved while its account is on screen stays here until the connection returns. Other changes are not saved offline.{session.queued ? ` ${session.queued} waiting.` : ""}</div> : null}
           {session.syncError ? <div className="banner bad" role="alert">{session.syncError}</div> : null}
           {updateReady ? <div className="banner" role="status">A new version is ready. Unsent transactions stay on this device. <button className="btn-secondary" type="button" onClick={() => {

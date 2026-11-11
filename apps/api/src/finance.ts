@@ -91,11 +91,31 @@ export async function requireMember(db: Database, actorId: string, householdId: 
   };
 }
 
-export async function audit(db: Database, householdId: string | null, userId: string | null, action: string, summary: string, entity?: string, entityId?: string) {
+export async function audit(
+  db: Database,
+  householdId: string | null,
+  userId: string | null,
+  action: string,
+  summary: string,
+  entity?: string,
+  entityId?: string,
+  scope?: { visibility?: "shared" | "private"; ownerUserId?: string | null },
+) {
+  let visibility: "shared" | "private" = scope?.visibility === "private" ? "private" : "shared";
+  let ownerUserId: string | null = visibility === "private" ? scope?.ownerUserId ?? null : null;
+  if (visibility === "shared" && entityId && (entity === "account" || entity === "transaction")) {
+    const rows = entity === "account"
+      ? await db.query(`SELECT visibility, owner_user_id FROM accounts WHERE id = $1`, [entityId])
+      : await db.query(`SELECT a.visibility, a.owner_user_id FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.id = $1`, [entityId]);
+    if (String(rows[0]?.visibility) === "private") {
+      visibility = "private";
+      ownerUserId = rows[0]?.owner_user_id == null ? null : String(rows[0].owner_user_id);
+    }
+  }
   await db.query(
-    `INSERT INTO audit_events (id, household_id, user_id, action, entity, entity_id, summary, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [id(), householdId, userId, action, entity ?? null, entityId ?? null, summary, nowIso()],
+    `INSERT INTO audit_events (id, household_id, user_id, action, entity, entity_id, summary, visibility, owner_user_id, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id(), householdId, userId, action, entity ?? null, entityId ?? null, summary, visibility, ownerUserId, nowIso()],
   );
 }
 
@@ -248,18 +268,18 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
       currency: String(row.currency),
       type: String(row.type) as Transaction["type"],
       payee: primaryVisible ? String(row.payee) : "Private transfer",
-      originalDescription: str(row.original_description),
-      splits: splitsByTxn.get(String(row.id)) ?? [],
+      originalDescription: primaryVisible ? str(row.original_description) : undefined,
+      splits: (splitsByTxn.get(String(row.id)) ?? []).map((split) => primaryVisible ? split : { ...split, memo: undefined }),
       bankStatus: String(row.bank_status) as Transaction["bankStatus"],
       reviewStatus: String(row.review_status) as Transaction["reviewStatus"],
       cleared: num(row.cleared) === 1,
       reconciled: num(row.reconciled) === 1,
       locked: num(row.locked) === 1,
       categoryLockedByUser: num(row.category_locked) === 1,
-      tags: tagsByTxn.get(String(row.id)) ?? [],
-      flag: str(row.flag),
-      notes: str(row.notes),
-      checkNumber: str(row.check_number),
+      tags: primaryVisible ? tagsByTxn.get(String(row.id)) ?? [] : [],
+      flag: primaryVisible ? str(row.flag) : undefined,
+      notes: primaryVisible ? str(row.notes) : undefined,
+      checkNumber: primaryVisible ? str(row.check_number) : undefined,
       ownerUserId: str(row.owner_user_id),
       businessSpaceId: str(row.business_space_id),
       project: str(row.project),
@@ -306,22 +326,24 @@ export async function loadSpace(db: Database, actor: Actor, householdId: string,
     bucket.displayRolloverCapMinor = latest.rolloverCapMinor;
     bucket.rolloverEffectivePeriod = latest.effectivePeriod;
   }
+  const hiddenLinked = new Set(buckets.filter((bucket) => bucket.linkedAccountId && !visibleIds.has(bucket.linkedAccountId)).map((bucket) => bucket.id));
+  const visibleBuckets = buckets.filter((bucket) => !hiddenLinked.has(bucket.id));
   const assignments: Assignment[] = assignmentRows.map((row) => ({
     id: String(row.id),
     bucketId: String(row.bucket_id),
     periodKey: String(row.period_key),
     amountMinor: num(row.amount_minor),
-  }));
+  })).filter((row) => !hiddenLinked.has(row.bucketId));
   const today = asOf ?? localDate(member.timeZone);
   const input = {
     currency: member.currency,
     asOf: today,
     viewPeriod,
     accounts: [...engineAccounts, ...stubs.values()],
-    buckets,
+    buckets: visibleBuckets,
     transactions,
     assignments,
-    schedules: scheduleRows.map(mapSchedule),
+    schedules: scheduleRows.map(mapSchedule).filter((schedule) => !schedule.accountId || visibleIds.has(schedule.accountId)),
     planLines: planRows.map((row) => ({
       id: String(row.id),
       bucketId: String(row.bucket_id),
