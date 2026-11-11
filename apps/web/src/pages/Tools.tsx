@@ -11,7 +11,7 @@ const moreLinks = [
   ["/paychecks", "Paychecks", "Expected income that is not cash yet"],
   ["/calendar", "Calendar", "Paychecks, bills, and due dates"],
   ["/bills", "Bills", "Recurring bills and subscriptions"],
-  ["/debts", "Debts", "Snowball, avalanche, and a loan model"],
+  ["/debts", "Debts", "Saved extra-payment and refinance plans"],
   ["/goals", "Goals", "Envelopes with a target"],
   ["/reports", "Reports", "Spending, savings rate, exports"],
   ["/investments", "Investments", "Holdings and manual prices"],

@@ -30,7 +30,7 @@ A funded card purchase moves available money from the category into that card’
 
 ## Interest
 
-Monthly interest is `balance * APR / 12`, with the APR in basis points, rounded half away from zero using integers. Snowball orders the smallest balance first. Avalanche orders the highest APR first. A refinance comparison adds the fee to the new principal.
+Monthly interest is `balance * APR / 12`, with the APR in basis points, rounded half away from zero using integers, and charged once a month. That is a model, not a lender payoff quote. Snowball orders the smallest balance first. Avalanche orders the highest APR first. The monthly debt budget is the starting minimums plus any extra, and a paid-off minimum stays in that budget. A financed refinance fee is added to the new principal once. An upfront fee is part of the future cost and is not added to principal. If either side is not paid off within 100 years, the interest totals are not compared as lifetime savings.
 
 ## Age of money
 

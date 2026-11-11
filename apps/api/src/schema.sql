@@ -701,3 +701,50 @@ CREATE TABLE IF NOT EXISTS schedule_details (
   reserved integer NOT NULL DEFAULT 0,
   archived integer NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS loan_scenarios (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  space_id text NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  account_id text NOT NULL,
+  name text NOT NULL,
+  kind text NOT NULL,
+  balance_minor bigint NOT NULL,
+  balance_date text NOT NULL,
+  apr_bps integer NOT NULL,
+  payment_minor bigint NOT NULL,
+  extra_minor bigint NOT NULL DEFAULT 0,
+  start_date text NOT NULL,
+  frequency text NOT NULL DEFAULT 'monthly',
+  interest_method text NOT NULL DEFAULT 'monthly_nominal',
+  refinance_json text,
+  archived integer NOT NULL DEFAULT 0,
+  version integer NOT NULL DEFAULT 1,
+  created_by text,
+  created_at text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS loan_scenarios_household_idx ON loan_scenarios (household_id, archived);
+
+CREATE TABLE IF NOT EXISTS loan_scenario_events (
+  id text PRIMARY KEY,
+  scenario_id text NOT NULL REFERENCES loan_scenarios(id) ON DELETE CASCADE,
+  month_index integer NOT NULL,
+  extra_one_time_minor bigint,
+  apr_bps integer,
+  payment_minor bigint,
+  holiday integer NOT NULL DEFAULT 0,
+  label text
+);
+
+CREATE TABLE IF NOT EXISTS loan_scenario_audit (
+  id text PRIMARY KEY,
+  scenario_id text NOT NULL,
+  household_id text NOT NULL,
+  actor_id text,
+  action text NOT NULL,
+  detail text,
+  version integer NOT NULL,
+  created_at text NOT NULL
+);

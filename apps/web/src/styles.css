@@ -181,6 +181,8 @@ td.num, th.num { text-align: right; }
 .calendar-day { border: 1px solid var(--line); border-radius: 10px; min-height: 92px; padding: 6px; background: var(--surface); }
 .calendar-day button { display: block; width: 100%; text-align: left; background: transparent; border: 0; padding: 2px 0; color: inherit; }
 .chart { width: 100%; height: auto; color: var(--teal); }
+.loan-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 12px 0; }
+.table-scroll { overflow: auto; max-height: 420px; border: 1px solid var(--line); border-radius: 12px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
 @media (max-width: 980px) {
@@ -195,6 +197,13 @@ td.num, th.num { text-align: right; }
   .content, .topbar { padding-inline: 16px; }
   .split-row { grid-template-columns: 1fr; }
   .calendar-grid { display: none; }
+  .loan-grid { grid-template-columns: 1fr; }
+  .schedule-table, .schedule-table tbody, .schedule-table tr { display: block; }
+  .schedule-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .schedule-table tr { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .schedule-table td { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; text-align: right; }
+  .schedule-table td::before { content: attr(data-label); color: var(--muted); font-weight: 600; text-align: left; }
+  .table-scroll { overflow: visible; max-height: none; border: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }

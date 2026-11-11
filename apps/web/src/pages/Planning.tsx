@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api.js";
 import { minorToInput, parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
+import { LoanPlans } from "./LoanPlans.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, Spark, useFormError, useLoad } from "../ui.js";
 
 export function Forecast() {
@@ -162,11 +163,10 @@ export function Debts() {
   const session = useSession();
   const [strategy, setStrategy] = useState("snowball");
   const state = useLoad(() => api<{ debts: { id: string; name: string; balanceMinor: number; aprBps: number; minPaymentMinor: number }[]; plan: { months: number | null; totalInterestMinor: number; debtFreeDate: string | null; order: string[]; assumptions: string[] } | null; assumptions?: string[] }>(scoped(session.householdId, `/debts?strategy=${strategy}`, session.spaceId)), [session.householdId, session.spaceId, session.tick, strategy]);
-  const form = useFormError();
   if (state.loading && !state.data) return <Loading />;
   if (!state.data) return <ErrorNote message={state.error ?? "No debts"} />;
   return (
-    <Page title="Debts" lede="Snowball clears the smallest balance first. Avalanche clears the highest APR first. Minimums continue on the rest." actions={<div className="chips"><button className="chip" aria-pressed={strategy === "snowball"} onClick={() => setStrategy("snowball")}>Snowball</button><button className="chip" aria-pressed={strategy === "avalanche"} onClick={() => setStrategy("avalanche")}>Avalanche</button></div>}>
+    <Page title="Debts" lede="Snowball clears the smallest balance first. Avalanche clears the highest APR first. A paid-off minimum stays in the monthly budget. Saving a loan plan does not move money." actions={<div className="chips"><button className="chip" aria-pressed={strategy === "snowball"} onClick={() => setStrategy("snowball")}>Snowball</button><button className="chip" aria-pressed={strategy === "avalanche"} onClick={() => setStrategy("avalanche")}>Avalanche</button></div>}>
       {!state.data.debts.length ? <p>{state.data.assumptions?.[0]}</p> : (
         <table className="card"><thead><tr><th>Debt</th><th className="num">Balance</th><th className="num">APR</th><th className="num">Minimum</th></tr></thead>
           <tbody>{state.data.debts.map((debt) => <tr key={debt.id}><td>{debt.name}</td><td className="num"><Money minor={debt.balanceMinor} /></td><td className="num">{(debt.aprBps / 100).toFixed(2)}%</td><td className="num"><Money minor={debt.minPaymentMinor} /></td></tr>)}</tbody>
@@ -174,26 +174,7 @@ export function Debts() {
       )}
       {state.data.plan ? <p>Order: {state.data.plan.order.map((id) => state.data?.debts.find((debt) => debt.id === id)?.name ?? "Debt").join(", ") || "balances"}. Interest <Money minor={state.data.plan.totalInterestMinor} />. {state.data.plan.debtFreeDate ? `Clear around ${state.data.plan.debtFreeDate}.` : "No payoff date with these payments."}</p> : null}
       <ul>{state.data.plan?.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
-      <form className="card" onSubmit={(event) => form.run(event, async () => {
-        const data = new FormData(event.currentTarget);
-        const result = await api<{ schedule: { months: { interestMinor: number; principalMinor: number; balanceMinor: number }[]; totalInterestMinor: number }; refinance: { interestSavedMinor: number; assumptions: string[] } | null }>(scoped(session.householdId, "/loans/amortize"), { method: "POST", body: JSON.stringify({
-          balanceMinor: parseAmount(String(data.get("balance")), session.currency), aprBps: Math.round(Number(data.get("apr")) * 100),
-          minPaymentMinor: parseAmount(String(data.get("payment")), session.currency), startDate: todayISO(),
-          refinance: data.get("newApr") ? { newAprBps: Math.round(Number(data.get("newApr")) * 100), newPaymentMinor: parseAmount(String(data.get("newPayment") || data.get("payment")), session.currency), feeMinor: parseAmount(String(data.get("fee") || "0"), session.currency) } : undefined,
-        }) });
-        const first = result.schedule.months[0];
-        alert(`First month interest ${first?.interestMinor ?? 0}, principal ${first?.principalMinor ?? 0}, in minor units. Total interest ${result.schedule.totalInterestMinor}. ${result.refinance ? `Interest difference ${result.refinance.interestSavedMinor}. ${result.refinance.assumptions[0]}` : ""}`);
-      })}>
-        <h2>Amortize one loan</h2>
-        <Field label="Balance"><input name="balance" required inputMode="decimal" /></Field>
-        <Field label="APR percent"><input name="apr" required inputMode="decimal" /></Field>
-        <Field label="Payment"><input name="payment" required inputMode="decimal" /></Field>
-        <Field label="Refinance APR"><input name="newApr" inputMode="decimal" /></Field>
-        <Field label="Refinance payment"><input name="newPayment" inputMode="decimal" /></Field>
-        <Field label="Fee added to principal"><input name="fee" inputMode="decimal" /></Field>
-        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-        <button className="btn" type="submit">Calculate</button>
-      </form>
+      <LoanPlans />
     </Page>
   );
 }

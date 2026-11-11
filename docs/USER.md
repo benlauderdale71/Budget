@@ -24,7 +24,7 @@ Attach a JPEG, PNG, or PDF receipt if you want the file kept with the transactio
 
 Forecast shows cash you already have. A second line can include expected income and is labeled that way. A what-if copies the forecast and does not post.
 
-Debts can be ordered smallest-balance-first or highest-APR-first. The loan calculator is a model, not a lender quote.
+Debts can be ordered smallest-balance-first or highest-APR-first. A paid-off minimum stays in the monthly debt budget. Debts can also save an extra-payment plan or a refinance comparison. Saving or calculating that plan does not change the loan or Ready to Assign. A payment you record is a separate step. The schedule is a monthly model, not a lender quote. A lower payment is not savings when the longer loan costs more.
 
 Goals point at one envelope. The available amount is the progress, so it is not also free to spend.
 

@@ -7,6 +7,7 @@ import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { createBill, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
+import { mountLoans } from "./loans.js";
 import { planRestore } from "./restore.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, totp, verifyPassword, verifyTotp } from "./crypto.js";
 import type { Database } from "./db.js";
@@ -1099,7 +1100,7 @@ export function createApp(db: Database) {
 
   app.get("/api/households/:hid/debts", async (c) => {
     const me = await actor(c);
-    const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined);
+    const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
     const strategy = (c.req.query("strategy") ?? "snowball") as "snowball" | "avalanche" | "custom";
     return c.json(debtPlan(loaded, strategy, Number(c.req.query("extra") ?? 0)));
   });
@@ -2033,6 +2034,12 @@ export function createApp(db: Database) {
       }),
   });
   mountIncome(app, db, incomeHooks());
+  mountLoans(app, db, {
+    actor,
+    assertSpace,
+    mustAccount,
+    insertPayment: (user, householdId, input) => insertTransaction(user, householdId, input),
+  });
 
   return app;
 }

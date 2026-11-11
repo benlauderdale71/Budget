@@ -68,7 +68,20 @@ export function validateTransaction(txn: Transaction, accounts: Account[], curre
   }
   const magnitude = Math.abs(txn.amountMinor);
   const structural = new Set(["transfer", "cc_payment", "opening", "reconciliation", "loan_proceeds", "buy", "sell", "dividend"]);
-  if (txn.splits.length > 0 && structural.has(txn.type)) {
+  if (txn.type === "loan_payment" && isLiability(account) && !isOnBudgetCash(account)) {
+    if (txn.amountMinor < 0) {
+      throw new BudgetError("A principal reduction on the loan is a positive amount, which lowers the balance owed.");
+    }
+    if (txn.splits.length) {
+      const sum = txn.splits.reduce((sum, split) => sum + split.amountMinor, 0);
+      if (sum !== txn.amountMinor) {
+        throw new BudgetError(`Principal reduction splits sum to ${sum} but the amount is ${txn.amountMinor}`);
+      }
+      if (txn.splits.some((split) => split.role !== "principal")) {
+        throw new BudgetError("Interest and fees belong on the cash payment, not on the principal reduction.");
+      }
+    }
+  } else if (txn.splits.length > 0 && structural.has(txn.type)) {
     const sum = txn.splits.reduce((s, split) => s + split.amountMinor, 0);
     if (sum !== magnitude) {
       throw new BudgetError(`Splits for ${txn.id} sum to ${sum} but the transaction magnitude is ${magnitude}`);
@@ -299,6 +312,10 @@ function applyTransaction(
   }
 
   if (txn.type === "loan_payment") {
+    if (isLiability(primary) && !isOnBudgetCash(primary)) {
+      // The cash payment already claimed the money. This row only reduces the amount owed.
+      return;
+    }
     for (const split of splitsOrDefault(txn)) {
       if (split.role === "principal" || split.role === "transfer") {
         state.transfers += split.amountMinor;
@@ -488,6 +505,7 @@ export function computeBudget(input: EngineInput): BudgetResult {
       for (const txn of txns) {
         if (txn.currency !== input.currency || txn.excludeFromReports) continue;
         const account = input.accounts.find((a) => a.id === txn.accountId);
+        if (txn.type === "loan_payment" && account && isLiability(account) && !isOnBudgetCash(account)) continue;
         const inPlan = !!account && (isOnBudgetCash(account) || (isCredit(account) && account.onBudget) || txn.type === "loan_payment");
         const mag = Math.abs(txn.amountMinor);
         if (!inPlan) continue;

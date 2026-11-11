@@ -76,6 +76,8 @@ fun BudgetApp(activity: MainActivity, start: String) {
     var status by remember { mutableStateOf("") }
     var dash by remember { mutableStateOf<JSONObject?>(null) }
     var txns by remember { mutableStateOf<JSONObject?>(null) }
+    var activityIds by remember { mutableStateOf<String?>(null) }
+    var activityLabel by remember { mutableStateOf("") }
     var themeName by remember { mutableStateOf(store.theme) }
     val dark = when (themeName) {
         "dark" -> true
@@ -92,7 +94,14 @@ fun BudgetApp(activity: MainActivity, start: String) {
             try {
                 val flush = flushQueue(api, store)
                 val loaded = withContext(Dispatchers.IO) { api.dashboard(hid) }
-                val activityRows = withContext(Dispatchers.IO) { api.transactions(hid) }
+                val activityRows = withContext(Dispatchers.IO) {
+                    val ids = activityIds
+                    if (ids.isNullOrBlank()) api.transactions(hid)
+                    else {
+                        val encoded = java.net.URLEncoder.encode(ids, "UTF-8")
+                        api.request("GET", "/api/households/$hid/transactions?ids=$encoded&limit=200")
+                    }
+                }
                 dash = loaded
                 txns = activityRows
                 val guidance = loaded.getJSONObject("guidance")
@@ -168,10 +177,16 @@ fun BudgetApp(activity: MainActivity, start: String) {
                     }
                     if (page != null) {
                         FeatureScreen(page!!, api, store, dash, store.privacy, { page = null }, { reload() }, { error = it }, { error = ""; status = it }, {
-                            store.clearSession(); token = null; dash = null; txns = null; page = null
-                        }) { name ->
+                            store.clearSession(); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
+                        }, { name ->
                             themeName = name
                             store.theme = name
+                        }) { ids, label ->
+                            activityIds = ids
+                            activityLabel = label
+                            page = null
+                            tab = 2
+                            reload()
                         }
                     } else when (tab) {
                         0 -> HomeTab(dash, store.privacy)
@@ -197,7 +212,11 @@ fun BudgetApp(activity: MainActivity, start: String) {
                                 }.onSuccess { status = "Moved. No bank transaction was created."; reload() }.onFailure { error = it.message ?: "Could not move money." }
                             }
                         }
-                        2 -> ActivityTab(txns, dash, store.privacy, activity, { message -> error = message }, { body, receipt ->
+                        2 -> ActivityTab(txns, dash, store.privacy, activityIds != null, activityLabel, {
+                            activityIds = null
+                            activityLabel = ""
+                            reload()
+                        }, activity, { message -> error = message }, { body, receipt ->
                             scope.launch {
                                 try {
                                     if (!body.has("opId")) body.put("opId", UUID.randomUUID().toString())
@@ -252,7 +271,7 @@ fun BudgetApp(activity: MainActivity, start: String) {
                                     .onFailure { error = it.message ?: "Theme saved on this phone. The account was not updated." }
                             }
                         }, { page = it }, { reload() }) {
-                            store.clearSession(); token = null; dash = null; txns = null; page = null
+                            store.clearSession(); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
                         }
                     }
                 }
@@ -376,6 +395,9 @@ private fun ActivityTab(
     txns: JSONObject?,
     dash: JSONObject?,
     privacy: Boolean,
+    filtered: Boolean,
+    filterLabel: String,
+    onShowRegister: () -> Unit,
     activity: MainActivity,
     onMessage: (String) -> Unit,
     onSave: (JSONObject, ByteArray?) -> Unit,
@@ -470,9 +492,13 @@ private fun ActivityTab(
     var selected by remember { mutableStateOf("") }
     var matchId by remember { mutableStateOf("") }
     Text("Activity", style = MaterialTheme.typography.titleMedium)
+    if (filtered) {
+        Text("Showing $filterLabel from the report. Other register rows are hidden.")
+        TextButton(onClick = onShowRegister) { Text("Show the whole register") }
+    }
     if (txns != null) Text("Showing ${rows?.length() ?: 0} of ${txns.optInt("total")}.")
     if (rows == null) Text("Loading activity…")
-    else if (rows.length() == 0) Text("No transactions yet.")
+    else if (rows.length() == 0) Text(if (filtered) "No transactions in that report row." else "No transactions yet.")
     else for (index in 0 until rows.length()) {
         val row = rows.getJSONObject(index)
         val id = row.optString("id")
