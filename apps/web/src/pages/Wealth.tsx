@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, downloadFile } from "../api.js";
-import { parseAmount, todayISO } from "../format.js";
+import { parseAmount } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, SankeyChart, useFormError, useLoad } from "../ui.js";
@@ -29,22 +29,40 @@ export function Wealth() {
 
 export function Investments() {
   const session = useSession();
-  const state = useLoad(() => api<{ positions: { holdingId: string; symbol: string; marketValueMinor: number | null; quoteSource: string; missing: string[] }[]; allocation: { key: string; weightBps: number; valueMinor: number }[]; note: string }>(scoped(session.householdId, "/investments")), [session.householdId, session.tick]);
+  const state = useLoad(() => api<{ positions: { holdingId: string; symbol: string; name: string; quantity: string; assetClass: string; currency: string; marketValueMinor: number | null; costBasisMinor: number | null; unrealizedMinor: number | null; quoteSource: string; quoteAsOf: string | null; missing: string[] }[]; allocation: { key: string; weightBps: number; valueMinor: number }[]; coverage: { holdingCount: number; pricedCount: number; complete: boolean }; note: string }>(scoped(session.householdId, "/investments")), [session.householdId, session.tick]);
   const accounts = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const form = useFormError();
   const fees = useFormError();
-  const [feeNote, setFeeNote] = useState("");
+  const drift = useFormError();
+  const returns = useFormError();
+  const [feeNote, setFeeNote] = useState<{ cost: number; assumptions: string[] } | null>(null);
+  const [driftNote, setDriftNote] = useState("");
+  const [returnNote, setReturnNote] = useState("");
   if (!state.data) return state.loading ? <Loading /> : <ErrorNote message={state.error ?? "No investments"} />;
   return (
     <Page title="Investments" lede={state.data.note}>
-      <ul className="list">{state.data.positions.map((position) => <li key={position.holdingId}><span>{position.symbol} · {position.quoteSource}{position.missing[0] ? ` · ${position.missing[0]}` : ""}</span><span>{position.marketValueMinor == null ? "No price" : <Money minor={position.marketValueMinor} />}</span></li>)}</ul>
-      <ul>{state.data.allocation.map((slice) => <li key={slice.key}>{slice.key}: {(slice.weightBps / 100).toFixed(1)}%</li>)}</ul>
+      <p>{state.data.coverage.pricedCount} of {state.data.coverage.holdingCount} visible holdings have a price. {state.data.coverage.complete ? "The allocation covers the whole visible portfolio." : "The allocation covers only the priced holdings."}</p>
+      <div className="table-scroll">
+        <table>
+          <thead><tr><th>Holding</th><th>Quantity</th><th>Price</th><th className="num">Value</th><th className="num">Gain</th></tr></thead>
+          <tbody>{state.data.positions.map((position) => (
+            <tr key={position.holdingId}>
+              <td data-label="Holding">{position.symbol} · {position.name} · {position.assetClass}<br /><span className="muted">{position.quoteSource}{position.quoteAsOf ? ` · ${position.quoteAsOf}` : ""} · {position.currency}{position.missing.map((item) => ` · ${item}`).join("")}</span></td>
+              <td data-label="Quantity">{position.quantity}</td>
+              <td data-label="Price">{position.marketValueMinor == null ? "No price" : position.quoteSource}</td>
+              <td className="num" data-label="Value">{position.marketValueMinor == null ? "No price" : <Money minor={position.marketValueMinor} />}</td>
+              <td className="num" data-label="Gain">{position.unrealizedMinor == null ? "No gain calculated" : <Money minor={position.unrealizedMinor} />}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      <ul>{state.data.allocation.map((slice) => <li key={slice.key}>{slice.key}: {(slice.weightBps / 100).toFixed(1)}% · <Money minor={slice.valueMinor} /></li>)}</ul>
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         await api(scoped(session.householdId, "/holdings"), { method: "POST", body: JSON.stringify({
           accountId: data.get("accountId"), symbol: data.get("symbol"), name: data.get("name"), assetClass: data.get("assetClass"),
           quantity: data.get("quantity"), currency: session.currency, costBasisMinor: data.get("cost") ? parseAmount(String(data.get("cost")), session.currency) : null,
-          priceMinor: data.get("price") ? parseAmount(String(data.get("price")), session.currency) : undefined, priceAsOf: todayISO(),
+          priceMinor: data.get("price") ? parseAmount(String(data.get("price")), session.currency) : undefined, priceAsOf: String(data.get("priceAsOf") || "2026-11-11"),
         }) });
         session.bump();
       })}>
@@ -56,7 +74,8 @@ export function Investments() {
         <Field label="Quantity"><input name="quantity" required /></Field>
         <Field label="Cost basis"><input name="cost" inputMode="decimal" /></Field>
         <Field label="Manual price per share"><input name="price" inputMode="decimal" /></Field>
-        <p className="muted">Leave the price blank and the value stays missing. BudgetCents does not invent a quote.</p>
+        <Field label="Valuation date"><input name="priceAsOf" type="date" defaultValue="2026-11-11" /></Field>
+        <p className="muted">Leave the price blank and the value stays missing. BudgetCents does not invent a quote. A price in another currency is not converted.</p>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
         <button className="btn" type="submit">Save holding</button>
       </form>
@@ -66,7 +85,7 @@ export function Investments() {
           balanceMinor: parseAmount(String(data.get("balance")), session.currency), expenseRatioBps: Math.round(Number(data.get("expense")) * 100),
           advisoryBps: Math.round(Number(data.get("advice") || 0) * 100), growthBps: Math.round(Number(data.get("growth")) * 100), years: Number(data.get("years")),
         }) });
-        setFeeNote(`${result.assumptions[0]} Compound cost ${result.compoundFeeCostMinor} minor units.`);
+        setFeeNote({ cost: result.compoundFeeCostMinor, assumptions: result.assumptions });
       })}>
         <h2>Fee drag</h2>
         <Field label="Balance"><input name="balance" required inputMode="decimal" /></Field>
@@ -75,38 +94,178 @@ export function Investments() {
         <Field label="Growth percent"><input name="growth" required inputMode="decimal" /></Field>
         <Field label="Years"><input name="years" type="number" required defaultValue={10} /></Field>
         {fees.error ? <Notice kind="bad">{fees.error}</Notice> : null}
-        {feeNote ? <Notice>{feeNote}</Notice> : null}
+        {feeNote ? <Notice>The fee difference over the period you entered is <Money minor={feeNote.cost} />. {feeNote.assumptions.join(" ")} This is not a prediction of what the holding will earn.</Notice> : null}
         <button className="btn" type="submit">Compare</button>
+      </form>
+      <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => drift.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        const result = await api<{ drift: { key: string; actualBps: number; targetBps: number; driftBps: number }[]; note: string }>(scoped(session.householdId, "/investments/drift"), { method: "POST", body: JSON.stringify({
+          targets: [
+            { key: String(data.get("keyA")), targetBps: Math.round(Number(data.get("targetA")) * 100) },
+            { key: String(data.get("keyB")), targetBps: Math.round(Number(data.get("targetB")) * 100) },
+          ].filter((target) => target.key),
+        }) });
+        setDriftNote(`${result.note} ${result.drift.map((row) => `${row.key} actual ${(row.actualBps / 100).toFixed(1)}% target ${(row.targetBps / 100).toFixed(1)}% drift ${(row.driftBps / 100).toFixed(1)} points`).join(". ")}`);
+      })}>
+        <h2>Target allocation</h2>
+        <Field label="First class"><input name="keyA" defaultValue="equity" /></Field>
+        <Field label="First target percent"><input name="targetA" inputMode="decimal" defaultValue="50" /></Field>
+        <Field label="Second class"><input name="keyB" defaultValue="bond" /></Field>
+        <Field label="Second target percent"><input name="targetB" inputMode="decimal" defaultValue="50" /></Field>
+        {drift.error ? <Notice kind="bad">{drift.error}</Notice> : null}
+        {driftNote ? <Notice>{driftNote}</Notice> : null}
+        <button className="btn" type="submit">Compare drift</button>
+      </form>
+      <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => returns.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        const result = await api<{ timeWeighted: { rate: number | null; method: string }; moneyWeighted: { rate: number | null; method: string }; note: string }>(scoped(session.householdId, "/investments/return"), { method: "POST", body: JSON.stringify({
+          startValueMinor: parseAmount(String(data.get("start")), session.currency),
+          endValueMinor: parseAmount(String(data.get("end")), session.currency),
+          externalFlowMinor: parseAmount(String(data.get("flow") || "0"), session.currency),
+          startDate: String(data.get("startDate")),
+          endDate: String(data.get("endDate")),
+        }) });
+        const percent = (rate: number | null) => rate == null ? "not available" : `${(rate * 100).toFixed(2)}%`;
+        setReturnNote(`Time-weighted ${percent(result.timeWeighted.rate)}. ${result.timeWeighted.method} Money-weighted ${percent(result.moneyWeighted.rate)}. ${result.moneyWeighted.method} ${result.note}`);
+      })}>
+        <h2>Return from amounts you type</h2>
+        <Field label="Start value"><input name="start" required inputMode="decimal" /></Field>
+        <Field label="Start date"><input name="startDate" type="date" required defaultValue="2026-01-01" /></Field>
+        <Field label="Deposit or withdrawal"><input name="flow" inputMode="decimal" defaultValue="0" /></Field>
+        <Field label="End value"><input name="end" required inputMode="decimal" /></Field>
+        <Field label="End date"><input name="endDate" type="date" required defaultValue="2026-11-11" /></Field>
+        <p className="muted">Enter a deposit as a positive amount. It is removed from the return so it does not look like investment growth.</p>
+        {returns.error ? <Notice kind="bad">{returns.error}</Notice> : null}
+        {returnNote ? <Notice>{returnNote}</Notice> : null}
+        <button className="btn" type="submit">Calculate return</button>
       </form>
     </Page>
   );
 }
 
+interface RetirementResponse {
+  result: {
+    successRateBps: number;
+    deterministicEndingMinor: number;
+    deterministicUnmetMinor: number;
+    deterministicSuccess: boolean;
+    p10EndingMinor: number;
+    medianEndingMinor: number;
+    p90EndingMinor: number;
+    metric: string;
+    assumptions: string[];
+    yearlyDeterministic: { householdAge: number; portfolioMinor: number; contributionMinor: number; spendingMinor: number; benefitMinor: number; unmetMinor: number; people: { modeledAge: number; retired: boolean }[] }[];
+  };
+}
+
 export function Retirement() {
   const session = useSession();
   const form = useFormError();
-  const [result, setResult] = useState("");
+  const [result, setResult] = useState<RetirementResponse["result"] | null>(null);
+  const [partner, setPartner] = useState(false);
   return (
-    <Page title="Retirement" lede="The model is a seeded simulation. A success rate is not a promise, and it does not use live market data.">
+    <Page title="Retirement" lede="The model is a seeded simulation. Success means every modeled year was funded. A success rate is not a promise, and running it does not change your accounts.">
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
-        const response = await api<{ result: { successRateBps: number; assumptions: string[] }; contributionGap: { annualMinor: number } | null }>(scoped(session.householdId, "/retirement"), { method: "POST", body: JSON.stringify({
-          currentAge: Number(data.get("age")), retireAge: Number(data.get("retire")), endAge: Number(data.get("end")),
-          portfolioMinor: parseAmount(String(data.get("portfolio")), session.currency), annualContributionMinor: parseAmount(String(data.get("save")), session.currency),
-          annualSpendingMinor: parseAmount(String(data.get("spend")), session.currency), inflationBps: 250, meanReturnBps: 500, stdevBps: 1200, feeBps: 10, iterations: 200, seed: 7,
+        const bps = (name: string) => Math.round(Number(data.get(name) || 0) * 100);
+        const personA = {
+          currentAge: Number(data.get("ageA")),
+          retireAge: Number(data.get("retireA")),
+          benefitAge: Number(data.get("benefitA")),
+          socialSecurityAnnualMinor: parseAmount(String(data.get("socialA") || "0"), session.currency),
+          pensionAnnualMinor: parseAmount(String(data.get("pensionA") || "0"), session.currency),
+        };
+        const people = [personA];
+        if (partner) {
+          people.push({
+            currentAge: Number(data.get("ageB")),
+            retireAge: Number(data.get("retireB")),
+            benefitAge: Number(data.get("benefitB")),
+            socialSecurityAnnualMinor: parseAmount(String(data.get("socialB") || "0"), session.currency),
+            pensionAnnualMinor: parseAmount(String(data.get("pensionB") || "0"), session.currency),
+          });
+        }
+        const events = String(data.get("eventAmount") || "").trim()
+          ? [{ age: Number(data.get("eventAge")), amountMinor: parseAmount(String(data.get("eventAmount")), session.currency), label: String(data.get("eventLabel") || "Life event") }]
+          : undefined;
+        const response = await api<RetirementResponse>(scoped(session.householdId, "/retirement"), { method: "POST", body: JSON.stringify({
+          currentAge: Number(data.get("clock")), retireAge: personA.retireAge, endAge: Number(data.get("end")),
+          portfolioMinor: parseAmount(String(data.get("portfolio")), session.currency),
+          annualContributionMinor: parseAmount(String(data.get("save")), session.currency),
+          annualSpendingMinor: parseAmount(String(data.get("spend")), session.currency),
+          inflationBps: bps("inflation"), meanReturnBps: bps("growth"), stdevBps: bps("spread"), feeBps: bps("fee"),
+          iterations: Number(data.get("iterations")), seed: Number(data.get("seed")), people, events,
         }) });
-        setResult(`${(response.result.successRateBps / 100).toFixed(1)}% of the seeded paths stayed above zero. ${response.result.assumptions.join(" ")}`);
+        setResult(response.result);
       })}>
-        <Field label="Age"><input name="age" type="number" required defaultValue={35} /></Field>
-        <Field label="Retire"><input name="retire" type="number" required defaultValue={65} /></Field>
-        <Field label="Plan through"><input name="end" type="number" required defaultValue={90} /></Field>
+        <h2>Household clock</h2>
+        <Field label="Planning age"><input name="clock" type="number" required defaultValue={60} /></Field>
+        <Field label="Plan through"><input name="end" type="number" required defaultValue={76} /></Field>
+        <h2>Person A</h2>
+        <Field label="Current age"><input name="ageA" type="number" required defaultValue={60} /></Field>
+        <Field label="Retirement age"><input name="retireA" type="number" required defaultValue={65} /></Field>
+        <Field label="Social Security age"><input name="benefitA" type="number" required defaultValue={67} /></Field>
+        <Field label="Annual Social Security"><input name="socialA" inputMode="decimal" defaultValue="0" /></Field>
+        <Field label="Annual pension"><input name="pensionA" inputMode="decimal" defaultValue="0" /></Field>
+        <label><input type="checkbox" checked={partner} onChange={(event) => setPartner(event.target.checked)} /> Add a second person</label>
+        {partner ? (
+          <>
+            <h2>Person B</h2>
+            <Field label="Current age"><input name="ageB" type="number" required defaultValue={50} /></Field>
+            <Field label="Retirement age"><input name="retireB" type="number" required defaultValue={65} /></Field>
+            <Field label="Social Security age"><input name="benefitB" type="number" required defaultValue={65} /></Field>
+            <Field label="Annual Social Security"><input name="socialB" inputMode="decimal" defaultValue="0" /></Field>
+            <Field label="Annual pension"><input name="pensionB" inputMode="decimal" defaultValue="0" /></Field>
+          </>
+        ) : null}
+        <h2>Money</h2>
         <Field label="Portfolio"><input name="portfolio" required inputMode="decimal" /></Field>
         <Field label="Annual contribution"><input name="save" required inputMode="decimal" /></Field>
         <Field label="Annual spending"><input name="spend" required inputMode="decimal" /></Field>
+        <Field label="Inflation percent"><input name="inflation" inputMode="decimal" defaultValue="0" /></Field>
+        <Field label="Expected return percent"><input name="growth" inputMode="decimal" defaultValue="0" /></Field>
+        <Field label="Return spread percent"><input name="spread" inputMode="decimal" defaultValue="0" /></Field>
+        <Field label="Fee percent"><input name="fee" inputMode="decimal" defaultValue="0" /></Field>
+        <Field label="Trials"><input name="iterations" type="number" defaultValue={20} /></Field>
+        <Field label="Seed"><input name="seed" type="number" defaultValue={7} /></Field>
+        <h2>Life event on the household clock</h2>
+        <Field label="Household age"><input name="eventAge" type="number" /></Field>
+        <Field label="Amount"><input name="eventAmount" inputMode="decimal" /></Field>
+        <Field label="Label"><input name="eventLabel" /></Field>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-        {result ? <Notice>{result}</Notice> : null}
         <button className="btn" type="submit">Run model</button>
       </form>
+      {result ? (
+        <>
+          <article className="card" style={{ marginTop: 16 }}>
+            <h2>Deterministic result</h2>
+            <p>Ending portfolio <Money minor={result.deterministicEndingMinor} />. Unmet spending <Money minor={result.deterministicUnmetMinor} />. {result.deterministicSuccess ? "Every deterministic year was funded." : "An earlier year was not funded. A later balance does not erase that."}</p>
+          </article>
+          <article className="card" style={{ marginTop: 16 }}>
+            <h2>Simulated range</h2>
+            <p>{(result.successRateBps / 100).toFixed(1)}% of the seeded trials funded every year. {result.metric}</p>
+            <p>Low <Money minor={result.p10EndingMinor} />. Middle <Money minor={result.medianEndingMinor} />. High <Money minor={result.p90EndingMinor} />.</p>
+          </article>
+          <article className="card" style={{ marginTop: 16 }}>
+            <h2>Assumptions</h2>
+            <ul>{result.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
+          </article>
+          <div className="table-scroll" style={{ marginTop: 16 }}>
+            <table className="schedule-table">
+              <thead><tr><th>Clock</th><th>Ages</th><th className="num">Contribution</th><th className="num">Spending</th><th className="num">Portfolio</th></tr></thead>
+              <tbody>{result.yearlyDeterministic.map((year) => (
+                <tr key={year.householdAge}>
+                  <td data-label="Clock">{year.householdAge}</td>
+                  <td data-label="Ages">{year.people.map((person) => `${person.modeledAge}${person.retired ? " retired" : ""}`).join(", ")}</td>
+                  <td className="num" data-label="Contribution"><Money minor={year.contributionMinor} /></td>
+                  <td className="num" data-label="Spending"><Money minor={year.spendingMinor} /></td>
+                  <td className="num" data-label="Portfolio"><Money minor={year.portfolioMinor} /></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
     </Page>
   );
 }

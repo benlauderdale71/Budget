@@ -65,15 +65,29 @@ export function ImportPage() {
   const [preview, setPreview] = useState<{ batchId: string; rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; duplicate?: boolean; possibleMatch?: boolean; errors: string[] }[]; missing: string[] } | null>(null);
   const form = useFormError();
   return (
-    <Page title="Import" lede="Preview first. Duplicates and broken rows are left out of the commit. A profile does not invent columns the file does not have.">
+    <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. A file that does not contain categories, tags, splits, or notes leaves those blank. They are not invented.">
+      <ol>
+        <li>Choose the source and the file.</li>
+        <li>Map date, amount, and payee when the headers differ from the profile.</li>
+        <li>Read what this export does not contain.</li>
+        <li>Leave duplicates and broken rows unchecked.</li>
+        <li>Confirm the account. Committing the same batch again does not create a second copy.</li>
+      </ol>
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         const file = data.get("file") as File;
         const text = await file.text();
-        setPreview(await api(scoped(session.householdId, "/import/preview"), { method: "POST", body: JSON.stringify({ spaceId: accounts.data?.spaceId, profile: data.get("profile") || undefined, format: data.get("format"), text }) }));
+        const mapping: Record<string, string> = {};
+        if (String(data.get("dateColumn") || "").trim()) mapping.date = String(data.get("dateColumn"));
+        if (String(data.get("amountColumn") || "").trim()) mapping.amount = String(data.get("amountColumn"));
+        if (String(data.get("payeeColumn") || "").trim()) mapping.payee = String(data.get("payeeColumn"));
+        setPreview(await api(scoped(session.householdId, "/import/preview"), { method: "POST", body: JSON.stringify({ spaceId: accounts.data?.spaceId, profile: data.get("profile") || undefined, format: data.get("format"), text, mapping }) }));
       })}>
         <Field label="Format"><select name="format"><option value="csv">CSV</option><option value="ofx">OFX</option><option value="qif">QIF</option></select></Field>
-        <Field label="Profile"><select name="profile"><option value="">Generic columns</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
+        <Field label="Source"><select name="profile"><option value="">Generic columns</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
+        <Field label="Date column"><input name="dateColumn" placeholder="Use the source default" /></Field>
+        <Field label="Amount column"><input name="amountColumn" placeholder="Use the source default" /></Field>
+        <Field label="Payee column"><input name="payeeColumn" placeholder="Use the source default" /></Field>
         <Field label="File"><input name="file" type="file" required accept=".csv,.ofx,.qfx,.qif,text/csv,text/plain" /></Field>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
         <button className="btn" type="submit" disabled={!accounts.data}>Preview</button>
@@ -87,7 +101,7 @@ export function ImportPage() {
         form.setError("");
         alert(`Imported ${result.created}. They need review before they change a category you already confirmed.`);
       })}>
-        <p>{preview.missing.join(" ")}</p>
+        <p>This export does not include: {preview.missing.join(" ")} A later import of the same rows is skipped when the date, payee, and amount already match, or when a provider id matches. This import is not an undo button. A full household backup is the supported way to restore a previous copy.</p>
         <Field label="Account"><select name="accountId" required>{accounts.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
         {preview.rows.slice(0, 40).map((row) => <label key={row.rowNumber} className="link-row"><span><input type="checkbox" name={`row-${row.rowNumber}`} defaultChecked={!row.duplicate && !row.possibleMatch && !row.errors.length} disabled={!!row.duplicate || row.errors.length > 0} /> {row.date} {row.payee} {row.duplicate ? "(already imported)" : row.possibleMatch ? "(same date, payee, and amount already in the register — check this only if it is the bank copy you want to match)" : row.errors.join(", ")}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>)}
         <button className="btn" type="submit">Import selected</button>

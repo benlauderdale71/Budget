@@ -39,7 +39,7 @@ export function spendingRows(input: EngineInput, from: string, to: string, keyOf
       if (split.role === "principal" || split.role === "transfer" || split.role === "income") continue;
       const key = keyOf(txn, split.bucketId);
       const row = map.get(key) ?? { key, label: key, amountMinor: 0, transactionIds: [] };
-      row.amountMinor += split.amountMinor;
+      row.amountMinor += split.role === "refund" ? -split.amountMinor : split.amountMinor;
       if (!row.transactionIds.includes(txn.id)) row.transactionIds.push(txn.id);
       map.set(key, row);
     }

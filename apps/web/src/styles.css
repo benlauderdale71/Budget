@@ -116,6 +116,7 @@ a { color: var(--teal); }
 .grid.stats { grid-template-columns: 1.4fr repeat(3, 1fr); }
 .grid.two { grid-template-columns: 1.2fr 0.8fr; }
 .receipt-preview { width: 100%; min-height: 240px; max-height: 70vh; object-fit: contain; background: white; border: 1px solid var(--line); }
+.receipt-line { display: grid; grid-template-columns: 1.3fr 0.6fr 0.7fr 0.7fr 1fr auto; gap: 8px; margin-bottom: 8px; align-items: center; }
 .grid.three { grid-template-columns: repeat(3, 1fr); }
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
@@ -197,7 +198,7 @@ td.num, th.num { text-align: right; }
   .tabbar { display: flex; }
   .content, .topbar { padding-inline: 16px; }
   .content { padding-bottom: 84px; }
-  .split-row { grid-template-columns: 1fr; }
+  .split-row, .receipt-line { grid-template-columns: 1fr; }
   .calendar-grid { display: none; }
   .loan-grid { grid-template-columns: 1fr; }
   .schedule-table, .schedule-table tbody, .schedule-table tr { display: block; }

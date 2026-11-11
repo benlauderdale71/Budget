@@ -24,7 +24,15 @@ An image is written to a generated directory under the system temp path and pass
 
 A PDF is limited to 8 pages. `pdftotext` reads the first three pages. If that text has at least twenty letters, the draft uses it and confidence stays null, because embedded text has no Tesseract score. Otherwise the first two pages are rasterized with `pdftoppm` and read as images. Each command stops after 20 seconds. An image side may not exceed 8,000 pixels, and the image may not exceed 12,000,000 pixels. Uploads remain capped at 8 MB. The stored name is `receipt.jpg`, `receipt.png`, or `receipt.pdf` from the sniffed type. The storage key is the household id and the attachment id.
 
-A failed or unreadable file stays a draft. The person can type the fields. Upload, reading, retry, correction, and discard do not change cash, Ready to Assign, spending, income, net worth, or a confirmed transaction. Creating or linking an expense is a separate confirmation. Re-reading does not replace corrections, a confirmed draft, or a discarded draft.
+A failed or unreadable file stays a draft. The person can type the fields, including lines the reader missed. Upload, reading, retry, correction, and discard do not change cash, Ready to Assign, spending, income, net worth, or a confirmed transaction. Creating or linking an expense is a separate confirmation. Re-reading does not replace corrections, a confirmed draft, or a discarded draft.
+
+## Line review
+
+Each working line has a stable id, a description, a quantity, a unit price, an extended amount, and a category. The original extraction is stored beside those corrections and is not overwritten when a line is edited, added, or removed. The review page states that the confidence score does not prove the total or the category allocation.
+
+Tax, tip, other charges, and discounts are allocated in integer cents. The choices are a largest-remainder share across the positive lines, or the whole adjustment on one category. A negative line does not receive a share of tax and is stored as a refund. A tax-inclusive receipt does not add the tax a second time. The preview is shown before confirmation. If the parts do not add up to the total, the difference is shown. Confirmation accepts it only when a reviewed adjustment names that exact difference, a category, and a note.
+
+Confirming categorized lines creates one expense. The splits are the category totals. The same operation id returns that expense. The same operation with a different submitted split is rejected. Linking to an existing expense does not create another one. Replacing its categories is a separate authorization. Notes, tags, the provider id, and the review state stay. A reconciled or locked transaction can receive the file and is not rewritten. A stale draft or transaction returns 409 and asks for a reload.
 
 ## Production
 

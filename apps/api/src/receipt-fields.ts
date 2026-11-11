@@ -1,9 +1,21 @@
+import { extendedMinor } from "@budgetcents/domain";
+
 /** Parse receipt text. Missing and ambiguous values stay unresolved. */
 export interface ReceiptLine {
+  id: string;
   description: string;
+  quantityMilli: number | null;
+  unitMinor: number | null;
   amountMinor: number | null;
+  bucketId: string | null;
   raw: string | null;
   unresolved: string | null;
+}
+
+export interface ReceiptAdjustment {
+  amountMinor: number;
+  bucketId: string;
+  note: string;
 }
 
 export interface ReceiptFields {
@@ -20,10 +32,18 @@ export interface ReceiptFields {
   totalMinor: number | null;
   totalRaw: string | null;
   totalUnresolved: string | null;
+  taxInclusive: boolean;
+  otherChargesMinor: number | null;
+  allocationMode: "proportional" | "category";
+  allocationBucketId: string | null;
+  reviewedAdjustment: ReceiptAdjustment | null;
+  /** Original reader output. Corrections live on lineItems and do not rewrite this. */
+  extractedLines: ReceiptLine[];
   lineItems: ReceiptLine[];
   lineSumMinor: number | null;
   lineVersusSubtotal: "matches" | "differs" | "incomplete";
   lineVersusTotal: "matches" | "differs" | "incomplete";
+  confirmation: { opId: string; fingerprint: string } | null;
 }
 
 export interface ReceiptDifference {
@@ -51,10 +71,17 @@ export function emptyFields(): ReceiptFields {
     totalMinor: null,
     totalRaw: null,
     totalUnresolved: null,
+    taxInclusive: false,
+    otherChargesMinor: null,
+    allocationMode: "proportional",
+    allocationBucketId: null,
+    reviewedAdjustment: null,
+    extractedLines: [],
     lineItems: [],
     lineSumMinor: null,
     lineVersusSubtotal: "incomplete",
     lineVersusTotal: "incomplete",
+    confirmation: null,
   });
 }
 
@@ -89,8 +116,12 @@ export function parseReceiptText(text: string): ReceiptFields {
     } else {
       const description = line.slice(0, line.length - tail[0].length).trim() || "Item";
       fields.lineItems.push({
+        id: `e${fields.lineItems.length + 1}`,
         description: description.slice(0, 120),
-        amountMinor: parsed.minor == null ? null : Math.abs(parsed.minor),
+        quantityMilli: null,
+        unitMinor: null,
+        amountMinor: parsed.minor,
+        bucketId: null,
         raw: tail[1],
         unresolved: parsed.unresolved,
       });
@@ -99,7 +130,9 @@ export function parseReceiptText(text: string): ReceiptFields {
   if (fields.totalMinor != null && fields.currency == null && !fields.currencyUnresolved) {
     fields.currencyUnresolved = "No currency was printed.";
   }
-  return reconcileLines(fields);
+  const reconciled = reconcileLines(fields);
+  reconciled.extractedLines = reconciled.lineItems.map((line) => ({ ...line }));
+  return reconciled;
 }
 
 export function reviewFields(input: {
@@ -111,9 +144,35 @@ export function reviewFields(input: {
   tipMinor?: number | null;
   discountMinor?: number | null;
   totalMinor?: number | null;
-  lineItems?: { description?: string | null; amountMinor?: number | null }[];
-}): ReceiptFields {
+  taxInclusive?: boolean | null;
+  otherChargesMinor?: number | null;
+  allocationMode?: "proportional" | "category" | null;
+  allocationBucketId?: string | null;
+  reviewedAdjustment?: ReceiptAdjustment | null;
+  lineItems?: {
+    id?: string | null;
+    description?: string | null;
+    quantityMilli?: number | null;
+    unitMinor?: number | null;
+    amountMinor?: number | null;
+    bucketId?: string | null;
+  }[];
+}, preserved?: { extractedLines?: ReceiptLine[]; previousLines?: ReceiptLine[] }): ReceiptFields {
   const fields = emptyFields();
+  fields.extractedLines = (preserved?.extractedLines ?? []).map((line) => ({ ...line }));
+  fields.taxInclusive = input.taxInclusive === true;
+  fields.otherChargesMinor = optionalMinor(input.otherChargesMinor, "other charges");
+  fields.allocationMode = input.allocationMode === "category" ? "category" : "proportional";
+  fields.allocationBucketId = cleanId(input.allocationBucketId);
+  const reviewed = input.reviewedAdjustment;
+  if (reviewed && (reviewed.note?.trim() || reviewed.bucketId || reviewed.amountMinor != null)) {
+    const note = cleanText(reviewed.note);
+    if (!note) throw new Error("Describe the reviewed adjustment, or leave it blank.");
+    if (!Number.isInteger(reviewed.amountMinor)) throw new Error("Enter the reviewed adjustment in minor units.");
+    const bucketId = cleanId(reviewed.bucketId);
+    if (!bucketId) throw new Error("Choose a category for the reviewed adjustment.");
+    fields.reviewedAdjustment = { amountMinor: reviewed.amountMinor, bucketId, note };
+  }
   const merchant = cleanText(input.merchant);
   fields.merchant = merchant;
   if (input.date) {
@@ -131,12 +190,29 @@ export function reviewFields(input: {
   fields.discountMinor = optionalMinor(input.discountMinor, "discount");
   fields.totalMinor = optionalMinor(input.totalMinor, "total");
   if (fields.totalMinor == null) fields.totalUnresolved = "The total is still unresolved.";
-  fields.lineItems = (input.lineItems ?? []).slice(0, 80).map((line) => ({
-    description: cleanText(line.description) || "Item",
-    amountMinor: optionalMinor(line.amountMinor, "line item"),
-    raw: null,
-    unresolved: line.amountMinor == null ? "This line amount is unresolved." : null,
-  }));
+  const used = new Set<string>();
+  const previous = preserved?.previousLines ?? [];
+  fields.lineItems = (input.lineItems ?? []).slice(0, 80).map((line, index) => {
+    const quantityMilli = line.quantityMilli == null ? null : wholeQuantity(line.quantityMilli);
+    const unitMinor = signedMinor(line.unitMinor, "unit price");
+    const amountMinor = signedMinor(line.amountMinor, "line item");
+    let unresolved = amountMinor == null ? "This line amount is unresolved." : null;
+    if (quantityMilli != null && unitMinor != null && amountMinor != null) {
+      const extended = extendedMinor(unitMinor, quantityMilli);
+      if (extended !== amountMinor) unresolved = `Quantity times price is ${extended} minor units and the line amount is ${amountMinor}.`;
+    }
+    const id = lineId(line.id, index, previous, used);
+    return {
+      id,
+      description: cleanText(line.description) || "Item",
+      quantityMilli,
+      unitMinor,
+      amountMinor,
+      bucketId: cleanId(line.bucketId),
+      raw: previous.find((item) => item.id === id)?.raw ?? null,
+      unresolved,
+    };
+  });
   return reconcileLines(fields);
 }
 
@@ -180,6 +256,32 @@ function optionalMinor(value: number | null | undefined, label: string): number 
   if (value == null) return null;
   if (!Number.isInteger(value) || value < 0 || value > 100_000_000_00) throw new Error(`Enter the ${label} in minor units, or leave it blank.`);
   return value;
+}
+
+function signedMinor(value: number | null | undefined, label: string): number | null {
+  if (value == null) return null;
+  if (!Number.isInteger(value) || Math.abs(value) > 100_000_000_00) throw new Error(`Enter the ${label} in minor units, or leave it blank.`);
+  return value;
+}
+
+function wholeQuantity(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 1_000_000_000) throw new Error("Enter the quantity as thousandths of a unit, such as 1500 for 1.5.");
+  return value;
+}
+
+function cleanId(value: string | null | undefined): string | null {
+  const text = value?.trim() ?? "";
+  if (!text) return null;
+  if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(text)) throw new Error("A category or line id is not valid.");
+  return text;
+}
+
+function lineId(requested: string | null | undefined, index: number, previous: ReceiptLine[], used: Set<string>): string {
+  const preferred = requested && /^[A-Za-z0-9_-]{1,40}$/.test(requested) ? requested : previous[index]?.id;
+  let id = preferred && !used.has(preferred) ? preferred : `m${index + 1}`;
+  while (used.has(id)) id = `${id}x`;
+  used.add(id);
+  return id;
 }
 
 function cleanText(value: string | null | undefined): string | null {

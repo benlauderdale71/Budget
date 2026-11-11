@@ -16,7 +16,7 @@ import { monthlyInterestMinor, sanitizeSpreadsheetCell } from "../src/money.js";
 import { amortize, compareRefinance, payoffPlan } from "../src/debt.js";
 import { applyScenario, planPaychecks, projectCash } from "../src/forecast.js";
 import { duplicateKey, mapCsv, parseOfx, parseQif, toCsv } from "../src/importers.js";
-import { allocation, allocationDrift, feeImpact, moneyWeightedReturn, positionView, timeWeightedReturn } from "../src/invest.js";
+import { allocation, allocationByKey, allocationDrift, feeImpact, moneyWeightedReturn, positionView, timeWeightedReturn } from "../src/invest.js";
 import { projectRetirement } from "../src/retirement.js";
 import { cashFlowSankey, emergencyGap, evaluateWatchlist, incomeRows, netWorth, savingsRate, spendingRows } from "../src/reports.js";
 import { applyRules } from "../src/rules.js";
@@ -424,6 +424,20 @@ describe("reports, investments, retirement, rules, import, sync", () => {
     );
     expect(priced.marketValueMinor).toBe(26_250);
     expect(priced.quoteSource).toBe("manual");
+    const foreign = positionView(
+      { id: "h", accountId: "brk", symbol: "VTI", name: "Total market", assetClass: "Equity", quantity: "10", costBasisMinor: null, currency: "USD" },
+      { symbol: "VTI", priceMinor: 2_500, asOf: "2026-11-10", source: "manual", delayed: false, currency: "EUR" },
+    );
+    expect(foreign.marketValueMinor).toBeNull();
+    expect(foreign.unrealizedMinor).toBeNull();
+    expect(foreign.missing.join(" ")).toMatch(/not combined/);
+    const grouped = allocationByKey([
+      { key: "Equity", valueMinor: 2_000 },
+      { key: "Equity", valueMinor: 1_000 },
+      { key: "Bond", valueMinor: 2_000 },
+    ]);
+    expect(grouped.find((row) => row.key === "Equity")).toEqual({ key: "Equity", valueMinor: 3_000, weightBps: 6_000 });
+    expect(grouped.find((row) => row.key === "Bond")?.weightBps).toBe(4_000);
     const twr = timeWeightedReturn([
       { date: "2026-01-01", valueMinor: 100_000, externalFlowMinor: 0 },
       { date: "2026-07-01", valueMinor: 150_000, externalFlowMinor: 40_000 },

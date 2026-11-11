@@ -499,6 +499,186 @@ describe("forecast", () => {
     const member = await json(await api.request(`/api/households/${home.hid}/forecast?asOf=2026-11-10&days=5`, { headers: auth(guest.token) }));
     expect(owner.body.cash.startingMinor - member.body.cash.startingMinor).toBe(50000);
   });
+
+  it("allocates tax across receipt lines, confirms one expense, and keeps a replay from posting twice", async () => {
+    const api = await app();
+    const home = await household(api, "split@example.com");
+    const account = await checking(api, home);
+    const dash = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
+    const householdBucket = (dash.body.buckets as { id: string; name: string }[]).find((bucket) => bucket.name === "Household")!.id;
+    const before = await snapshot(api, home);
+    const uploaded = await upload(api, home, fileOf("clear.png"), "image/png");
+    const read = await extract(api, home, uploaded.body.id);
+    expect(read.body.draft.fields.extractedLines.map((line: { amountMinor: number }) => line.amountMinor)).toEqual([350, 250]);
+    const fields = {
+      merchant: "North Market",
+      date: "2026-11-10",
+      currency: "USD",
+      subtotalMinor: 800,
+      taxMinor: 80,
+      tipMinor: 0,
+      discountMinor: 0,
+      totalMinor: 880,
+      taxInclusive: false,
+      allocationMode: "proportional",
+      lineItems: [
+        { id: "milk", description: "Groceries", quantityMilli: 1000, unitMinor: 500, amountMinor: 500, bucketId: home.groceries },
+        { id: "soap", description: "Household items", quantityMilli: 1000, unitMinor: 300, amountMinor: 300, bucketId: householdBucket },
+      ],
+    };
+    const saved = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/draft`, {
+      method: "PATCH",
+      headers: auth(home.token),
+      body: JSON.stringify({ version: read.body.draft.version, fields }),
+    }));
+    expect(saved.status).toBe(200);
+    expect(await snapshot(api, home)).toEqual(before);
+    const reopened = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}`, { headers: auth(home.token) }));
+    expect(reopened.body.draft.fields.extractedLines).toEqual(read.body.draft.fields.extractedLines);
+    expect(reopened.body.draft.fields.lineItems.map((line: { bucketId: string; amountMinor: number }) => [line.bucketId, line.amountMinor])).toEqual([
+      [home.groceries, 500],
+      [householdBucket, 300],
+    ]);
+    const preview = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/preview`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: "{}",
+    }));
+    expect(preview.body.proposal.reconciled).toBe(true);
+    const proposed = Object.fromEntries((preview.body.proposal.splits as { bucketId: string; amountMinor: number; role: string }[]).map((split) => [split.bucketId, split]));
+    expect(proposed[home.groceries]).toEqual({ bucketId: home.groceries, amountMinor: 550, role: "expense" });
+    expect(proposed[householdBucket]).toEqual({ bucketId: householdBucket, amountMinor: 330, role: "expense" });
+    const blocked = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/draft`, {
+      method: "PATCH",
+      headers: auth(home.token),
+      body: JSON.stringify({ version: saved.body.draft.version, fields: { ...fields, totalMinor: 900 } }),
+    }));
+    expect(blocked.status).toBe(200);
+    const refused = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/confirm`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({ confirm: true, version: blocked.body.draft.version, opId: "receipt-split-1", accountId: account.body.id, splits: [] }),
+    }));
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/difference is 20/);
+    expect(await snapshot(api, home)).toEqual(before);
+    const restored = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/draft`, {
+      method: "PATCH",
+      headers: auth(home.token),
+      body: JSON.stringify({ version: blocked.body.draft.version, fields }),
+    }));
+    const stale = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/draft`, {
+      method: "PATCH",
+      headers: auth(home.token),
+      body: JSON.stringify({ version: blocked.body.draft.version, fields }),
+    }));
+    expect(stale.status).toBe(409);
+    const opId = "receipt-split-1";
+    const created = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/confirm`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({ confirm: true, version: restored.body.draft.version, opId, accountId: account.body.id, splits: [] }),
+    }));
+    expect(created.status).toBe(201);
+    const once = await snapshot(api, home);
+    expect(once.expenses).toHaveLength(1);
+    expect(once.expenses[0].amountMinor).toBe(-880);
+    expect(once.spending).toBe(880);
+    expect(once.cash).toBe(before.cash - 880);
+    const report = await json(await api.request(`/api/households/${home.hid}/reports/spending?by=bucket&from=2026-11-01&to=2026-11-30&asOf=2026-11-30`, { headers: auth(home.token) }));
+    const row = (label: string) => (report.body.rows as { label: string; amountMinor: number }[]).find((item) => item.label === label);
+    expect(row("Groceries")?.amountMinor).toBe(550);
+    expect(row("Household")?.amountMinor).toBe(330);
+    const replay = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/confirm`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({ confirm: true, version: restored.body.draft.version + 1, opId, accountId: account.body.id, splits: [] }),
+    }));
+    expect(replay.body.created).toBe(false);
+    expect(replay.body.transactionId).toBe(created.body.transactionId);
+    const changed = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/confirm`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({ confirm: true, version: restored.body.draft.version + 1, opId, accountId: account.body.id, splits: [{ bucketId: home.groceries, amountMinor: 880 }] }),
+    }));
+    expect(changed.status).toBe(409);
+    expect(await snapshot(api, home)).toEqual(once);
+    const kept = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}`, { headers: auth(home.token) }));
+    expect(kept.body.draft.fields.lineItems[0].bucketId).toBe(home.groceries);
+    expect(kept.body.draft.fields.extractedLines).toHaveLength(2);
+  });
+
+  it("links a categorized receipt onto an existing expense without a second expense", async () => {
+    const api = await app();
+    const home = await household(api, "replace@example.com");
+    const account = await checking(api, home);
+    const dash = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
+    const householdBucket = (dash.body.buckets as { id: string; name: string }[]).find((bucket) => bucket.name === "Household")!.id;
+    const expense = await json(await api.request(`/api/households/${home.hid}/transactions`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({
+        date: "2026-11-10", accountId: account.body.id, amountMinor: -880, type: "expense", payee: "Market",
+        notes: "keep this", tags: ["pantry"], reviewStatus: "reviewed", providerTransactionId: "prov-market",
+        splits: [{ bucketId: home.groceries, amountMinor: 880, role: "expense" }], opId: "manual-market-1",
+      }),
+    }));
+    const uploaded = await upload(api, home, fileOf("clear.png"), "image/png");
+    const patched = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/draft`, {
+      method: "PATCH",
+      headers: auth(home.token),
+      body: JSON.stringify({
+        version: 1,
+        fields: {
+          merchant: "Market", date: "2026-11-10", currency: "USD", subtotalMinor: 800, taxMinor: 80, totalMinor: 880, allocationMode: "proportional",
+          lineItems: [
+            { id: "g", description: "Groceries", amountMinor: 500, bucketId: home.groceries },
+            { id: "h", description: "Household", amountMinor: 300, bucketId: householdBucket },
+          ],
+        },
+      }),
+    }));
+    const preview = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/apply`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({
+        confirm: true, preview: true, transactionId: expense.body.id, draftVersion: patched.body.draft.version, transactionVersion: 1, opId: "link-split-1", replaceSplits: true,
+      }),
+    }));
+    expect(preview.body.currentAmountMinor).toBe(-880);
+    const proposed = Object.fromEntries((preview.body.proposedSplits as { bucketId: string; amountMinor: number }[]).map((split) => [split.bucketId, split.amountMinor]));
+    expect(proposed[home.groceries]).toBe(550);
+    expect(proposed[householdBucket]).toBe(330);
+    const linked = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/apply`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({
+        confirm: true, replaceSplits: true, transactionId: expense.body.id, draftVersion: patched.body.draft.version, transactionVersion: 1, opId: "link-split-1",
+      }),
+    }));
+    expect(linked.status).toBe(200);
+    expect(linked.body.created).toBe(false);
+    expect(linked.body.replaced).toBe(true);
+    const after = await snapshot(api, home);
+    expect(after.expenses).toHaveLength(1);
+    expect(after.spending).toBe(880);
+    const txns = await json(await api.request(`/api/households/${home.hid}/transactions?asOf=2026-11-30`, { headers: auth(home.token) }));
+    const row = (txns.body.transactions as { id: string; notes?: string; tags?: string[]; providerTransactionId?: string; reviewStatus: string; splits: { bucketId: string; amountMinor: number }[] }[]).find((item) => item.id === expense.body.id)!;
+    expect(row.notes).toBe("keep this");
+    expect(row.tags).toEqual(["pantry"]);
+    expect(row.providerTransactionId).toBe("prov-market");
+    expect(row.reviewStatus).toBe("reviewed");
+    expect(row.splits.map((split) => split.amountMinor).sort()).toEqual([330, 550]);
+    const again = await json(await api.request(`/api/households/${home.hid}/attachments/${uploaded.body.id}/apply`, {
+      method: "POST",
+      headers: auth(home.token),
+      body: JSON.stringify({
+        confirm: true, replaceSplits: true, transactionId: expense.body.id, draftVersion: patched.body.draft.version + 1, transactionVersion: 2, opId: "link-split-1",
+      }),
+    }));
+    expect(again.body.duplicate).toBe(true);
+    expect((await snapshot(api, home)).expenses).toHaveLength(1);
+  });
 });
 
 function num(value: unknown): number {

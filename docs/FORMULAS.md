@@ -38,7 +38,7 @@ Cash outflows consume the oldest cash inflows. The figure is an average of recen
 
 ## Investments and retirement
 
-Missing prices stay missing. A holding with a price replaces that account’s transaction balance so cash and the holding are not both counted. Time-weighted return chains subperiod growth. The retirement model is a seeded simulation. Its success rate is not a promise.
+Missing prices stay missing and are left out of an allocation. They are not entered as zero. Holdings that share an asset class are added together before the weight is calculated. A quote in a different currency is not combined. A holding with a price replaces that account’s transaction balance so cash and the holding are not both counted. Time-weighted return chains subperiod growth and treats a deposit as an external flow. The fee comparison compounds the rate you type. That rate is not a forecast. The retirement model uses each person’s own age: current age plus the years elapsed on the household clock. Contributions continue while anyone is still working. Success means every modeled year was funded. A later gift does not erase an earlier shortfall. The success rate is not a promise, and running the model does not change the ledger.
 
 ## Essential spending
 

@@ -1,4 +1,4 @@
-import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocation, allocationDrift, compareRefinance, contributionGap, displayBalance, duplicateKey, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { BudgetError, MoneyError, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, duplicateKey, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, validateTransaction, type Account, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
@@ -1160,22 +1160,33 @@ export function createApp(db: Database) {
   app.post("/api/households/:hid/retirement", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
+    const person = z.object({
+      currentAge: z.number().int(), retireAge: z.number().int(), benefitAge: z.number().int().optional(),
+      socialSecurityAnnualMinor: money.default(0), pensionAnnualMinor: money.default(0),
+    });
     const body = z.object({
       currentAge: z.number().int(), retireAge: z.number().int(), endAge: z.number().int(),
       portfolioMinor: money, annualContributionMinor: money, annualSpendingMinor: money,
       inflationBps: z.number().int(), meanReturnBps: z.number().int(), stdevBps: z.number().int(), feeBps: z.number().int(),
       iterations: z.number().int().max(2000).default(200), seed: z.number().int().default(1),
       socialSecurityAnnualMinor: money.default(0), pensionAnnualMinor: money.default(0),
-      events: z.array(z.object({ age: z.number().int(), amountMinor: money, label: z.string() })).optional(),
+      people: z.array(person).max(8).optional(),
+      events: z.array(z.object({ age: z.number().int(), amountMinor: z.number().int(), label: z.string() })).optional(),
       targetPortfolioMinor: money.optional(),
     }).parse(await c.req.json());
-    const result = projectRetirement({
-      people: [{ currentAge: body.currentAge, retireAge: body.retireAge, socialSecurityAnnualMinor: body.socialSecurityAnnualMinor, pensionAnnualMinor: body.pensionAnnualMinor }],
-      currentAge: body.currentAge, endAge: body.endAge, portfolioMinor: body.portfolioMinor,
-      annualContributionMinor: body.annualContributionMinor, annualSpendingMinor: body.annualSpendingMinor,
-      inflationBps: body.inflationBps, meanReturnBps: body.meanReturnBps, stdevBps: body.stdevBps, feeBps: body.feeBps,
-      iterations: body.iterations, seed: body.seed, events: body.events,
-    });
+    let result;
+    try {
+      result = projectRetirement({
+        people: body.people?.length ? body.people : [{ currentAge: body.currentAge, retireAge: body.retireAge, socialSecurityAnnualMinor: body.socialSecurityAnnualMinor, pensionAnnualMinor: body.pensionAnnualMinor }],
+        currentAge: body.currentAge, endAge: body.endAge, portfolioMinor: body.portfolioMinor,
+        annualContributionMinor: body.annualContributionMinor, annualSpendingMinor: body.annualSpendingMinor,
+        inflationBps: body.inflationBps, meanReturnBps: body.meanReturnBps, stdevBps: body.stdevBps, feeBps: body.feeBps,
+        iterations: body.iterations, seed: body.seed, events: body.events,
+      });
+    } catch (error) {
+      if (error instanceof RetirementError) throw new ApiError(400, error.message);
+      throw error;
+    }
     const gap = body.targetPortfolioMinor ? contributionGap({ targetPortfolioMinor: body.targetPortfolioMinor, currentPortfolioMinor: body.portfolioMinor, years: Math.max(1, body.retireAge - body.currentAge), growthBps: body.meanReturnBps - body.feeBps }) : null;
     await db.query(`INSERT INTO scenarios (id, household_id, space_id, name, adjustments_json, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [id(), member.householdId, (await visibleSpaces(me.id, member.householdId))[0].id, "Retirement model", JSON.stringify({ kind: "retirement", body }), nowIso()]);
     return c.json({ result, contributionGap: gap });
@@ -1184,21 +1195,43 @@ export function createApp(db: Database) {
   app.get("/api/households/:hid/investments", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
-    const holdings = await db.query(`SELECT * FROM holdings WHERE household_id = $1`, [member.householdId]);
-    const accountRows = await db.query(`SELECT id, visibility, owner_user_id FROM accounts WHERE household_id = $1`, [member.householdId]);
-    const visibleAccounts = new Set(accountRows.filter((account) => canSeeAccount(me.id, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null })).map((account) => String(account.id)));
-    const quotes = await db.query(`SELECT * FROM quotes WHERE household_id = $1`, [member.householdId]);
-    const positions = holdings.filter((row) => visibleAccounts.has(String(row.account_id))).map((row) => {
-      const quote = quotes.find((item) => item.symbol === row.symbol);
-      return positionView(mapHolding(row), quote ? mapQuote(quote) : undefined);
-    });
-    const priced = positions.filter((row) => row.marketValueMinor != null);
-    const slices = allocation(priced.map((row) => ({ key: String(holdings.find((item) => item.id === row.holdingId)?.asset_class ?? row.symbol), valueMinor: row.marketValueMinor! })));
+    const current = await visibleAllocation(me.id, member.householdId);
+    return c.json({ ...current, drift: allocationDrift(current.allocation, []) });
+  });
+
+  app.post("/api/households/:hid/investments/drift", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const body = z.object({ targets: z.array(z.object({ key: z.string().min(1), targetBps: z.number().int() })).max(40) }).parse(await c.req.json());
+    const current = await visibleAllocation(me.id, member.householdId);
     return c.json({
-      positions,
-      allocation: slices,
-      drift: allocationDrift(slices, []),
-      note: "Missing prices stay missing. Manual prices are labeled manual.",
+      allocation: current.allocation,
+      drift: allocationDrift(current.allocation, body.targets),
+      coverage: current.coverage,
+      note: "Drift compares the priced holdings with the targets you typed. A missing price is not treated as zero.",
+    });
+  });
+
+  app.post("/api/households/:hid/investments/return", async (c) => {
+    const me = await actor(c);
+    await requireMember(db, me.id, c.req.param("hid"));
+    const body = z.object({
+      startValueMinor: money, endValueMinor: money, externalFlowMinor: z.number().int(),
+      startDate: z.string(), endDate: z.string(),
+    }).parse(await c.req.json());
+    const timeWeighted = timeWeightedReturn([
+      { date: body.startDate, valueMinor: body.startValueMinor, externalFlowMinor: 0 },
+      { date: body.endDate, valueMinor: body.endValueMinor, externalFlowMinor: body.externalFlowMinor },
+    ]);
+    const moneyWeighted = moneyWeightedReturn([
+      { date: body.startDate, amountMinor: -body.startValueMinor },
+      { date: body.endDate, amountMinor: -body.externalFlowMinor },
+      { date: body.endDate, amountMinor: body.endValueMinor },
+    ]);
+    return c.json({
+      timeWeighted,
+      moneyWeighted,
+      note: "A deposit or withdrawal is an external flow, not investment performance. These figures use the amounts you typed. They do not convert currencies and they are not a forecast.",
     });
   });
 
@@ -2180,6 +2213,61 @@ export function createApp(db: Database) {
     createGoal: (user, householdId, raw, forcedId) => createManualGoal(user, householdId, raw, forcedId),
   });
 
+  async function visibleAllocation(userId: string, householdId: string) {
+    const holdings = await db.query(`SELECT * FROM holdings WHERE household_id = $1`, [householdId]);
+    const accountRows = await db.query(`SELECT id, visibility, owner_user_id FROM accounts WHERE household_id = $1`, [householdId]);
+    const visibleAccounts = new Set(accountRows.filter((account) => canSeeAccount(userId, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null })).map((account) => String(account.id)));
+    const quotes = await db.query(`SELECT * FROM quotes WHERE household_id = $1`, [householdId]);
+    const positions = holdings.filter((row) => visibleAccounts.has(String(row.account_id))).map((row) => {
+      const sameCurrency = quotes.find((item) => item.symbol === row.symbol && String(item.currency) === String(row.currency));
+      const quote = sameCurrency ?? quotes.find((item) => item.symbol === row.symbol);
+      const view = positionView(mapHolding(row), quote ? mapQuote(quote) : undefined);
+      return { ...view, name: String(row.name), quantity: String(row.quantity), assetClass: String(row.asset_class), currency: String(row.currency) };
+    });
+    const priced = positions.filter((row) => row.marketValueMinor != null);
+    const allocation = allocationByKey(priced.map((row) => ({ key: row.assetClass, valueMinor: row.marketValueMinor ?? 0 })));
+    const coverage = {
+      holdingCount: positions.length,
+      pricedCount: priced.length,
+      complete: positions.length > 0 && priced.length === positions.length,
+    };
+    return {
+      positions,
+      allocation,
+      coverage,
+      note: coverage.complete
+        ? "Every visible holding has a price. Manual prices are labeled manual. Missing cost basis stays missing."
+        : `Prices are missing for ${positions.length - priced.length} of ${positions.length} visible holdings. Those holdings are left out of the allocation. They are not valued at zero.`,
+    };
+  }
+
+  async function replaceAllocations(me: Actor, householdId: string, input: {
+    transactionId: string;
+    version: number;
+    amountMinor: number;
+    type: string;
+    splits: { bucketId: string; amountMinor: number; role: "expense" | "refund" }[];
+  }) {
+    const existing = await mustTxn(me.id, householdId, input.transactionId);
+    if (num(existing.reconciled) === 1 || num(existing.locked) === 1) {
+      throw new ApiError(409, "This transaction is reconciled or locked. Its categories were not replaced.");
+    }
+    if (num(existing.version) !== input.version) throw new ApiError(409, "Reload this transaction. Someone else saved a newer version.");
+    const account = await mustAccount(me.id, householdId, String(existing.account_id));
+    const resulting = transactionFromRow(existing, input.splits, { amountMinor: input.amountMinor, type: input.type as Transaction["type"] });
+    const accounts = await loadEngineAccounts(householdId, [resulting.accountId, resulting.counterAccountId]);
+    validateTransaction(resulting, accounts, String(account.currency));
+    const updated = await db.query(
+      `UPDATE transactions SET amount_minor = $1, type = $2, category_locked = 1, version = version + 1, updated_at = $3
+       WHERE id = $4 AND household_id = $5 AND version = $6 AND deleted = 0 AND reconciled = 0 AND COALESCE(locked, 0) = 0 RETURNING version`,
+      [input.amountMinor, input.type, nowIso(), existing.id, householdId, input.version],
+    );
+    if (!updated.length) throw new ApiError(409, "Reload this transaction. Someone else saved a newer version.");
+    await replaceSplits(String(existing.id), input.splits);
+    await audit(db, householdId, me.id, "transaction.update", "Replaced categories from a reviewed receipt", "transaction", String(existing.id));
+    return { version: num(updated[0].version) };
+  }
+
   mountReceipts(app, db, {
     actor,
     requireMember: (userId, householdId) => requireMember(db, userId, householdId),
@@ -2187,6 +2275,8 @@ export function createApp(db: Database) {
     assertSpace,
     mustAccount,
     mustTxn,
+    splitsOf,
+    replaceAllocations,
     insertTransaction,
     uploadDir,
   });

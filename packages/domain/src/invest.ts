@@ -52,6 +52,7 @@ export interface PositionView {
 export function positionView(holding: Holding, quote?: Quote): PositionView {
   const missing: string[] = [];
   if (!quote) missing.push("No price on file. Add a manual price or connect a market-data provider. BudgetCents does not invent live quotes.");
+  else if (quote.currency !== holding.currency) missing.push(`The quote is ${quote.currency} and the holding is ${holding.currency}. They are not combined.`);
   if (holding.costBasisMinor == null) missing.push("Cost basis is missing, so gain and loss are not calculated.");
   const market = quote ? marketValueMinor(holding, quote) : null;
   const unrealized = market != null && holding.costBasisMinor != null ? market - holding.costBasisMinor : null;
@@ -127,6 +128,16 @@ export interface AllocationSlice {
   key: string;
   valueMinor: number;
   weightBps: number;
+}
+
+/** Combine rows that share a key before weighting them. Missing values are omitted by the caller. */
+export function allocationByKey(rows: { key: string; valueMinor: number }[]): AllocationSlice[] {
+  const grouped = new Map<string, number>();
+  for (const row of rows) {
+    if (!Number.isInteger(row.valueMinor) || row.valueMinor < 0) continue;
+    grouped.set(row.key, (grouped.get(row.key) ?? 0) + row.valueMinor);
+  }
+  return allocation([...grouped.entries()].map(([key, valueMinor]) => ({ key, valueMinor })));
 }
 
 export function allocation(rows: { key: string; valueMinor: number }[]): AllocationSlice[] {

@@ -388,6 +388,7 @@ function applyTransaction(
   const card = isCredit(primary) ? primary : undefined;
   for (const split of splitsOrDefault(txn)) {
     if (isInflowRole(split.role)) {
+      if (split.role === "refund") state.spending -= split.amountMinor;
       if (split.bucketId) touch(split.bucketId, "inn", split.amountMinor);
       if (card && card.onBudget) {
         const reserve = ccReserveId(buckets, card.id);

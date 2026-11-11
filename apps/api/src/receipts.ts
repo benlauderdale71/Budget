@@ -8,6 +8,7 @@ import { id, nowIso } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
 import { readReceipt, readerStatus } from "./ocr.js";
+import { AllocationError, proposeReceiptSplits, type ProposedSplit } from "@budgetcents/domain";
 import { emptyFields, receiptDifferences, reviewFields, parseReceiptText, type ReceiptFields } from "./receipt-fields.js";
 
 interface ReceiptDeps {
@@ -17,6 +18,14 @@ interface ReceiptDeps {
   assertSpace: (userId: string, householdId: string, spaceId: string) => Promise<void>;
   mustAccount: (userId: string, householdId: string, accountId: string) => Promise<Record<string, unknown>>;
   mustTxn: (userId: string, householdId: string, txnId: string) => Promise<Record<string, unknown>>;
+  splitsOf: (txnId: string) => Promise<{ bucketId: string | null; amountMinor: number; role: string; memo?: string }[]>;
+  replaceAllocations: (me: Actor, householdId: string, input: {
+    transactionId: string;
+    version: number;
+    amountMinor: number;
+    type: string;
+    splits: { bucketId: string; amountMinor: number; role: "expense" | "refund" }[];
+  }) => Promise<{ version: number }>;
   insertTransaction: (me: Actor, householdId: string, body: {
     spaceId?: string;
     date: string;
@@ -24,7 +33,7 @@ interface ReceiptDeps {
     amountMinor: number;
     type: string;
     payee: string;
-    splits: { bucketId: string | null; amountMinor: number; role: "expense"; memo?: string }[];
+    splits: { bucketId: string | null; amountMinor: number; role: "expense" | "refund"; memo?: string }[];
     bankStatus: "posted";
     reviewStatus: "reviewed";
     notes?: string;
@@ -192,15 +201,36 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
         tipMinor: z.number().int().nullable().optional(),
         discountMinor: z.number().int().nullable().optional(),
         totalMinor: z.number().int().nullable().optional(),
-        lineItems: z.array(z.object({ description: z.string().nullable().optional(), amountMinor: z.number().int().nullable().optional() })).max(80).optional(),
+        taxInclusive: z.boolean().optional(),
+        otherChargesMinor: z.number().int().nullable().optional(),
+        allocationMode: z.enum(["proportional", "category"]).optional(),
+        allocationBucketId: z.string().nullable().optional(),
+        reviewedAdjustment: z.object({ amountMinor: z.number().int(), bucketId: z.string(), note: z.string() }).nullable().optional(),
+        lineItems: z.array(z.object({
+          id: z.string().nullable().optional(),
+          description: z.string().nullable().optional(),
+          quantityMilli: z.number().int().nullable().optional(),
+          unitMinor: z.number().int().nullable().optional(),
+          amountMinor: z.number().int().nullable().optional(),
+          bucketId: z.string().nullable().optional(),
+        })).max(80).optional(),
       }),
     }).parse(await c.req.json());
     const loaded = await mustAttachment(db, deps, me.id, member.householdId, c.req.param("id"));
     if (loaded.draft.status === "confirmed") throw new ApiError(409, "This receipt is already confirmed.");
     if (loaded.draft.status === "discarded") throw new ApiError(409, "This receipt was discarded.");
+    const previous = fieldsOf(loaded.draft);
     let fields: ReceiptFields;
     try {
-      fields = reviewFields(body.fields);
+      fields = reviewFields({
+        ...body.fields,
+        lineItems: body.fields.lineItems ?? previous.lineItems,
+        taxInclusive: body.fields.taxInclusive ?? previous.taxInclusive,
+        otherChargesMinor: body.fields.otherChargesMinor === undefined ? previous.otherChargesMinor : body.fields.otherChargesMinor,
+        allocationMode: body.fields.allocationMode ?? previous.allocationMode,
+        allocationBucketId: body.fields.allocationBucketId === undefined ? previous.allocationBucketId : body.fields.allocationBucketId,
+        reviewedAdjustment: body.fields.reviewedAdjustment === undefined ? previous.reviewedAdjustment : body.fields.reviewedAdjustment,
+      }, { extractedLines: previous.extractedLines, previousLines: previous.lineItems });
     } catch (error) {
       throw new ApiError(400, error instanceof Error ? error.message : "The receipt fields are not valid.");
     }
@@ -230,6 +260,20 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
     return c.json({ draft: publicDraft(saved[0], true), note: "The receipt was discarded. No transaction was changed." });
   });
 
+  app.post("/api/households/:hid/attachments/:id/preview", async (c) => {
+    const me = await deps.actor(c);
+    const member = await deps.requireMember(me.id, c.req.param("hid"));
+    const loaded = await mustAttachment(db, deps, me.id, member.householdId, c.req.param("id"));
+    const fields = fieldsOf(loaded.draft);
+    try {
+      const proposal = await proposalFor(db, deps, me.id, member.householdId, fields);
+      return c.json({ proposal });
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : error instanceof Error ? error.message : "The allocation could not be prepared.";
+      return c.json({ proposal: null, message });
+    }
+  });
+
   app.post("/api/households/:hid/attachments/:id/apply", async (c) => {
     const me = await deps.actor(c);
     const member = await deps.requireMember(me.id, c.req.param("hid"));
@@ -244,6 +288,9 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
       acceptDateMismatch: z.boolean().optional(),
       acceptCurrencyMismatch: z.boolean().optional(),
       acceptLineMismatch: z.boolean().optional(),
+      preview: z.boolean().optional(),
+      replaceSplits: z.boolean().optional(),
+      acceptAmountChange: z.boolean().optional(),
     }).parse(await c.req.json());
     const loaded = await mustAttachment(db, deps, me.id, member.householdId, c.req.param("id"));
     const destination = await assertTransactionAccess(db, deps, me.id, member.householdId, body.transactionId);
@@ -252,7 +299,45 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
     }
     const fields = fieldsOf(loaded.draft);
     const account = await deps.mustAccount(me.id, member.householdId, String(destination.account_id));
-    const differences = receiptDifferences(fields, txnView(destination), String(account.currency));
+    if (body.preview) {
+      const currentSplits = await deps.splitsOf(String(destination.id));
+      let proposedSplits = currentSplits.map(plainSplit);
+      let proposedAmount = num(destination.amount_minor);
+      let message = "Linking keeps the categories already on this expense.";
+      if (fields.lineItems.some((line) => line.bucketId)) {
+        try {
+          const proposal = await proposalFor(db, deps, me.id, member.householdId, fields);
+          proposedSplits = proposal.splits;
+          proposedAmount = -proposal.netMinor;
+          message = proposal.reconciled ? proposal.message : `${proposal.message} Nothing was changed.`;
+        } catch (error) {
+          message = error instanceof Error ? error.message : "The allocation could not be prepared.";
+        }
+      }
+      return c.json({
+        preview: true,
+        currentSplits,
+        proposedSplits,
+        currentAmountMinor: num(destination.amount_minor),
+        proposedAmountMinor: proposedAmount,
+        transactionVersion: num(destination.version),
+        draftVersion: num(loaded.draft.version),
+        protected: num(destination.reconciled) === 1 || num(destination.locked) === 1,
+        note: message,
+      });
+    }
+    let proposalReady = false;
+    if (body.replaceSplits && fields.lineItems.some((line) => line.bucketId)) {
+      try {
+        proposalReady = (await proposalFor(db, deps, me.id, member.householdId, fields)).reconciled;
+      } catch {
+        proposalReady = false;
+      }
+    }
+    const differences = receiptDifferences(fields, txnView(destination), String(account.currency)).filter((difference) => {
+      if (!proposalReady) return true;
+      return difference.code !== "line_total" && difference.code !== "line_subtotal";
+    });
     const blocked = unaccepted(differences, body);
     if (blocked.length) {
       return c.json({ ok: false, mismatch: true, error: "The receipt does not match the transaction. Nothing was changed.", differences: blocked }, 409);
@@ -267,12 +352,35 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
         }
         throw new ApiError(409, "That operation id was already used.");
       }
-      if (draft.status === "confirmed") return { ok: true, duplicate: true, created: false, transactionId: str(draft.transaction_id) };
+      if (draft.status === "confirmed" && !body.replaceSplits) return { ok: true, duplicate: true, created: false, transactionId: str(draft.transaction_id) };
       if (draft.status === "discarded") throw new ApiError(409, "This receipt was discarded.");
       if (num(draft.version) !== body.draftVersion) throw new ApiError(409, "Reload this receipt. A newer draft was saved.");
       const fresh = await deps.mustTxn(me.id, member.householdId, String(destination.id));
       if (num(fresh.version) !== body.transactionVersion) throw new ApiError(409, "Reload this transaction. Someone else saved a newer version.");
-      if (num(fresh.reconciled) === 1) {
+      let replaced = false;
+      if (body.replaceSplits) {
+        if (num(fresh.reconciled) === 1 || num(fresh.locked) === 1) {
+          throw new ApiError(409, "This transaction is reconciled or locked. Its categories were not replaced.");
+        }
+        const proposal = await proposalFor(db, deps, me.id, member.householdId, fieldsOf(draft));
+        if (!proposal.reconciled) throw new ApiError(409, `${proposal.message} Nothing was changed.`);
+        const proposedAmount = -proposal.netMinor;
+        if (proposedAmount !== num(fresh.amount_minor) && !body.acceptAmountChange) {
+          throw new ApiError(409, "The receipt total does not match this expense. Nothing was changed.");
+        }
+        const currentSplits = await deps.splitsOf(String(fresh.id));
+        const same = proposedAmount === num(fresh.amount_minor) && sameSplits(currentSplits, proposal.splits);
+        if (!same) {
+          await deps.replaceAllocations(me, member.householdId, {
+            transactionId: String(fresh.id),
+            version: num(fresh.version),
+            amountMinor: proposedAmount,
+            type: proposal.netMinor >= 0 ? "expense" : "refund",
+            splits: proposal.splits,
+          });
+          replaced = true;
+        }
+      } else if (num(fresh.reconciled) === 1 || num(fresh.locked) === 1) {
         await db.query(`UPDATE attachments SET transaction_id = $1 WHERE id = $2 AND household_id = $3`, [fresh.id, loaded.attachment.id, member.householdId]);
         await db.query(
           `UPDATE receipt_drafts SET status = 'confirmed', transaction_id = $1, op_id = $2, version = version + 1, updated_at = $3 WHERE attachment_id = $4`,
@@ -286,8 +394,17 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
         `UPDATE receipt_drafts SET status = 'confirmed', transaction_id = $1, op_id = $2, version = version + 1, updated_at = $3 WHERE attachment_id = $4`,
         [fresh.id, body.opId, nowIso(), loaded.attachment.id],
       );
-      await audit(db, member.householdId, me.id, "receipt.link", "Linked a receipt to an existing transaction without changing it", "transaction", String(fresh.id));
-      return { ok: true, duplicate: false, created: false, transactionId: String(fresh.id), note: "The receipt was linked. No second expense was created, and the transaction was not changed." };
+      await audit(db, member.householdId, me.id, replaced ? "receipt.replace" : "receipt.link", replaced ? "Replaced categories from a reviewed receipt" : "Linked a receipt to an existing transaction without changing it", "transaction", String(fresh.id));
+      return {
+        ok: true,
+        duplicate: false,
+        created: false,
+        transactionId: String(fresh.id),
+        replaced,
+        note: replaced
+          ? "The receipt was linked and the categories were replaced. Notes, tags, the provider id, and the review state were kept. No second expense was created."
+          : "The receipt was linked. No second expense was created, and the transaction was not changed.",
+      };
     });
     return c.json(result);
   });
@@ -306,36 +423,64 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
       acceptLineMismatch: z.boolean().optional(),
     }).parse(await c.req.json());
     const loaded = await mustAttachment(db, deps, me.id, member.householdId, c.req.param("id"));
+    const fields = fieldsOf(loaded.draft);
+    const requested = await confirmationFingerprint(db, deps, me.id, member.householdId, fields, body.accountId, body.splits);
     if (loaded.attachment.transaction_id) {
       if (loaded.draft.status === "confirmed") {
+        const stored = fields.confirmation;
+        if (stored && stored.opId === body.opId && stored.fingerprint !== requested) {
+          throw new ApiError(409, "That operation was already used for a different confirmation. The saved expense was not changed.");
+        }
         return c.json({ ok: true, duplicate: true, created: false, transactionId: String(loaded.draft.transaction_id) });
       }
       throw new ApiError(409, "This receipt is already linked to a transaction. Confirming it again would add another expense.");
     }
     const account = await deps.mustAccount(me.id, member.householdId, body.accountId);
     await deps.assertSpace(me.id, member.householdId, String(account.space_id));
-    const fields = fieldsOf(loaded.draft);
     if (!fields.merchant || !fields.date || !fields.currency || fields.totalMinor == null) {
       throw new ApiError(400, "Save a merchant, date, currency, and total before creating an expense.");
     }
-    if (!body.splits.length || body.splits.some((split) => !split.bucketId)) throw new ApiError(400, "Choose a category before creating the expense.");
-    const splitSum = body.splits.reduce((sum, split) => sum + split.amountMinor, 0);
-    if (splitSum !== fields.totalMinor) throw new ApiError(400, "The categories do not add up to the receipt total.");
-    const differences = receiptDifferences(fields, null, String(account.currency));
+    const categorized = fields.lineItems.some((line) => line.bucketId);
+    let splits: ProposedSplit[];
+    let amountMinor = -fields.totalMinor;
+    let type = "expense";
+    if (categorized) {
+      const proposal = await proposalFor(db, deps, me.id, member.householdId, fields);
+      if (!proposal.reconciled) return c.json({ ok: false, mismatch: true, error: `${proposal.message} Nothing was changed.`, proposal }, 409);
+      if (body.splits.length && !sameSplits(body.splits.map((split) => ({ bucketId: split.bucketId, amountMinor: split.amountMinor, role: "expense" })), proposal.splits)) {
+        throw new ApiError(400, "The submitted categories do not match the reviewed lines. Nothing was changed.");
+      }
+      if (proposal.netMinor === 0) throw new ApiError(400, "A receipt that adds to zero does not create a transaction.");
+      splits = proposal.splits;
+      amountMinor = -proposal.netMinor;
+      type = proposal.netMinor >= 0 ? "expense" : "refund";
+    } else {
+      if (!body.splits.length || body.splits.some((split) => !split.bucketId)) throw new ApiError(400, "Choose a category before creating the expense.");
+      const splitSum = body.splits.reduce((sum, split) => sum + split.amountMinor, 0);
+      if (splitSum !== fields.totalMinor) throw new ApiError(400, "The categories do not add up to the receipt total.");
+      splits = body.splits.map((split) => ({ bucketId: split.bucketId!, amountMinor: split.amountMinor, role: "expense" as const }));
+      for (const split of splits) await assertReceiptBucket(db, deps, me.id, member.householdId, split.bucketId);
+    }
+    const fingerprint = await confirmationFingerprint(db, deps, me.id, member.householdId, fields, body.accountId, body.splits);
+    const differences = receiptDifferences(fields, null, String(account.currency)).filter((difference) => {
+      if (!categorized) return true;
+      return difference.code !== "line_total" && difference.code !== "line_subtotal";
+    });
     const blocked = unaccepted(differences, body);
     if (blocked.length) return c.json({ ok: false, mismatch: true, error: "Resolve the receipt differences before creating an expense. Nothing was changed.", differences: blocked }, 409);
-    const splits = body.splits.map((split) => ({
-      bucketId: split.bucketId,
-      amountMinor: split.amountMinor,
-      role: "expense" as const,
-    }));
     const note = fields.currency === String(account.currency)
       ? "Confirmed from a reviewed receipt. A receipt does not prove which account paid."
       : "Confirmed from a reviewed receipt. The receipt currency differed from the account. No conversion was applied. A receipt does not prove which account paid.";
     const result = await db.tx(async () => {
       const current = await db.query(`SELECT * FROM receipt_drafts WHERE attachment_id = $1 FOR UPDATE`, [loaded.attachment.id]);
       const draft = current[0];
-      if (draft.status === "confirmed") return { ok: true, duplicate: true, created: false, transactionId: str(draft.transaction_id) };
+      if (draft.status === "confirmed") {
+        const stored = fieldsOf(draft).confirmation;
+        if (stored && stored.opId === body.opId && stored.fingerprint !== fingerprint) {
+          throw new ApiError(409, "That operation was already used for a different confirmation. The saved expense was not changed.");
+        }
+        return { ok: true, duplicate: true, created: false, transactionId: str(draft.transaction_id) };
+      }
       if (draft.status === "discarded") throw new ApiError(409, "This receipt was discarded.");
       if (num(draft.version) !== body.version) throw new ApiError(409, "Reload this receipt. A newer draft was saved.");
       if (draft.transaction_id) throw new ApiError(409, "This receipt is already linked to a transaction.");
@@ -343,8 +488,8 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
         spaceId: String(account.space_id),
         date: fields.date!,
         accountId: body.accountId,
-        amountMinor: -fields.totalMinor!,
-        type: "expense",
+        amountMinor,
+        type,
         payee: fields.merchant!,
         splits,
         bankStatus: "posted",
@@ -355,13 +500,14 @@ export function mountReceipts(app: Hono, db: Database, deps: ReceiptDeps) {
       });
       if (!created.id) throw new ApiError(409, "The expense could not be saved.");
       if (created.duplicate) throw new ApiError(409, "That operation id was already used.");
+      const confirmedFields = { ...fields, confirmation: { opId: body.opId, fingerprint } };
       await db.query(`UPDATE attachments SET transaction_id = $1 WHERE id = $2 AND household_id = $3`, [created.id, loaded.attachment.id, member.householdId]);
       await db.query(
-        `UPDATE receipt_drafts SET status = 'confirmed', transaction_id = $1, op_id = $2, version = version + 1, updated_at = $3 WHERE attachment_id = $4`,
-        [created.id, body.opId, nowIso(), loaded.attachment.id],
+        `UPDATE receipt_drafts SET status = 'confirmed', transaction_id = $1, op_id = $2, fields_json = $3, version = version + 1, updated_at = $4 WHERE attachment_id = $5`,
+        [created.id, body.opId, JSON.stringify(confirmedFields), nowIso(), loaded.attachment.id],
       );
       await audit(db, member.householdId, me.id, "receipt.confirm", "Confirmed one reviewed receipt as an expense", "transaction", created.id);
-      return { ok: true, duplicate: !!created.duplicate, created: !created.duplicate, transactionId: created.id };
+      return { ok: true, duplicate: !!created.duplicate, created: !created.duplicate, transactionId: created.id, splits };
     });
     return c.json(result, result.created ? 201 : 200);
   });
@@ -380,6 +526,77 @@ function keepExisting(draft: Record<string, unknown>): string | null {
   if (draft.status === "confirmed") return "This receipt is already confirmed.";
   if (draft.status === "discarded") return "This receipt was discarded.";
   return null;
+}
+
+async function proposalFor(db: Database, deps: ReceiptDeps, userId: string, householdId: string, fields: ReceiptFields) {
+  if (!fields.lineItems.length) throw new ApiError(400, "Add at least one line before allocating the receipt.");
+  if (fields.lineItems.some((line) => !line.bucketId)) throw new ApiError(400, "Assign a category to every line.");
+  const unresolved = fields.lineItems.find((line) => line.unresolved);
+  if (unresolved) throw new ApiError(400, unresolved.unresolved ?? "A line is unresolved.");
+  if (fields.totalMinor == null) throw new ApiError(400, "Enter the receipt total.");
+  for (const line of fields.lineItems) await assertReceiptBucket(db, deps, userId, householdId, line.bucketId!);
+  if (fields.allocationMode === "category" && fields.allocationBucketId) await assertReceiptBucket(db, deps, userId, householdId, fields.allocationBucketId);
+  if (fields.reviewedAdjustment?.bucketId) await assertReceiptBucket(db, deps, userId, householdId, fields.reviewedAdjustment.bucketId);
+  try {
+    return proposeReceiptSplits({
+      lines: fields.lineItems.map((line) => ({ id: line.id, amountMinor: line.amountMinor ?? 0, bucketId: line.bucketId! })),
+      taxMinor: fields.taxMinor ?? 0,
+      tipMinor: fields.tipMinor ?? 0,
+      discountMinor: fields.discountMinor ?? 0,
+      otherMinor: fields.otherChargesMinor ?? 0,
+      totalMinor: fields.totalMinor,
+      taxInclusive: fields.taxInclusive,
+      mode: fields.allocationMode,
+      adjustmentBucketId: fields.allocationBucketId,
+      reviewedAdjustment: fields.reviewedAdjustment,
+    });
+  } catch (error) {
+    if (error instanceof AllocationError) throw new ApiError(400, error.message);
+    throw error;
+  }
+}
+
+async function assertReceiptBucket(db: Database, deps: ReceiptDeps, userId: string, householdId: string, bucketId: string) {
+  const rows = await db.query(`SELECT household_id, space_id, archived, kind FROM buckets WHERE id = $1`, [bucketId]);
+  if (!rows.length || String(rows[0].household_id) !== householdId) throw new ApiError(404, "Not found");
+  if (num(rows[0].archived) === 1) throw new ApiError(400, "That category is archived.");
+  if (String(rows[0].kind) !== "expense") throw new ApiError(400, "Choose an expense category.");
+  await deps.assertSpace(userId, householdId, String(rows[0].space_id));
+}
+
+async function confirmationFingerprint(
+  db: Database,
+  deps: ReceiptDeps,
+  userId: string,
+  householdId: string,
+  fields: ReceiptFields,
+  accountId: string,
+  fallback: { bucketId: string | null; amountMinor: number; role?: string }[],
+): Promise<string> {
+  const submitted = [...fallback].map((split) => ({ bucketId: split.bucketId, amountMinor: split.amountMinor, role: split.role ?? "expense" }));
+  try {
+    const applied = fields.lineItems.some((line) => line.bucketId)
+      ? (await proposalFor(db, deps, userId, householdId, fields)).splits
+      : submitted;
+    const order = (split: { bucketId: string | null; amountMinor: number; role?: string }) => `${split.role ?? "expense"}:${split.bucketId}:${split.amountMinor}`;
+    return JSON.stringify({
+      accountId,
+      totalMinor: fields.totalMinor,
+      applied: [...applied].sort((a, b) => order(a).localeCompare(order(b))),
+      submitted: [...submitted].sort((a, b) => order(a).localeCompare(order(b))),
+    });
+  } catch {
+    return fields.confirmation?.fingerprint ?? "";
+  }
+}
+
+function plainSplit(split: { bucketId: string | null; amountMinor: number; role: string }) {
+  return { bucketId: split.bucketId, amountMinor: split.amountMinor, role: split.role };
+}
+
+function sameSplits(left: { bucketId: string | null; amountMinor: number; role?: string }[], right: { bucketId: string | null; amountMinor: number; role?: string }[]) {
+  const key = (split: { bucketId: string | null; amountMinor: number; role?: string }) => `${split.role ?? "expense"}:${split.bucketId}:${split.amountMinor}`;
+  return [...left].map(key).sort().join("|") === [...right].map(key).sort().join("|");
 }
 
 function unaccepted(differences: { code: string; message: string }[], body: { acceptTotalMismatch?: boolean; acceptDateMismatch?: boolean; acceptCurrencyMismatch?: boolean; acceptLineMismatch?: boolean }) {

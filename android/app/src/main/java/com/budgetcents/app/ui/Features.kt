@@ -173,14 +173,12 @@ fun FeatureScreen(
                 Text("${row.optString("symbol")} ${row.optString("quoteSource")} $value")
             }
         }
-        "retirement" -> RetirementScreen(onError) { age, portfolio, save, spend ->
+        "retirement" -> RetirementScreen(onError) { body ->
             scope.launch {
                 runIo(onError) {
-                    val result = api.request("POST", "/api/households/$hid/retirement", JSONObject()
-                        .put("currentAge", age).put("retireAge", 65).put("endAge", 90)
-                        .put("portfolioMinor", portfolio).put("annualContributionMinor", save).put("annualSpendingMinor", spend)
-                        .put("inflationBps", 250).put("meanReturnBps", 500).put("stdevBps", 1200).put("feeBps", 10).put("iterations", 200).put("seed", 1))
-                    onStatus("Success rate ${(result.getJSONObject("result").optInt("successRateBps") / 100.0)}%. ${result.getJSONObject("result").optString("metric")}")
+                    val result = api.request("POST", "/api/households/$hid/retirement", body)
+                    val model = result.getJSONObject("result")
+                    onStatus("Deterministic ending ${money(model.optLong("deterministicEndingMinor"), privacy)}. Simulated ${(model.optInt("successRateBps") / 100.0)}%. ${model.optString("metric")}")
                 }
             }
         }
@@ -1561,19 +1559,45 @@ private fun BucketPick(dash: JSONObject?, kind: String, onSave: (String, String,
 }
 
 @Composable
-private fun RetirementScreen(onError: (String) -> Unit, onRun: (Int, Long, Long, Long) -> Unit) {
-    var age by remember { mutableStateOf("35") }
+private fun RetirementScreen(onError: (String) -> Unit, onRun: (JSONObject) -> Unit) {
+    var clock by remember { mutableStateOf("60") }
+    var end by remember { mutableStateOf("76") }
+    var ageA by remember { mutableStateOf("60") }
+    var retireA by remember { mutableStateOf("65") }
+    var ageB by remember { mutableStateOf("50") }
+    var retireB by remember { mutableStateOf("65") }
+    var partner by remember { mutableStateOf(false) }
     var portfolio by remember { mutableStateOf("") }
     var save by remember { mutableStateOf("") }
     var spend by remember { mutableStateOf("") }
-    Text("This model does not change your accounts. The same inputs replay.")
-    OutlinedTextField(age, { age = it }, label = { Text("Age") }, modifier = Modifier.fillMaxWidth())
+    Text("Each person ages from their own current age. This model does not change your accounts. The same inputs replay.")
+    OutlinedTextField(clock, { clock = it }, label = { Text("Household planning age") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(end, { end = it }, label = { Text("Plan through") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(ageA, { ageA = it }, label = { Text("Person A age") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(retireA, { retireA = it }, label = { Text("Person A retirement age") }, modifier = Modifier.fillMaxWidth())
+    TextButton(onClick = { partner = !partner }) { Text(if (partner) "Remove person B" else "Add person B") }
+    if (partner) {
+        OutlinedTextField(ageB, { ageB = it }, label = { Text("Person B age") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(retireB, { retireB = it }, label = { Text("Person B retirement age") }, modifier = Modifier.fillMaxWidth())
+    }
     OutlinedTextField(portfolio, { portfolio = it }, label = { Text("Portfolio") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
     OutlinedTextField(save, { save = it }, label = { Text("Annual contribution") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
     OutlinedTextField(spend, { spend = it }, label = { Text("Annual spending") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
     Button(onClick = {
         if (portfolio.isBlank() || save.isBlank() || spend.isBlank()) onError("Enter the portfolio, contribution, and spending.")
-        else onRun(age.toIntOrNull() ?: 35, parseDollars(portfolio), parseDollars(save), parseDollars(spend))
+        else {
+            val people = JSONArray().put(JSONObject().put("currentAge", ageA.toIntOrNull() ?: 60).put("retireAge", retireA.toIntOrNull() ?: 65).put("benefitAge", retireA.toIntOrNull() ?: 65).put("socialSecurityAnnualMinor", 0).put("pensionAnnualMinor", 0))
+            if (partner) people.put(JSONObject().put("currentAge", ageB.toIntOrNull() ?: 50).put("retireAge", retireB.toIntOrNull() ?: 65).put("socialSecurityAnnualMinor", 0).put("pensionAnnualMinor", 0))
+            onRun(JSONObject()
+                .put("currentAge", clock.toIntOrNull() ?: 60)
+                .put("retireAge", retireA.toIntOrNull() ?: 65)
+                .put("endAge", end.toIntOrNull() ?: 90)
+                .put("portfolioMinor", parseDollars(portfolio))
+                .put("annualContributionMinor", parseDollars(save))
+                .put("annualSpendingMinor", parseDollars(spend))
+                .put("inflationBps", 0).put("meanReturnBps", 0).put("stdevBps", 0).put("feeBps", 0)
+                .put("iterations", 20).put("seed", 7).put("people", people))
+        }
     }) { Text("Run model") }
 }
 
@@ -2035,6 +2059,11 @@ private fun ReceiptScreen(
     var version by remember { mutableStateOf(1) }
     var busy by remember { mutableStateOf(false) }
     var lineWarning by rememberSaveable { mutableStateOf("") }
+    var linesJson by rememberSaveable { mutableStateOf("[]") }
+    var linesSeeded by rememberSaveable { mutableStateOf(false) }
+    var tax by rememberSaveable { mutableStateOf("") }
+    var allocationMode by rememberSaveable { mutableStateOf("proportional") }
+    var proposalText by rememberSaveable { mutableStateOf("") }
     val cacheFile = activity?.let { java.io.File(it.cacheDir, "receipt-$cacheKey") }
 
     fun keep(next: ByteArray) {
@@ -2063,7 +2092,13 @@ private fun ReceiptScreen(
             if (date.isBlank()) date = fields.optString("date")
             if (currency.isBlank()) currency = fields.optString("currency")
             if (total.isBlank() && fields.has("totalMinor") && !fields.isNull("totalMinor")) total = money(fields.optLong("totalMinor"), false).removePrefix("$")
-            lineWarning = if (fields.optString("lineVersusTotal") == "differs") "Line items do not add up to the receipt total." else ""
+            if (!linesSeeded) {
+                val items = fields.optJSONArray("lineItems") ?: JSONArray()
+                if (linesJson == "[]" && items.length() > 0) linesJson = items.toString()
+                if (tax.isBlank() && fields.has("taxMinor") && !fields.isNull("taxMinor")) tax = money(fields.optLong("taxMinor"), false).removePrefix("$")
+                linesSeeded = true
+            }
+            lineWarning = if (fields.optString("lineVersusTotal") == "differs") "Line items do not add up to the receipt total. Preview the tax allocation before confirming." else ""
             matches = loaded.optJSONArray("possibleTransactions") ?: JSONArray()
             val reader = loaded.optJSONObject("reader")
             if (reader != null) note = reader.optString("note")
@@ -2085,17 +2120,71 @@ private fun ReceiptScreen(
     OutlinedTextField(merchant, { merchant = it }, label = { Text("Merchant") }, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(date, { date = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(currency, { currency = it.uppercase() }, label = { Text("Currency") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(tax, { tax = it }, label = { Text(if (privacy) "Tax hidden" else "Tax") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
     OutlinedTextField(total, { total = it }, label = { Text(if (privacy) "Total hidden" else "Total") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
     if (lineWarning.isNotBlank()) Text(lineWarning)
-    Text("Account")
+    Text("The confidence score does not prove the total or the categories. A missing line can be typed.")
     val accounts = dash?.optJSONArray("accounts") ?: JSONArray()
+    val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
+    val receiptLines = remember(linesJson) { JSONArray(if (linesJson.isBlank()) "[]" else linesJson) }
+    fun writeLines(next: JSONArray) { linesJson = next.toString(); proposalText = "" }
+    Text("Line items")
+    for (index in 0 until receiptLines.length()) {
+        val line = receiptLines.getJSONObject(index)
+        OutlinedTextField(
+            line.optString("description"),
+            { value ->
+                val next = JSONArray(linesJson)
+                next.getJSONObject(index).put("description", value)
+                writeLines(next)
+            },
+            label = { Text("Item ${index + 1}") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            line.optString("amountText").ifBlank { if (line.isNull("amountMinor")) "" else money(line.optLong("amountMinor"), false).removePrefix("$") },
+            { value ->
+                val next = JSONArray(linesJson)
+                next.getJSONObject(index).put("amountText", value)
+                writeLines(next)
+            },
+            label = { Text(if (privacy) "Line amount hidden" else "Line amount") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text("Category")
+        for (bucketIndex in 0 until buckets.length()) {
+            val bucket = buckets.getJSONObject(bucketIndex)
+            if (bucket.optString("kind") != "expense" || bucket.optString("systemRole").isNotBlank()) continue
+            TextButton(onClick = {
+                val next = JSONArray(linesJson)
+                next.getJSONObject(index).put("bucketId", bucket.optString("id"))
+                writeLines(next)
+            }) { Text(if (line.optString("bucketId") == bucket.optString("id")) "Selected ${bucket.optString("name")}" else bucket.optString("name")) }
+        }
+        TextButton(onClick = {
+            val next = JSONArray()
+            for (lineIndex in 0 until receiptLines.length()) if (lineIndex != index) next.put(receiptLines.getJSONObject(lineIndex))
+            writeLines(next)
+        }) { Text("Remove line") }
+    }
+    TextButton(onClick = {
+        val next = JSONArray(if (linesJson.isBlank()) "[]" else linesJson)
+        next.put(JSONObject().put("id", "m${next.length() + 1}").put("description", "").put("amountMinor", JSONObject.NULL))
+        writeLines(next)
+    }) { Text("Add line") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = { allocationMode = "proportional"; proposalText = "" }) { Text(if (allocationMode == "proportional") "Selected share tax" else "Share tax") }
+        TextButton(onClick = { allocationMode = "category"; proposalText = "" }) { Text(if (allocationMode == "category") "Selected one category" else "Tax on one category") }
+    }
+    if (proposalText.isNotBlank()) Text(proposalText)
+    Text("Account")
     for (index in 0 until accounts.length()) {
         val account = accounts.getJSONObject(index)
         if (account.optString("kind") !in setOf("checking", "savings", "cash")) continue
         TextButton(onClick = { accountId = account.optString("id") }) { Text(if (accountId == account.optString("id")) "Selected ${account.optString("name")}" else account.optString("name")) }
     }
-    Text("Category")
-    val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
+    Text("One category for the whole receipt")
     for (index in 0 until buckets.length()) {
         val bucket = buckets.getJSONObject(index)
         if (bucket.optString("kind") != "expense" || bucket.optString("systemRole").isNotBlank()) continue
@@ -2150,15 +2239,40 @@ private fun ReceiptScreen(
             }
         }
     }, enabled = !busy) { Text(if (status == "failed") "Try reading again" else "Read the receipt") }
+    fun receiptFields(): JSONObject {
+        val source = JSONArray(if (linesJson.isBlank()) "[]" else linesJson)
+        val items = JSONArray()
+        for (index in 0 until source.length()) {
+            val line = JSONObject(source.getJSONObject(index).toString())
+            val typed = line.optString("amountText")
+            if (typed.isNotBlank()) line.put("amountMinor", parseDollars(typed))
+            line.remove("amountText")
+            items.put(line)
+        }
+        return JSONObject()
+            .put("merchant", merchant.ifBlank { JSONObject.NULL })
+            .put("date", date.ifBlank { JSONObject.NULL })
+            .put("currency", currency.ifBlank { JSONObject.NULL })
+            .put("taxMinor", if (tax.isBlank()) JSONObject.NULL else parseDollars(tax))
+            .put("totalMinor", if (total.isBlank()) JSONObject.NULL else parseDollars(total))
+            .put("allocationMode", allocationMode)
+            .put("allocationBucketId", if (bucketId.isBlank()) JSONObject.NULL else bucketId)
+            .put("lineItems", items)
+    }
+    fun linesReady(): Boolean {
+        val items = JSONArray(if (linesJson.isBlank()) "[]" else linesJson)
+        if (items.length() == 0) return false
+        for (index in 0 until items.length()) {
+            val line = items.getJSONObject(index)
+            val typed = line.optString("amountText")
+            if (line.optString("bucketId").isBlank() || (typed.isBlank() && line.isNull("amountMinor"))) return false
+        }
+        return true
+    }
     Button(onClick = {
         if (attachmentId.isBlank()) onError("Upload the receipt first.")
         else launch {
-            val body = JSONObject().put("version", version).put("fields", JSONObject()
-                .put("merchant", merchant.ifBlank { JSONObject.NULL })
-                .put("date", date.ifBlank { JSONObject.NULL })
-                .put("currency", currency.ifBlank { JSONObject.NULL })
-                .put("totalMinor", if (total.isBlank()) JSONObject.NULL else parseDollars(total)))
-            val saved = api.request("PATCH", "/api/households/$hid/attachments/$attachmentId/draft", body)
+            val saved = api.request("PATCH", "/api/households/$hid/attachments/$attachmentId/draft", JSONObject().put("version", version).put("fields", receiptFields()))
             withContext(Dispatchers.Main) {
                 version = saved.getJSONObject("draft").optInt("version", version)
                 onStatus("Corrections saved. Cash was not changed.")
@@ -2166,15 +2280,31 @@ private fun ReceiptScreen(
         }
     }, enabled = !busy) { Text("Save corrections") }
     Button(onClick = {
-        if (attachmentId.isBlank() || accountId.isBlank() || bucketId.isBlank() || total.isBlank()) onError("Choose an account, a category, and a total first.")
+        if (attachmentId.isBlank()) onError("Upload the receipt first.")
+        else launch {
+            val saved = api.request("PATCH", "/api/households/$hid/attachments/$attachmentId/draft", JSONObject().put("version", version).put("fields", receiptFields()))
+            val nextVersion = saved.getJSONObject("draft").optInt("version", version)
+            val response = api.request("POST", "/api/households/$hid/attachments/$attachmentId/preview", JSONObject())
+            val proposal = response.optJSONObject("proposal")
+            withContext(Dispatchers.Main) {
+                version = nextVersion
+                proposalText = proposal?.optString("message") ?: response.optString("message", "Assign a category to every line.")
+                onStatus("The allocation is only a preview. Cash was not changed.")
+            }
+        }
+    }, enabled = !busy) { Text("Preview allocation") }
+    Button(onClick = {
+        val ready = linesReady()
+        if (attachmentId.isBlank() || accountId.isBlank() || total.isBlank() || (!ready && bucketId.isBlank())) onError("Choose an account and either a line category or one category for the whole receipt.")
+        else if (ready && proposalText.isBlank()) onError("Preview the allocation before creating the expense.")
         else launch {
             val response = api.request("POST", "/api/households/$hid/attachments/$attachmentId/confirm", JSONObject()
                 .put("confirm", true)
                 .put("version", version)
                 .put("opId", opId)
                 .put("accountId", accountId)
-                .put("acceptLineMismatch", lineWarning.isNotBlank())
-                .put("splits", JSONArray().put(JSONObject().put("bucketId", bucketId).put("amountMinor", parseDollars(total)))))
+                .put("acceptLineMismatch", !ready && lineWarning.isNotBlank())
+                .put("splits", if (ready) JSONArray() else JSONArray().put(JSONObject().put("bucketId", bucketId).put("amountMinor", parseDollars(total)))))
             withContext(Dispatchers.Main) {
                 status = "confirmed"
                 onStatus(if (response.optBoolean("created")) "Created one expense." else "No second expense was created.")
