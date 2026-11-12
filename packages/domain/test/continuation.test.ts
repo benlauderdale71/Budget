@@ -1,8 +1,11 @@
+import { createSign, generateKeyPairSync, type JsonWebKey } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createOidcStart, oidcIdentityDecision, oidcReturnPath } from "../src/oidc.js";
+import { classifyTestDelivery } from "../src/delivery.js";
+import { createOidcStart, oidcIdentityDecision, oidcIssuerAllowed, oidcReturnPath, verifyRs256IdToken } from "../src/oidc.js";
 import { realizeFifo } from "../src/lots.js";
 import { ownershipMoney, transactionMatchesOwnership } from "../src/ownership-share.js";
 import { projectMonthlyRetirement, requiredBeginningAge, uniformLifetimeRmd } from "../src/rmd.js";
+import { planExternalSync, SANDBOX_INCREMENTAL, SANDBOX_INITIAL } from "../src/sandbox-sync.js";
 import type { Transaction } from "../src/types.js";
 
 function txn(partial: Partial<Transaction> & Pick<Transaction, "amountMinor" | "type">): Transaction {
@@ -14,7 +17,7 @@ function txn(partial: Partial<Transaction> & Pick<Transaction, "amountMinor" | "
     amountMinor: partial.amountMinor,
     type: partial.type,
     payee: partial.payee ?? "Store",
-    bankStatus: "posted",
+    bankStatus: partial.bankStatus ?? "posted",
     reviewStatus: "needs_review",
     cleared: false,
     reconciled: false,
@@ -54,6 +57,19 @@ describe("split ownership", () => {
     expect(transactionMatchesOwnership(split, "mine", "owner")).toBe(true);
     expect(transactionMatchesOwnership(split, "yours", "coach", "coach")).toBe(true);
   });
+
+  it("reduces spending for a refund and ignores a pending or private-excluded row", () => {
+    const refund = txn({
+      id: "refund",
+      amountMinor: 400,
+      type: "refund",
+      splits: [{ bucketId: "g", amountMinor: 400, role: "refund", ownerUserId: "owner" }],
+    });
+    const pending = txn({ id: "pending", amountMinor: -900, type: "expense", ownerUserId: "owner", bankStatus: "pending" });
+    const mine = ownershipMoney([refund, pending], "mine", "owner", undefined, "2026-11-01", "2026-11-30");
+    expect(mine.spendingMinor).toBe(-400);
+    expect(ownershipMoney([pending], "all", "owner", undefined, "2026-11-01", "2026-11-30").spendingMinor).toBe(0);
+  });
 });
 
 describe("tax lots", () => {
@@ -92,6 +108,26 @@ describe("retirement distributions", () => {
     expect(year.months[0].withdrawalMinor).toBe(100000);
     expect(year.months[0].portfolioMinor).toBe(2550000);
     expect(year.assumptions.join(" ")).toMatch(/590-B/);
+    expect(rmd.note).toMatch(/not used/);
+  });
+
+  it("selects the beginning age and published denominators for several years", () => {
+    expect(requiredBeginningAge(1951)).toBe(73);
+    expect(requiredBeginningAge(1959)).toBe(73);
+    expect(requiredBeginningAge(1960)).toBe(75);
+    expect(uniformLifetimeRmd(2_740_000, 72)).toMatchObject({ amountMinor: 100_000, denominatorTenths: 274 });
+    expect(uniformLifetimeRmd(2_460_000, 75)).toMatchObject({ amountMinor: 100_000, denominatorTenths: 246 });
+    expect(uniformLifetimeRmd(2_000_000, 120).denominatorTenths).toBe(20);
+    expect(uniformLifetimeRmd(2_000_000, 70)).toMatchObject({ amountMinor: 0, denominatorTenths: 0 });
+    const before = projectMonthlyRetirement({
+      portfolioMinor: 1_000_000, traditionalMinor: 1_000_000, annualReturnBps: 0, annualSpendingMinor: 0, annualContributionMinor: 0, taxBps: 0, age: 70, birthYear: 1959, months: 1,
+    });
+    expect(before.months[0].rmdMinor).toBe(0);
+    const later = projectMonthlyRetirement({
+      portfolioMinor: 2_460_000, traditionalMinor: 2_460_000, annualReturnBps: 0, annualSpendingMinor: 0, annualContributionMinor: 0, taxBps: 0, age: 75, birthYear: 1960, months: 1,
+    });
+    expect(later.months[0].rmdMinor).toBe(100_000);
+    expect(later.assumptions.join(" ")).toMatch(/Table III/);
   });
 });
 
@@ -105,5 +141,58 @@ describe("federated sign-in decisions", () => {
     expect(oidcIdentityDecision({ emailVerified: false, email: "a@example.com", subject: "sub", existingSubjectUserId: null, existingEmailUserId: null }).action).toBe("reject");
     expect(oidcIdentityDecision({ emailVerified: true, email: "a@example.com", subject: "sub", existingSubjectUserId: null, existingEmailUserId: "user" }).action).toBe("link-required");
     expect(oidcIdentityDecision({ emailVerified: true, email: "a@example.com", subject: "sub", existingSubjectUserId: "user", existingEmailUserId: "user" }).action).toBe("sign-in");
+    expect(oidcIssuerAllowed("https://id.example")).toBe(true);
+    expect(oidcIssuerAllowed("http://127.0.0.1/oidc-test")).toBe(true);
+    expect(oidcIssuerAllowed("http://localhost:4010/oidc-test")).toBe(true);
+    expect(oidcIssuerAllowed("http://id.example")).toBe(false);
+    expect(oidcIssuerAllowed("http://127.0.0.1.evil.example")).toBe(false);
+    expect(() => createOidcStart({ issuer: "http://id.example", clientId: "client", redirectUri: "https://app.example/callback", returnPath: "/" })).toThrow(/HTTPS/);
+  });
+
+  it("rejects a token whose signature, audience, or algorithm does not match", () => {
+    const generated = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const jwk = generated.publicKey.export({ format: "jwk" }) as JsonWebKey;
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: "http://127.0.0.1/oidc-test", aud: "budgetcents", sub: "person", email: "a@example.com", email_verified: true, nonce: "nonce-1", exp: Math.floor(Date.now() / 1000) + 120,
+    })).toString("base64url");
+    const signature = createSign("RSA-SHA256").update(`${header}.${payload}`).sign(generated.privateKey).toString("base64url");
+    const verified = verifyRs256IdToken(`${header}.${payload}.${signature}`, jwk, { issuer: "http://127.0.0.1/oidc-test", audience: "budgetcents", nonce: "nonce-1" });
+    expect(verified).toEqual({ subject: "person", email: "a@example.com", emailVerified: true });
+    expect(() => verifyRs256IdToken(`${header}.${payload}.${signature}`, jwk, { issuer: "http://127.0.0.1/oidc-test", audience: "other", nonce: "nonce-1" })).toThrow(/application/);
+    const none = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
+    expect(() => verifyRs256IdToken(`${none}.${payload}.`, jwk, { issuer: "http://127.0.0.1/oidc-test", audience: "budgetcents", nonce: "nonce-1" })).toThrow(/RS256/);
+  });
+});
+
+describe("sandbox synchronization", () => {
+  it("imports history, settles a pending line in place, and skips a duplicate", () => {
+    const first = planExternalSync([], SANDBOX_INITIAL);
+    expect(first.insert.map((row) => row.externalId)).toEqual(["sbx-rent", "sbx-market"]);
+    const existing = [
+      { id: "rent", externalId: "sbx-rent", bankStatus: "posted" as const },
+      { id: "market", externalId: "sbx-market", bankStatus: "pending" as const },
+    ];
+    const next = planExternalSync(existing, SANDBOX_INCREMENTAL);
+    expect(next.insert.map((row) => row.payee)).toEqual(["Sandbox Fuel"]);
+    expect(next.settle).toEqual([{ id: "market", activity: SANDBOX_INCREMENTAL[0] }]);
+    const again = planExternalSync([
+      ...existing.map((row) => ({ ...row, bankStatus: "posted" as const })),
+      { id: "market", externalId: "sbx-market-posted", bankStatus: "posted" as const },
+      { id: "fuel", externalId: "sbx-fuel", bankStatus: "posted" as const },
+    ], SANDBOX_INCREMENTAL);
+    expect(again.insert).toEqual([]);
+    expect(again.settle).toEqual([]);
+    expect(again.duplicates).toEqual(["sbx-market-posted", "sbx-fuel"]);
+  });
+});
+
+describe("test delivery status", () => {
+  it("does not treat acceptance as delivery", () => {
+    expect(classifyTestDelivery({ outcome: "accepted", quiet: false, optedOut: false, consented: true })).toMatchObject({ status: "accepted", provenDelivered: false });
+    expect(classifyTestDelivery({ outcome: "rejected", quiet: false, optedOut: false, consented: true }).status).toBe("failed");
+    expect(classifyTestDelivery({ outcome: "accepted", quiet: true, optedOut: false, consented: true }).status).toBe("queued");
+    expect(classifyTestDelivery({ outcome: "accepted", quiet: false, optedOut: true, consented: true }).status).toBe("refused");
+    expect(classifyTestDelivery({ outcome: "accepted", quiet: false, optedOut: false, consented: false }).status).toBe("refused");
   });
 });

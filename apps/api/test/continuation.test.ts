@@ -108,7 +108,7 @@ describe("live plan revisions and later features", () => {
     expect(Number(rows[0].amount_minor)).toBe(-1000);
   });
 
-  it("keeps lot sales, retirement models, and sandbox connections off the register", async () => {
+  it("keeps lot sales and retirement models off the register and imports sandbox history", async () => {
     const api = await app();
     const owner = await register(api, "lots@example.com", "North");
     const account = await json(await api.request(`/api/households/${owner.hid}/accounts`, {
@@ -145,11 +145,11 @@ describe("live plan revisions and later features", () => {
     expect(modeled.body.months[0].withdrawalMinor).toBe(100000);
     expect(modeled.body.guarantee).toBe(false);
     const connected = await json(await api.request(`/api/households/${owner.hid}/providers/sandbox/connect`, {
-      method: "POST", headers: auth(owner.token), body: JSON.stringify({ provider: "sandbox-bank" }),
+      method: "POST", headers: auth(owner.token),       body: JSON.stringify({ provider: "sandbox-bank", spaceId: owner.spaceId }),
     }));
-    expect(connected.body.transactionsImported).toBe(0);
+    expect(connected.body.transactionsImported).toBe(2);
     const after = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [owner.hid]);
-    expect(Number(after[0].n)).toBe(Number(before[0].n));
+    expect(Number(after[0].n)).toBe(Number(before[0].n) + 2);
     const request = await json(await api.request(`/api/households/${owner.hid}/service-requests`, {
       method: "POST", headers: auth(owner.token), body: JSON.stringify({ kind: "cancellation", detail: "Please ask about this subscription." }),
     }));

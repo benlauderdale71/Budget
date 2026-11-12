@@ -214,6 +214,7 @@ function MoveMoney({ buckets, periodKey, spaceId, currency, planRevision, onClos
 function EditCategory({ bucket, currency, periodKey, funding, onClose }: { bucket: Bucket; currency: string; periodKey: string; funding: Dashboard["funding"]; onClose: () => void }) {
   const session = useSession();
   const form = useFormError();
+  useEffect(() => session.holdDraft(), [session]);
   const [effect, setEffect] = useState("");
   const progress = funding?.buckets.find((item) => item.bucketId === bucket.id);
   const rollover = bucket.displayRollover ?? bucket.rollover;

@@ -80,6 +80,14 @@ fun FeatureScreen(
             for (index in 0 until goals.length()) {
                 val goal = goals.getJSONObject(index)
                 Text("${goal.optString("name")} ${money(goal.optLong("availableMinor"), privacy)} of ${money(goal.optLong("target_minor"), privacy)}")
+                GoalDateForm(goal.optString("name"), goal.optString("target_date")) { date ->
+                    scope.launch {
+                        runIo(onError) {
+                            api.request("PATCH", "/api/households/$hid/goals/${goal.optString("id")}", JSONObject().put("targetDate", date))
+                            onChanged()
+                        }
+                    }
+                }
             }
             BucketPick(dash, "expense") { bucketId, name, target, goalDate ->
                 scope.launch {
@@ -185,10 +193,21 @@ fun FeatureScreen(
             }
         }
         "reports" -> ReportScreen(api, hid, privacy, onError, onOpenTransactions)
+        "reconcile" -> ReconcileScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
         "rules" -> RemoteScreen("rules", { api.request("GET", "/api/households/$hid/rules") }) { data ->
             val rules = data.optJSONArray("rules") ?: JSONArray()
             if (rules.length() == 0) Text("No rules yet. A rule does not override a category you confirmed.")
             for (index in 0 until rules.length()) Text(rules.getJSONObject(index).optString("name"))
+            RulePreview(onError) { payee ->
+                scope.launch {
+                    runIo(onError) {
+                        val result = api.request("POST", "/api/households/$hid/rules/suggest", JSONObject().put("payee", payee).put("amountMinor", -1000))
+                        val missing = result.optJSONArray("missing")
+                        val missingText = if (missing == null || missing.length() == 0) "" else "Missing ${(0 until missing.length()).joinToString(", ") { missing.optString(it) }}."
+                        onStatus("${result.optString("note")} $missingText")
+                    }
+                }
+            }
             RuleForm(onError) { name, payee ->
                 scope.launch {
                     runIo(onError) {
@@ -207,6 +226,24 @@ fun FeatureScreen(
         "household" -> SharingScreen(api, store, hid, dash?.optJSONObject("household")?.optString("role") ?: "", onError, onStatus, onChanged, onSignedOut)
         "connections" -> RemoteScreen("connections", { api.request("GET", "/api/providers") }) { data ->
             Text("These services are not live. A stored request is not a completed cancellation, score, or transfer.")
+            Button(onClick = {
+                scope.launch {
+                    runIo(onError) {
+                        val result = api.request("POST", "/api/households/$hid/providers/sandbox/connect", JSONObject().put("provider", "sandbox-bank").put("spaceId", dash?.optString("spaceId")))
+                        onStatus("${result.optString("note")} Imported ${result.optInt("transactionsImported")}.")
+                        onChanged()
+                    }
+                }
+            }) { Text("Connect sandbox") }
+            Button(onClick = {
+                scope.launch {
+                    runIo(onError) {
+                        val result = api.request("POST", "/api/households/$hid/providers/sandbox/sync", JSONObject().put("spaceId", dash?.optString("spaceId")))
+                        onStatus("${result.optString("note")} Added ${result.optInt("imported")}. Settled ${result.optInt("settled")}.")
+                        onChanged()
+                    }
+                }
+            }) { Text("Sync sandbox") }
             val providers = data.optJSONArray("providers") ?: JSONArray()
             for (index in 0 until providers.length()) {
                 val provider = providers.getJSONObject(index)
@@ -1573,6 +1610,52 @@ private fun RetirementScreen(onError: (String) -> Unit, onRun: (JSONObject) -> U
                 .put("iterations", 20).put("seed", 7).put("people", people))
         }
     }) { Text("Run model") }
+}
+
+@Composable
+private fun GoalDateForm(name: String, current: String, onSave: (String) -> Unit) {
+    var date by rememberSaveable(name) { mutableStateOf(current) }
+    OutlinedTextField(date, { date = it }, label = { Text("Target date for $name") }, modifier = Modifier.fillMaxWidth())
+    TextButton(onClick = { if (date.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) onSave(date) }) { Text("Save date") }
+}
+
+@Composable
+private fun RulePreview(onError: (String) -> Unit, onPreview: (String) -> Unit) {
+    var payee by remember { mutableStateOf("") }
+    OutlinedTextField(payee, { payee = it }, label = { Text("Preview payee") }, modifier = Modifier.fillMaxWidth())
+    TextButton(onClick = { if (payee.isBlank()) onError("Enter a payee to preview.") else onPreview(payee) }) { Text("Preview rule") }
+    Text("Preview does not save a rule or a transaction. A review-only rule reports a missing category.")
+}
+
+@Composable
+private fun ReconcileScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy: Boolean, onError: (String) -> Unit, onStatus: (String) -> Unit, onChanged: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val accounts = dash?.optJSONArray("accounts") ?: JSONArray()
+    var accountId by remember { mutableStateOf("") }
+    var balance by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    Text("Compare a statement with cleared transactions. Locking happens only when the difference is zero. An adjustment is a visible register entry.")
+    if (accounts.length() == 0) Text("Add an account before reconciling.")
+    for (index in 0 until accounts.length()) {
+        val account = accounts.getJSONObject(index)
+        TextButton(onClick = { accountId = account.optString("id") }) { Text(if (accountId == account.optString("id")) "Selected · ${account.optString("name")}" else account.optString("name")) }
+    }
+    OutlinedTextField(date, { date = it }, label = { Text("Statement date") }, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(balance, { balance = it }, label = { Text("Statement balance") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
+    Button(onClick = {
+        if (accountId.isBlank() || balance.isBlank()) onError("Choose an account and enter the statement balance.")
+        else scope.launch {
+            runIo(onError) {
+                val result = api.request("POST", "/api/households/$hid/reconcile", JSONObject()
+                    .put("accountId", accountId)
+                    .put("statementDate", date)
+                    .put("statementBalanceMinor", parseDollars(balance))
+                    .put("clearedIds", JSONArray())
+                    .put("lock", false))
+                onStatus("${result.optString("formula")} Difference ${money(result.optLong("differenceMinor"), privacy)}. Nothing was locked.")
+            }
+        }
+    }) { Text("Compare") }
 }
 
 @Composable

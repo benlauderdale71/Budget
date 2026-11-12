@@ -19,6 +19,7 @@ import com.budgetcents.app.ui.BudgetApp
 
 class MainActivity : FragmentActivity() {
     val navigation = mutableStateOf("home")
+    val recordId = mutableStateOf<String?>(null)
     var receiptBytes: ByteArray? = null
     var onReceipt: ((ByteArray) -> Unit)? = null
     var onFile: ((ByteArray) -> Unit)? = null
@@ -48,21 +49,40 @@ class MainActivity : FragmentActivity() {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         ensureChannel()
-        navigation.value = startHost(intent)
-        setContent { BudgetApp(this, navigation.value, linkToken(intent)) }
+        navigation.value = savedInstanceState?.getString("navigation") ?: startHost(intent)
+        recordId.value = savedInstanceState?.getString("recordId") ?: recordId(intent)
+        setContent { BudgetApp(this, navigation.value, linkToken(intent), recordId.value) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("navigation", navigation.value)
+        recordId.value?.let { outState.putString("recordId", it) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         navigation.value = startHost(intent)
+        recordId.value = recordId(intent)
     }
 
     private fun startHost(intent: Intent?): String {
         val data = intent?.data
         val pathToken = invitePathToken(data)
         val host = data?.host
-        return if (host == "invite" || pathToken != null) "invite" else host ?: "home"
+        val mapped = when (host) {
+            "transaction" -> "activity"
+            "bill" -> "bills"
+            "goal" -> "goals"
+            else -> host
+        }
+        return if (mapped == "invite" || pathToken != null) "invite" else mapped ?: "home"
+    }
+
+    private fun recordId(intent: Intent?): String? {
+        val data = intent?.data ?: return null
+        return data.getQueryParameter("id") ?: data.lastPathSegment?.takeIf { data.host == "transaction" || data.host == "bill" || data.host == "goal" }
     }
 
     private fun linkToken(intent: Intent?): String? {

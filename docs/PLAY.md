@@ -6,7 +6,7 @@ The project is `android/`. Application id `com.budgetcents.app`. Version `1.0.0`
 
 Checked against Google Play’s target API page on November 10, 2026: new phone and tablet apps must target Android 16 (API 36). The extension window cited on that page ended November 1, 2026. This project sets `compileSdk` and `targetSdk` to 36 and `minSdk` to 26.
 
-The project builds with Android Gradle Plugin 8.13.0, Gradle 8.13, and Kotlin 2.0.21. That plugin release supports API 36. No emulator or `adb` binary was available, so no Android screen was launched.
+The project builds with Android Gradle Plugin 8.13.0, Gradle 8.13, and Kotlin 2.0.21. That plugin release supports API 36. On November 12, 2026 an API 36 emulator booted and the development build was installed. The headless framebuffer stayed black, so Play screenshots still have to come from a machine that can capture the display.
 
 ## Artifacts
 
@@ -18,9 +18,9 @@ Those production tasks require `BUDGETCENTS_KEYSTORE`, `BUDGETCENTS_STORE_PASSWO
 
 ## What the app does
 
-It is a native client, not a website shortcut. It signs in to the BudgetCents API, including the sample household, and shows Home, Plan, Activity, Wealth, and More. More opens setup, accounts, categories, bills, paychecks, a calendar, goals, debts with saved extra-payment and refinance plans, forecasts, investments, retirement, reports, rules, household sharing, connections, security, lessons, the assistant, and file import for CSV, OFX, and QIF. Activity asks for an account before saving and can edit a transaction’s payee and amount with the stored version. It can assign a category, attach a JPEG or a selected file, queue an expense when the network fails, and replay that queue on a background thread for the signed-in user. It can lock the screen with biometrics when the device has them, post an in-app alert as a notification, open `budgetcents://` links for the tabs and the screens above, and place a home-screen widget. Light, dark, and system themes are available. Privacy mode hides amounts in the app and the widget. The session token is stored with encrypted shared preferences.
+It is a native client, not a website shortcut. It signs in to the BudgetCents API, including the sample household, and shows Home, Plan, Activity, Wealth, and More. More opens setup, accounts, categories, bills, paychecks, a calendar, goals, debts with saved extra-payment and refinance plans, forecasts, investments, retirement, reports, rules, reconciliation, household sharing, connections, security, lessons, the assistant, and file import for CSV, OFX, and QIF. Activity asks for an account before saving and can edit a transaction’s payee and amount with the stored version. It can assign a category, attach a JPEG or a selected file, queue an expense when the network fails, and replay that queue on a background thread for the signed-in user. It can lock the screen with biometrics when the device has them, post an in-app alert as a notification, open `budgetcents://` links for the tabs and the screens above, and place a home-screen widget. Light, dark, and system themes are available. Privacy mode hides amounts in the app and the widget. The session token is stored with encrypted shared preferences.
 
-Those Android screens are in the release binary. They were not clicked through on an emulator in this environment. See `docs/REQUIREMENTS.md` for what is still partial.
+The development build was installed on an API 36 emulator on November 12, 2026. Sign-in, sandbox import, a rule preview, a statement comparison, rotation, and a transaction link were driven through the accessibility hierarchy. TalkBack, biometrics, offline replay, and a home-screen widget were not. `assembleRelease` still stops without the four production signing values, and this app is not published. See `docs/REQUIREMENTS.md` for what is still partial.
 
 ## Play Console, not filled in here
 

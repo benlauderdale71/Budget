@@ -899,3 +899,60 @@ CREATE TABLE IF NOT EXISTS onboarding_keys (
   created_at text NOT NULL,
   PRIMARY KEY (household_id, user_id, kind, setup_key)
 );
+
+CREATE TABLE IF NOT EXISTS provider_transaction_ids (
+  household_id text NOT NULL,
+  external_id text NOT NULL,
+  transaction_id text NOT NULL,
+  PRIMARY KEY (household_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS oidc_pending (
+  id text PRIMARY KEY,
+  user_id text,
+  token_hash text NOT NULL,
+  purpose text NOT NULL,
+  issuer text,
+  subject text,
+  email text,
+  return_path text,
+  expires_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS delivery_attempts (
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  channel text NOT NULL,
+  status text NOT NULL,
+  detail text NOT NULL,
+  created_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS message_enrollments (
+  user_id text NOT NULL,
+  channel text NOT NULL,
+  consented_at text,
+  opted_out_at text,
+  destination_label text NOT NULL DEFAULT '',
+  PRIMARY KEY (user_id, channel)
+);
+
+CREATE TABLE IF NOT EXISTS learning_steps (
+  user_id text NOT NULL,
+  item_id text NOT NULL,
+  kind text NOT NULL,
+  step integer NOT NULL,
+  updated_at text NOT NULL,
+  PRIMARY KEY (user_id, item_id)
+);
+
+CREATE TABLE IF NOT EXISTS support_attachments (
+  id text PRIMARY KEY,
+  ticket_id text NOT NULL,
+  user_id text NOT NULL,
+  filename text NOT NULL,
+  content_type text NOT NULL,
+  size_bytes integer NOT NULL,
+  body text NOT NULL,
+  created_at text NOT NULL
+);

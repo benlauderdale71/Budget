@@ -221,7 +221,18 @@ export function Goals() {
     <Page title="Goals" lede="A goal points at one envelope. The available balance is the progress, so those dollars are not also free to spend.">
       {focus && !state.data.goals.some((goal) => goal.id === focus) ? <Notice kind="bad">That goal is not available in this view.</Notice> : null}
       <ul className="list">{state.data.goals.map((goal) => (
-        <li key={goal.id} id={`goal-${goal.id}`}><span>{goal.name}{goal.target_date ? ` · ${goal.target_date}` : ""}</span><span><Money minor={goal.availableMinor} /> / <Money minor={Number(goal.target_minor)} /></span></li>
+        <li key={goal.id} id={`goal-${goal.id}`}>
+          <span>{goal.name}{goal.target_date ? ` · ${goal.target_date}` : ""}</span>
+          <span><Money minor={goal.availableMinor} /> / <Money minor={Number(goal.target_minor)} /></span>
+          <form onSubmit={(event) => form.run(event, async () => {
+            const data = new FormData(event.currentTarget);
+            await api(scoped(session.householdId, `/goals/${goal.id}`), { method: "PATCH", body: JSON.stringify({ targetDate: data.get("date") || null }) });
+            session.bump();
+          })}>
+            <Field label={`Target date for ${goal.name}`}><input name="date" type="date" defaultValue={goal.target_date ?? ""} /></Field>
+            <button className="btn-secondary" type="submit">Save date</button>
+          </form>
+        </li>
       ))}</ul>
       {roadmap.data ? <article className="card"><h2>Roadmap</h2><ul>{roadmap.data.milestones.map((item) => <li key={item.id}>{item.complete ? "Done" : "Open"} · {item.label} · {item.detail}</li>)}</ul><p>Essential monthly spending <Money minor={roadmap.data.essential.amountMinor} />.</p><p className="muted">{roadmap.data.essential.formula}</p>{roadmap.data.essential.sources.length ? <ul className="list">{roadmap.data.essential.sources.map((source) => <li key={source.name}><span>{source.name}</span><Money minor={source.monthlyMinor} /></li>)}</ul> : null}<p className="muted">{roadmap.data.emergency.formula} Gap <Money minor={roadmap.data.emergency.gapMinor} />.</p></article> : null}
       <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {

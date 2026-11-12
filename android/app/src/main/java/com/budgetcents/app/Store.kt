@@ -71,7 +71,40 @@ class Store(context: Context) {
         return (0 until queue.length()).map { queue.getJSONObject(it) }.filter { it.optString("ownerId") == owner }
     }
 
+    fun widgetKind(id: Int): String = prefs.getString("widget-kind-$id", "category") ?: "category"
+
+    fun setWidgetKind(id: Int, kind: String) {
+        prefs.edit().putString("widget-kind-$id", kind).apply()
+    }
+
+    var widgetFacts: String
+        get() = prefs.getString("widgetFacts", "") ?: ""
+        set(value) { prefs.edit().putString("widgetFacts", value).apply() }
+
+    fun saveDashboardCache(json: String) {
+        val user = userId ?: return
+        val household = householdId ?: return
+        prefs.edit().putString("cacheUser", user).putString("cacheHousehold", household).putString("cacheJson", json).putLong("cacheAt", System.currentTimeMillis()).apply()
+    }
+
+    fun cachedDashboard(): String? {
+        val user = userId ?: return null
+        val household = householdId ?: return null
+        if (prefs.getString("cacheUser", null) != user || prefs.getString("cacheHousehold", null) != household) return null
+        val at = prefs.getLong("cacheAt", 0L)
+        if (at == 0L || System.currentTimeMillis() - at > 7L * 24 * 60 * 60 * 1000) {
+            clearCache()
+            return null
+        }
+        return prefs.getString("cacheJson", null)
+    }
+
+    fun clearCache() {
+        prefs.edit().remove("cacheUser").remove("cacheHousehold").remove("cacheJson").remove("cacheAt").remove("widgetFacts").remove("summary").apply()
+    }
+
     fun clearSession() {
+        clearCache()
         prefs.edit().remove("token").remove("household").remove("summary").remove("userId").apply()
     }
 

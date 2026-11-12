@@ -176,6 +176,7 @@ function PeopleForm({ txn, onClose }: { txn: Txn; onClose: () => void }) {
   const session = useSession();
   const people = useHouseholdPeople();
   const form = useFormError();
+  useEffect(() => session.holdDraft(), [session]);
   const [kind, setKind] = useState("ownership");
   const [personId, setPersonId] = useState(txn.ownerUserId ?? "");
   const choices = (people.data?.people ?? []).filter((person) => kind === "ownership" || allows(person.role, "review"));

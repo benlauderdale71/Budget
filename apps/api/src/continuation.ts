@@ -2,25 +2,31 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import { createOidcStart, oidcReturnPath, projectMonthlyRetirement, realizeFifo, type TaxLot } from "@budgetcents/domain";
+import { auditAssistant, confirmAssistantAction, undoAssistantAction } from "./assistant-actions.js";
 import { id, nowIso } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
 import { ApiError, type Actor, assertBudget, assertWrite, audit, canSeeAccount, requireMember } from "./finance.js";
+import { mountLearningRoutes } from "./learning-routes.js";
+import { mountMessageRoutes } from "./message-routes.js";
+import { completeOidcCallback, completeOidcLink, completeOidcMfa } from "./oidc-flow.js";
+import { activityFromWebhook, connectSandbox, importSandboxActivities, reconnectSandbox, sandboxConnection, syncSandbox } from "./sandbox-import.js";
 import { visibleAudit } from "./sharing.js";
 
 const HELP = [
   { id: "ready", title: "Ready to Assign", body: "Ready to Assign is cash already in on-budget accounts that does not yet have a job. Expected income is not included." },
   { id: "ownership", title: "Mine, yours, and ours", body: "A transaction labeled Ours belongs to the household. A split can name a member for part of the same purchase. The parts add up to the purchase once, and the bank total does not change." },
   { id: "alerts", title: "Alerts", body: "Alerts are checked from the ledger you can see. A background refresh does not send the same open alert again. Push, email, and text are off until a provider is connected." },
-  { id: "offline", title: "Offline", body: "A transaction or assignment kept on this device is waiting. It is not saved on the ledger until the server accepts it." },
+  { id: "offline", title: "Offline", body: "A transaction or assignment kept on this device is waiting. It is not saved on the ledger until the server accepts it. A saved dashboard is the last copy this device was allowed to see, and it is not the current ledger." },
   { id: "retirement", title: "Retirement projections", body: "A projection is a model with stated assumptions. It is not a guarantee and it does not move money in the register." },
-  { id: "providers", title: "Outside services", body: "A request stored in BudgetCents is not a completed bank link, cancellation, transfer, booking, tax filing, or legal document." },
+  { id: "providers", title: "Outside services", body: "The sandbox bank can import its built-in test history. That history is not your bank. A stored price or credit event does not create a transaction. A request stored in BudgetCents is not a completed cancellation, transfer, booking, tax filing, or legal document." },
 ];
 
 export interface ContinuationDeps {
   actor: (c: { req: { header: (name: string) => string | undefined } }) => Promise<Actor>;
   insertTransaction: (user: Actor, householdId: string, body: any) => Promise<{ id?: string }>;
   createGoal: (user: Actor, householdId: string, body: any) => Promise<{ id: string }>;
+  startSession: (userId: string, agent: string) => Promise<string>;
 }
 
 export function mountContinuation(app: Hono, db: Database, deps: ContinuationDeps) {
@@ -82,11 +88,32 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     if (!process.env.OIDC_ISSUER || !process.env.OIDC_CLIENT_ID || !process.env.OIDC_CLIENT_SECRET) {
       return c.json({ error: "Federated sign-in is not configured.", status: "not_configured" }, 404);
     }
-    const state = c.req.query("state") ?? "";
-    const saved = await db.query(`SELECT state FROM oidc_states WHERE state = $1`, [state]);
-    if (!saved.length) throw new ApiError(400, "The sign-in attempt could not be matched. Start again.");
-    await db.query(`DELETE FROM oidc_states WHERE state = $1`, [state]);
-    throw new ApiError(502, "The identity provider did not complete sign-in. No account was created or linked, and no invitation was accepted.");
+    const done = await completeOidcCallback(db, {
+      code: c.req.query("code") ?? "",
+      state: c.req.query("state") ?? "",
+      userAgent: c.req.header("user-agent") ?? "web",
+    }, deps.startSession);
+    const accept = c.req.header("accept") ?? "";
+    if (!accept.includes("text/html")) return c.json(done);
+    const token = "token" in done ? String(done.token ?? "") : "";
+    const pending = "pendingToken" in done ? String(done.pendingToken ?? "") : "";
+    const path = String(done.returnPath || "/");
+    const mode = "mfaRequired" in done && done.mfaRequired ? "mfa" : "status" in done && done.status === "link-required" ? "link" : "";
+    const script = token
+      ? `localStorage.setItem("budgetcents.token", ${JSON.stringify(token)}); location.replace(${JSON.stringify(path)});`
+      : `sessionStorage.setItem("budgetcents.oidcPending", ${JSON.stringify(pending)}); location.replace(${JSON.stringify(`/login?oidc=${mode}`)});`;
+    const note = "note" in done ? String(done.note ?? "Signing in.") : "Signing in.";
+    return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>BudgetCents sign-in</title></head><body><p>${note.replace(/[<>&]/g, "")}</p><script>${script}</script></body></html>`);
+  });
+
+  app.post("/api/auth/oidc/link", async (c) => {
+    const body = z.object({ pendingToken: z.string().min(1), password: z.string().min(1) }).parse(await c.req.json());
+    return c.json(await completeOidcLink(db, { ...body, userAgent: c.req.header("user-agent") ?? "web" }, deps.startSession));
+  });
+
+  app.post("/api/auth/oidc/mfa", async (c) => {
+    const body = z.object({ pendingToken: z.string().min(1), code: z.string().min(1) }).parse(await c.req.json());
+    return c.json(await completeOidcMfa(db, { ...body, userAgent: c.req.header("user-agent") ?? "web" }, deps.startSession));
   });
 
   app.patch("/api/households/:hid/goals/:id", async (c) => {
@@ -199,7 +226,7 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
   app.post("/api/households/:hid/assistant/actions/preview", async (c) => {
     const me = await deps.actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
-    const body = z.object({ kind: z.enum(["create_transaction", "create_goal", "create_rule"]), payload: z.record(z.unknown()) }).parse(await c.req.json());
+    const body = z.object({ kind: z.enum(["create_transaction", "create_goal", "create_rule", "create_category", "set_category", "set_tags", "adjust_plan"]), payload: z.record(z.unknown()) }).parse(await c.req.json());
     const actionId = id();
     await db.query(
       `INSERT INTO assistant_actions (id, household_id, user_id, kind, payload_json, result_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -217,17 +244,10 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     const result = JSON.parse(String(rows[0].result_json)) as { status?: string };
     if (result.status !== "preview") throw new ApiError(409, "This proposal was already confirmed or undone.");
     const payload = JSON.parse(String(rows[0].payload_json)) as Record<string, unknown>;
-    let saved: { id?: string } = {};
-    if (rows[0].kind === "create_transaction") saved = await deps.insertTransaction(me, member.householdId, payload);
-    else if (rows[0].kind === "create_goal") saved = await deps.createGoal(me, member.householdId, payload);
-    else {
-      const rule = z.object({ spaceId: z.string().optional(), name: z.string(), priority: z.number().int().default(100), matchMode: z.enum(["all", "any"]), conditions: z.array(z.record(z.unknown())), actions: z.array(z.record(z.unknown())) }).parse(payload);
-      saved = { id: id() };
-      await db.query(`INSERT INTO rules (id, household_id, space_id, name, priority, enabled, match_mode, conditions_json, actions_json) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)`, [saved.id, member.householdId, rule.spaceId ?? null, rule.name, rule.priority, rule.matchMode, JSON.stringify(rule.conditions), JSON.stringify(rule.actions)]);
-    }
-    await db.query(`UPDATE assistant_actions SET result_json = $1 WHERE id = $2`, [JSON.stringify({ status: "confirmed", entityId: saved.id ?? null }), rows[0].id]);
-    await audit(db, member.householdId, me.id, "assistant.confirm", `Confirmed ${String(rows[0].kind)}`, "assistant_action", String(rows[0].id));
-    return c.json({ ok: true, entityId: saved.id ?? null, note: "The action ran through the same rules as a form you save yourself." });
+    const saved = await confirmAssistantAction(db, me, member, String(rows[0].kind), payload, deps);
+    await db.query(`UPDATE assistant_actions SET result_json = $1 WHERE id = $2`, [JSON.stringify({ status: "confirmed", entityId: saved.entityId, undo: saved.undo }), rows[0].id]);
+    await auditAssistant(db, member.householdId, me.id, "assistant.confirm", `Confirmed ${String(rows[0].kind)}`, String(rows[0].id));
+    return c.json({ ok: true, entityId: saved.entityId, note: "The action ran through the same rules as a form you save yourself." });
   });
 
   app.post("/api/households/:hid/assistant/actions/:id/undo", async (c) => {
@@ -236,16 +256,11 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     assertWrite(member);
     const rows = await db.query(`SELECT * FROM assistant_actions WHERE id = $1 AND household_id = $2 AND user_id = $3`, [c.req.param("id"), member.householdId, me.id]);
     if (!rows.length) throw new ApiError(404, "Not found");
-    const result = JSON.parse(String(rows[0].result_json)) as { status?: string; entityId?: string };
+    const result = JSON.parse(String(rows[0].result_json)) as { status?: string; entityId?: string; undo?: Record<string, unknown> };
     if (result.status !== "confirmed" || !result.entityId) throw new ApiError(409, "There is nothing to undo.");
-    if (rows[0].kind !== "create_transaction") throw new ApiError(400, "Undo is available for a transaction this action added, while it is still the latest version and is not reconciled.");
-    const updated = await db.query(
-      `UPDATE transactions SET deleted = 1, version = version + 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0 AND version = 1 AND reconciled = 0 AND COALESCE(locked, 0) = 0 RETURNING id`,
-      [nowIso(), result.entityId, member.householdId],
-    );
-    if (!updated.length) throw new ApiError(409, "That transaction changed or was reconciled, so it was not undone.");
+    await undoAssistantAction(db, member, String(rows[0].kind), result.entityId, result.undo ?? { kind: rows[0].kind });
     await db.query(`UPDATE assistant_actions SET undone_at = $1, result_json = $2 WHERE id = $3`, [nowIso(), JSON.stringify({ status: "undone", entityId: result.entityId }), rows[0].id]);
-    await audit(db, member.householdId, me.id, "assistant.undo", "Undid a confirmed transaction.", "transaction", result.entityId);
+    await auditAssistant(db, member.householdId, me.id, "assistant.undo", `Undid ${String(rows[0].kind)}.`, String(rows[0].id));
     return c.json({ ok: true });
   });
 
@@ -253,12 +268,24 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     const me = await deps.actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ provider: z.literal("sandbox-bank") }).parse(await c.req.json());
-    const connectionId = id();
-    await db.query(`INSERT INTO connections (id, household_id, provider, status, consent_at, created_at) VALUES ($1,$2,$3,'sandbox',$4,$4)`, [connectionId, member.householdId, body.provider, nowIso()]);
-    await db.query(`INSERT INTO consents (id, user_id, household_id, provider, scope, granted_at) VALUES ($1,$2,$3,$4,'sandbox-read',$5)`, [id(), me.id, member.householdId, body.provider, nowIso()]);
-    const transactions = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [member.householdId]);
-    return c.json({ id: connectionId, status: "sandbox", transactionsImported: 0, transactionCount: num(transactions[0].n), note: "No accounts were linked and no transactions were imported. A sandbox connection is not a bank." }, 201);
+    const body = z.object({ provider: z.literal("sandbox-bank"), spaceId: z.string() }).parse(await c.req.json());
+    const connected = await connectSandbox(db, me, member.householdId, body.spaceId, deps.insertTransaction);
+    return c.json(connected, 201);
+  });
+
+  app.post("/api/households/:hid/providers/sandbox/sync", async (c) => {
+    const me = await deps.actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    const body = z.object({ spaceId: z.string() }).parse(await c.req.json());
+    return c.json(await syncSandbox(db, me, member.householdId, body.spaceId, deps.insertTransaction));
+  });
+
+  app.post("/api/households/:hid/providers/sandbox/reconnect", async (c) => {
+    const me = await deps.actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
+    return c.json(await reconnectSandbox(db, me, member.householdId));
   });
 
   app.post("/api/households/:hid/providers/sandbox/revoke", async (c) => {
@@ -293,7 +320,36 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
        ON CONFLICT (household_id, provider, external_id) DO NOTHING RETURNING id`,
       [id(), body.householdId, body.kind, body.externalId, body.title, body.body, body.occurredOn, nowIso()],
     );
-    return c.json({ accepted: true, duplicate: inserted.length === 0, transactionsImported: 0 });
+    return c.json({ accepted: true, duplicate: inserted.length === 0, transactionsImported: 0, note: "The event was stored. No transaction was imported." });
+  });
+
+  app.post("/api/providers/sandbox/activity", async (c) => {
+    const secret = process.env.SANDBOX_WEBHOOK_SECRET;
+    if (!secret) return c.json({ error: "The sandbox webhook secret is not configured.", status: "not_configured" }, 404);
+    const raw = await c.req.text();
+    const sent = c.req.header("x-budgetcents-signature") ?? "";
+    const expected = createHmac("sha256", secret).update(raw).digest("hex");
+    const left = Buffer.from(sent);
+    const right = Buffer.from(expected);
+    if (left.length !== right.length || !timingSafeEqual(left, right)) throw new ApiError(401, "The webhook signature did not match. Nothing was stored.");
+    const body = z.object({
+      householdId: z.string(),
+      spaceId: z.string(),
+      activity: z.object({
+        externalId: z.string().min(1),
+        postedOn: z.string(),
+        payee: z.string().min(1),
+        amountMinor: z.number().int(),
+        bankStatus: z.enum(["pending", "posted"]),
+        settlesExternalId: z.string().optional(),
+      }),
+    }).parse(JSON.parse(raw));
+    const connection = await sandboxConnection(db, body.householdId);
+    if (!connection || connection.status !== "sandbox") throw new ApiError(409, "The sandbox connection is not active. No transaction was imported.");
+    const actor = await db.query(`SELECT user_id FROM memberships WHERE household_id = $1 AND role = 'owner' LIMIT 1`, [body.householdId]);
+    if (!actor.length) throw new ApiError(404, "Not found");
+    const result = await importSandboxActivities(db, { id: String(actor[0].user_id), email: "", displayName: "Sandbox" } as Actor, body.householdId, body.spaceId, [activityFromWebhook(body.activity)], deps.insertTransaction);
+    return c.json({ accepted: true, duplicate: result.duplicates > 0 && result.imported === 0 && result.settled === 0, ...result, note: "Activity was matched to the sandbox ledger. A repeated id does not add a second row." });
   });
 
   app.post("/api/households/:hid/service-requests", async (c) => {
@@ -324,6 +380,9 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     await requireMember(db, me.id, c.req.param("hid"));
     return c.json({ provider: "not_configured", appointments: [], note: "No coaching provider is configured. Nothing here is a confirmed appointment." });
   });
+
+  mountMessageRoutes(app, db, deps.actor);
+  mountLearningRoutes(app, db, deps.actor);
 }
 
 async function visibleHolding(db: Database, userId: string, householdId: string, holdingId: string) {

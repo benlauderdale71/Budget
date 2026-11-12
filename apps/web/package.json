@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "tsc --noEmit && node --experimental-strip-types --test test/shell-cache.test.ts test/dashboard-undo.test.ts"
+    "test": "tsc --noEmit && node --experimental-strip-types --test test/shell-cache.test.ts test/dashboard-undo.test.ts test/offline-cache.test.ts"
   },
   "dependencies": {
     "@budgetcents/domain": "*",

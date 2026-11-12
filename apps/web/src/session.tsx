@@ -1,6 +1,7 @@
 import { allows } from "@budgetcents/domain/access";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
+import { clearDashboardCaches } from "./offline-cache.js";
 import type { HouseholdRow, User } from "./types.js";
 
 interface SessionValue {
@@ -126,6 +127,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const now = Date.now();
       if (now - accessAt < 1000) return;
       accessAt = now;
+      clearDashboardCaches(localStorage);
       refresh().catch(() => undefined);
     };
     window.addEventListener("budgetcents-unauthorized", onAuth);

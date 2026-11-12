@@ -98,6 +98,33 @@ export function Auth() {
           {note ? <Notice>{note}</Notice> : null}
           <button className="btn" type="submit">{mode === "register" ? "Create household" : mode === "join" ? "Create account" : mode === "reset" ? "Continue" : "Sign in"}</button>
         </form>
+        <button className="btn-secondary" type="button" style={{ marginTop: 12 }} onClick={async () => {
+          setError("");
+          try {
+            const start = await api<{ authorizationUrl: string }>(`/api/auth/oidc/start?next=${encodeURIComponent(destination || "/")}`);
+            window.location.assign(start.authorizationUrl);
+          } catch (caught) {
+            setError(caught instanceof Error ? caught.message : "Federated sign-in is not configured.");
+          }
+        }}>Sign in with an identity provider</button>
+        {params.get("oidc") === "link" || params.get("oidc") === "mfa" ? <form style={{ marginTop: 12 }} onSubmit={async (event) => {
+          event.preventDefault();
+          const pending = sessionStorage.getItem("budgetcents.oidcPending") ?? "";
+          const data = new FormData(event.currentTarget);
+          try {
+            const path = params.get("oidc") === "mfa" ? "/api/auth/oidc/mfa" : "/api/auth/oidc/link";
+            const result = await api<{ token?: string; note?: string }>(path, { method: "POST", body: JSON.stringify(params.get("oidc") === "mfa" ? { pendingToken: pending, code: data.get("code") } : { pendingToken: pending, password: data.get("password") }) });
+            if (result.token) {
+              sessionStorage.removeItem("budgetcents.oidcPending");
+              localStorage.setItem("budgetcents.token", result.token);
+              await session.refresh();
+            } else setNote(result.note ?? "The identity was not signed in.");
+          } catch (caught) { setError(caught instanceof Error ? caught.message : "The identity was not linked."); }
+        }}>
+          <p className="muted">{params.get("oidc") === "mfa" ? "Enter the authentication code from your authenticator. No invitation is accepted." : "Enter the password for the existing account to link this identity. No invitation is accepted."}</p>
+          {params.get("oidc") === "mfa" ? <Field label="Authentication code"><input name="code" inputMode="numeric" required /></Field> : <Field label="Password"><input name="password" type="password" required /></Field>}
+          <button className="btn" type="submit">{params.get("oidc") === "mfa" ? "Finish sign-in" : "Link account"}</button>
+        </form> : null}
         <form style={{ marginTop: 18 }} onSubmit={async (event) => {
           event.preventDefault();
           setError("");

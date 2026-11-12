@@ -46,6 +46,10 @@ export function Assistant() {
   const session = useSession();
   const [answer, setAnswer] = useState<{ text: string; facts: { label: string; formula?: string }[]; missing: string[] } | null>(null);
   const form = useFormError();
+  const action = useFormError();
+  const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  const [proposal, setProposal] = useState<{ id: string; note: string } | null>(null);
+  const [actionNote, setActionNote] = useState("");
   return (
     <Page title="Assistant" lede="Questions are answered from figures BudgetCents already calculated. Text you paste is data, not an instruction to move money.">
       <form onSubmit={(event) => form.run(event, async () => {
@@ -57,6 +61,43 @@ export function Assistant() {
         <button className="btn" type="submit">Ask</button>
       </form>
       {answer ? <article className="card" style={{ marginTop: 16 }}><p>{answer.text}</p>{answer.facts.map((fact) => <p key={fact.label} className="formula">{fact.label}{fact.formula ? ` — ${fact.formula}` : ""}</p>)}{answer.missing.length ? <p>Missing: {answer.missing.join(", ")}</p> : null}</article> : null}
+      <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => action.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        const preview = await api<{ id: string; note: string }>(scoped(session.householdId, "/assistant/actions/preview"), { method: "POST", body: JSON.stringify({
+          kind: "create_transaction",
+          payload: {
+            date: data.get("date"), accountId: data.get("accountId"), amountMinor: -Math.abs(parseAmount(String(data.get("amount")), session.currency)),
+            type: "expense", payee: data.get("payee"), bankStatus: "posted", splits: data.get("bucketId") ? [{ bucketId: data.get("bucketId"), amountMinor: Math.abs(parseAmount(String(data.get("amount")), session.currency)), role: "expense" }] : [],
+          },
+        }) });
+        setProposal(preview);
+        setActionNote(preview.note);
+      })}>
+        <h2>Propose a transaction</h2>
+        <p className="muted">Preview does not change the register. Confirm uses the same save path as Activity, and undo is available only while that transaction is still untouched.</p>
+        <Field label="Payee"><input name="payee" required /></Field>
+        <Field label="Amount"><input name="amount" required inputMode="decimal" /></Field>
+        <Field label="Date"><input name="date" type="date" required defaultValue="2026-11-12" /></Field>
+        <Field label="Account"><select name="accountId" required>{dash.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        <Field label="Category"><select name="bucketId"><option value="">Leave uncategorized</option>{dash.data?.buckets.filter((bucket) => !bucket.systemRole).map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+        {action.error ? <Notice kind="bad">{action.error}</Notice> : null}
+        {actionNote ? <Notice>{actionNote}</Notice> : null}
+        <button className="btn" type="submit">Preview</button>
+        {proposal ? <button className="btn" type="button" onClick={async () => {
+          try {
+            const confirmed = await api<{ note: string }>(scoped(session.householdId, `/assistant/actions/${proposal.id}/confirm`), { method: "POST" });
+            setActionNote(confirmed.note);
+            session.bump();
+          } catch (caught) { setActionNote(caught instanceof Error ? caught.message : "That did not save."); }
+        }}>Confirm</button> : null}
+        {proposal ? <button className="btn-secondary" type="button" onClick={async () => {
+          try {
+            await api(scoped(session.householdId, `/assistant/actions/${proposal.id}/undo`), { method: "POST" });
+            setActionNote("The transaction was undone.");
+            session.bump();
+          } catch (caught) { setActionNote(caught instanceof Error ? caught.message : "That was not undone."); }
+        }}>Undo</button> : null}
+      </form>
     </Page>
   );
 }
@@ -288,11 +329,12 @@ export function Rules() {
   const state = useLoad(() => api<{ rules: { id: string; name: string; match_mode: string; enabled: number }[] }>(scoped(session.householdId, "/rules")), [session.householdId, session.tick]);
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId]);
   const form = useFormError();
+  const [preview, setPreview] = useState("");
   if (!state.data) return <Loading />;
   return (
     <Page title="Rules" lede="A rule can rename a payee or suggest a category. It will not replace a category you locked.">
       <ul>{state.data.rules.map((rule) => <li key={rule.id}>{rule.name} · {rule.match_mode} · {rule.enabled ? "on" : "off"}</li>)}</ul>
-      <form className="card" onSubmit={(event) => form.run(event, async () => {
+      <form id="rule-form" className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         await api(scoped(session.householdId, "/rules"), { method: "POST", body: JSON.stringify({
           name: data.get("name"), matchMode: "all", priority: 50,
@@ -306,6 +348,12 @@ export function Rules() {
         <Field label="Set category"><select name="bucketId">{dash.data?.buckets.filter((bucket) => !bucket.systemRole).map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
         <Field label="Rename payee"><input name="payee" /></Field>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+        {preview ? <Notice>{preview}</Notice> : null}
+        <button className="btn-secondary" type="button" onClick={async () => {
+          const data = new FormData((document.getElementById("rule-form") as HTMLFormElement));
+          const result = await api<{ missing: string[]; changes: string[]; note: string }>(scoped(session.householdId, "/rules/suggest"), { method: "POST", body: JSON.stringify({ payee: data.get("contains") || "sample", amountMinor: -1000 }) });
+          setPreview(`${result.note} ${result.changes.join(" ")}${result.missing.length ? ` Missing: ${result.missing.join(", ")}.` : ""}`);
+        }}>Preview</button>
         <button className="btn" type="submit">Save rule</button>
       </form>
     </Page>
@@ -315,10 +363,53 @@ export function Rules() {
 export { Household } from "./Sharing.js";
 
 export function Providers() {
+  const session = useSession();
   const state = useLoad(() => api<{ providers: { id: string; name: string; group: string; status: string; needs: string; capabilities: string[] }[] }>("/api/providers"), []);
+  const dash = useLoad(() => session.householdId ? api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)) : Promise.resolve(null), [session.householdId, session.spaceId]);
+  const [note, setNote] = useState("");
   if (!state.data) return <Loading />;
   return (
     <Page title="Connections" lede="Manual entry and file import work now. Other providers stay off until their credentials and consent are configured. Nothing here pretends a bank or bureau responded.">
+      <article className="card" style={{ marginBottom: 12 }}>
+        <h2>Sandbox bank</h2>
+        <p>Connect imports the built-in test history into Sandbox Checking. Sync posts the pending line in place and adds the next fixture. This is not your bank.</p>
+        <button className="btn" type="button" disabled={!dash.data?.spaceId} onClick={async () => {
+          try {
+            const result = await api<{ note: string; transactionsImported: number }>(scoped(session.householdId, "/providers/sandbox/connect"), { method: "POST", body: JSON.stringify({ provider: "sandbox-bank", spaceId: dash.data?.spaceId }) });
+            setNote(`${result.note} Imported ${result.transactionsImported}.`);
+            session.bump();
+          } catch (caught) {
+            setNote(caught instanceof Error ? caught.message : "The sandbox import did not run.");
+          }
+        }}>Connect sandbox</button>
+        <button className="btn-secondary" type="button" disabled={!dash.data?.spaceId} onClick={async () => {
+          try {
+            const result = await api<{ note: string; imported: number; settled: number }>(scoped(session.householdId, "/providers/sandbox/sync"), { method: "POST", body: JSON.stringify({ spaceId: dash.data?.spaceId }) });
+            setNote(`${result.note} Added ${result.imported}. Settled ${result.settled}.`);
+            session.bump();
+          } catch (caught) {
+            setNote(caught instanceof Error ? caught.message : "The sandbox sync did not run.");
+          }
+        }}>Sync sandbox</button>
+      </article>
+      <form className="card" style={{ marginBottom: 12 }} onSubmit={async (event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget);
+        try {
+          await api("/api/messages/enrollment", { method: "POST", body: JSON.stringify({ channel: data.get("channel"), destinationLabel: data.get("label"), consent: true }) });
+          const sent = await api<{ status: string; note: string; provenDelivered: boolean }>("/api/notifications/test", { method: "POST", body: JSON.stringify({ channel: data.get("channel"), outcome: "accepted" }) });
+          setNote(`${sent.status}. ${sent.note}`);
+        } catch (caught) {
+          setNote(caught instanceof Error ? caught.message : "The test was not sent.");
+        }
+      }}>
+        <h2>Message enrollment</h2>
+        <p className="muted">Consent is stored even when no live provider is connected. A test sink can accept a message. Accepted is not delivered.</p>
+        <Field label="Channel"><select name="channel"><option value="email">Email</option><option value="sms">SMS</option><option value="push">Push</option></select></Field>
+        <Field label="Label"><input name="label" required defaultValue="test inbox" /></Field>
+        <button className="btn" type="submit">Save consent and send a test</button>
+      </form>
+      {note ? <Notice>{note}</Notice> : null}
       {state.data.providers.map((provider) => (
         <article key={provider.id} className="card" style={{ marginBottom: 12 }}>
           <div className="link-row"><h2>{provider.name}</h2><span>{provider.status.replaceAll("_", " ")}</span></div>
@@ -381,8 +472,10 @@ export function Credit() {
 
 export function Learn() {
   const state = useLoad(() => api<{ lessons: { id: string; title: string; topic: string; minutes: number; body: string; completed: boolean; quiz: { question: string; choices: string[]; answer: number; explanation: string }[] }[] }>("/api/lessons"), []);
+  const guide = useLoad(() => api<{ tours: { id: string; title: string; steps: string[] }[]; practice: { id: string; prompt: string }[]; progress: { item_id: string; step: number; kind: string }[]; note: string }>("/api/learn"), []);
   const [picked, setPicked] = useState<Record<string, number>>({});
   const [note, setNote] = useState("");
+  const [answer, setAnswer] = useState("");
   if (!state.data) return <Loading />;
   return (
     <Page title="Learn" lede="These lessons were written for BudgetCents. Completing one does not enroll you with a coach.">
@@ -405,6 +498,32 @@ export function Learn() {
         </article>
       ))}
       {note ? <Notice>{note}</Notice> : null}
+      <h2>Guided tours</h2>
+      <p className="muted">{guide.data?.note}</p>
+      {(guide.data?.tours ?? []).map((tour) => (
+        <article key={tour.id} className="card">
+          <h3>{tour.title}</h3>
+          <ol>{tour.steps.map((step) => <li key={step}>{step}</li>)}</ol>
+          <p className="muted">Saved step: {guide.data?.progress.find((item) => item.item_id === tour.id)?.step ?? 0}</p>
+          <button className="btn-secondary" type="button" onClick={async () => {
+            const current = guide.data?.progress.find((item) => item.item_id === tour.id)?.step ?? 0;
+            await api("/api/learn/tours", { method: "POST", body: JSON.stringify({ itemId: tour.id, step: Math.min(current + 1, tour.steps.length) }) });
+            setNote("Tour progress is saved. No money moved.");
+          }}>Save this step</button>
+        </article>
+      ))}
+      {(guide.data?.practice ?? []).map((item) => (
+        <form key={item.id} className="card" onSubmit={async (event) => {
+          event.preventDefault();
+          const result = await api<{ correct: boolean; note: string }>("/api/learn/practice", { method: "POST", body: JSON.stringify({ itemId: item.id, answerMinor: parseAmount(answer || "0", "USD") }) });
+          setNote(result.note);
+        }}>
+          <h3>Practice</h3>
+          <p>{item.prompt}</p>
+          <Field label="Answer in dollars"><input value={answer} onChange={(event) => setAnswer(event.target.value)} inputMode="decimal" /></Field>
+          <button className="btn" type="submit">Check answer</button>
+        </form>
+      ))}
     </Page>
   );
 }
@@ -613,18 +732,26 @@ export function HelpCenter() {
       {(articles.data?.articles ?? []).map((article) => <article key={article.id} className="card"><h2>{article.title}</h2><p>{article.body}</p></article>)}
       {articles.data && articles.data.articles.length === 0 ? <p>No articles match that search.</p> : null}
       <h2>Your requests</h2>
-      {(tickets.data?.tickets ?? []).length === 0 ? <p className="muted">No stored requests yet.</p> : <ul>{tickets.data?.tickets.map((ticket) => <li key={ticket.id}>{ticket.subject} — {ticket.status}</li>)}</ul>}
+      {(tickets.data?.tickets ?? []).length === 0 ? <p className="muted">No stored requests yet.</p> : <ul>{tickets.data?.tickets.map((ticket) => <li key={ticket.id}>{ticket.subject} — {ticket.status} <button className="btn-secondary" type="button" onClick={async () => { await api(`/api/support/${ticket.id}/status`, { method: "POST", body: JSON.stringify({ status: ticket.status === "closed" ? "open" : "closed" }) }); window.location.assign("/help"); }}>{ticket.status === "closed" ? "Reopen" : "Close"}</button></li>)}</ul>}
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         const created = await api<{ id: string; note: string }>("/api/support", { method: "POST", body: JSON.stringify({ subject: data.get("subject"), body: data.get("body") }) });
         if (String(data.get("followup") || "").trim()) {
           await api(`/api/support/${created.id}/messages`, { method: "POST", body: JSON.stringify({ body: data.get("followup") }) });
         }
+        const file = data.get("file");
+        if (file instanceof File && file.size) {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          let binary = "";
+          bytes.forEach((value) => { binary += String.fromCharCode(value); });
+          await api(`/api/support/${created.id}/attachments`, { method: "POST", body: JSON.stringify({ filename: file.name || "note.txt", contentType: file.type === "image/png" || file.type === "image/jpeg" ? file.type : "text/plain", dataBase64: btoa(binary) }) });
+        }
         window.location.assign("/help");
       })}>
         <Field label="Subject"><input name="subject" required /></Field>
         <Field label="What happened"><textarea name="body" required /></Field>
         <Field label="Another detail, optional"><textarea name="followup" /></Field>
+        <Field label="Text or image, optional"><input name="file" type="file" accept="text/plain,image/png,image/jpeg" /></Field>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
         <button className="btn" type="submit">Save request</button>
       </form>

@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -63,19 +64,46 @@ private val Tabs = listOf("Home", "Plan", "Activity", "Wealth", "More")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) {
+fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, recordId: String? = null) {
     val context = LocalContext.current
     val store = remember { Store(context.applicationContext) }
     val api = remember { BudgetApi(store) }
     val scope = rememberCoroutineScope()
     var token by remember { mutableStateOf(store.token) }
     var locked by remember { mutableStateOf(store.biometric && store.token != null) }
+    var linkNote by remember { mutableStateOf("") }
+    LaunchedEffect(recordId, token, locked) {
+        if (recordId.isNullOrBlank()) {
+            linkNote = ""
+        } else if (token == null) {
+            linkNote = "Sign in to open this record."
+        } else if (locked) {
+            linkNote = "This link waits until you unlock. Amounts stay hidden."
+        } else if (activity.navigation.value == "activity") {
+            val hid = store.householdId
+            if (!hid.isNullOrBlank()) {
+                try {
+                    val body = withContext(Dispatchers.IO) { api.request("GET", "/api/households/$hid/transactions?ids=$recordId&limit=1") }
+                    val rows = body.optJSONArray("transactions")
+                    linkNote = if (rows == null || rows.length() == 0) "That record is not available to you." else "Opened the linked record. Amounts follow your privacy setting."
+                } catch (caught: ApiException) {
+                    linkNote = if (caught.status == 403 || caught.status == 404) "That record is not available to you." else (caught.message ?: "")
+                }
+            }
+        } else {
+            linkNote = "Opened from a link. Amounts follow your privacy setting."
+        }
+    }
     val host by activity.navigation
-    var tab by remember { mutableIntStateOf(tabIndex(start)) }
-    var page by remember { mutableStateOf(subpage(start)) }
+    var tab by rememberSaveable { mutableIntStateOf(tabIndex(start)) }
+    var page by rememberSaveable { mutableStateOf(subpage(start)) }
+    var seenHost by rememberSaveable { mutableStateOf(start) }
     LaunchedEffect(host) {
-        tab = tabIndex(host)
-        page = subpage(host)
+        if (host != seenHost) {
+            seenHost = host
+            tab = tabIndex(host)
+            page = subpage(host)
+        }
     }
     var openSetup by remember { mutableStateOf(start == "setup") }
     var error by remember { mutableStateOf("") }
@@ -120,11 +148,21 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                 val amount = if (short) guidance.optLong("shortageMinor") else guidance.optLong("cashSafeMinor")
                 val label = if (short) "Short" else "Safe to spend"
                 store.summary = "$label ${money(amount, store.privacy)}"
+                store.saveDashboardCache(loaded.toString())
+                store.widgetFacts = widgetFacts(loaded, store.privacy || store.biometric)
                 refreshWidgets(context)
                 notifyAlerts(context, loaded, store)
                 if (flush.rejected.isNotBlank()) error = flush.rejected
                 else if (flush.sent > 0) status = "Synced ${flush.sent}. Balances were refreshed."
             } catch (caught: Exception) {
+                if (caught is ApiException && (caught.status == 401 || caught.status == 403)) store.clearCache()
+                else if (caught is java.io.IOException) {
+                    val saved = store.cachedDashboard()
+                    if (saved != null) {
+                        dash = JSONObject(saved)
+                        status = "Showing saved figures from this device. They are not the current ledger."
+                    }
+                }
                 error = caught.message ?: "Could not reach BudgetCents."
             }
         }
@@ -162,12 +200,12 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                         store.pendingInvite = null
                         inviteToken = null
                     }, {
-                        store.clearSession()
+                        store.clearSession(); refreshWidgets(context)
                         token = null
                     }) { error = it }
                 } else {
                     Text("You are signed in without a household. Open an invitation, or sign out and create one.")
-                    TextButton(onClick = { store.clearSession(); token = null }) { Text("Sign out") }
+                    TextButton(onClick = { store.clearSession(); refreshWidgets(context); token = null }) { Text("Sign out") }
                 }
                 if (error.isNotBlank()) Text(error)
             }
@@ -221,7 +259,8 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                     }
                 }
                 Column(Modifier.weight(1f).padding(16.dp).fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (error.isNotBlank()) Text(error, color = Color(0xFFB85C50))
+                    if (linkNote.isNotBlank()) Text(linkNote)
+                if (error.isNotBlank()) Text(error, color = Color(0xFFB85C50))
                     if (status.isNotBlank()) Text(status)
                     val pending = store.pendingForCurrentUser()
                     if (pending.isNotEmpty()) {
@@ -246,13 +285,13 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                             inviteToken = null
                             page = null
                         }, {
-                            store.clearSession()
+                            store.clearSession(); refreshWidgets(context)
                             token = null
                             page = null
                         }) { error = it }
                     } else if (page != null) {
                         FeatureScreen(page!!, api, store, dash, store.privacy, { page = null }, { reload() }, { error = it }, { error = ""; status = it }, {
-                            store.clearSession(); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
+                            store.clearSession(); refreshWidgets(context); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
                         }, { name ->
                             themeName = name
                             store.theme = name
@@ -347,7 +386,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                                     .onFailure { error = it.message ?: "Theme saved on this phone. The account was not updated." }
                             }
                         }, { page = it }, { reload() }) {
-                            store.clearSession(); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
+                            store.clearSession(); refreshWidgets(context); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
                         }
                     }
                 }
@@ -845,6 +884,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
         "retirement" to "Retirement",
         "reports" to "Reports",
         "rules" to "Rules",
+        "reconcile" to "Reconcile",
         "household" to "Household",
         "connections" to "Connections",
         "security" to "Security",
@@ -916,11 +956,49 @@ private suspend fun flushQueue(api: BudgetApi, store: Store): FlushResult = with
     FlushResult(sent, rejected)
 }
 
+private fun widgetFacts(dash: JSONObject, hidden: Boolean): String {
+    val buckets = dash.optJSONArray("buckets") ?: JSONArray()
+    val budget = dash.optJSONObject("budget")?.optJSONArray("buckets") ?: JSONArray()
+    fun available(id: String): Long {
+        for (index in 0 until budget.length()) {
+            val row = budget.getJSONObject(index)
+            if (row.optString("bucketId") == id) return row.optLong("availableMinor")
+        }
+        return 0
+    }
+    var category = "No category yet"
+    var flex = 0L
+    for (index in 0 until buckets.length()) {
+        val bucket = buckets.getJSONObject(index)
+        if (bucket.optString("flexRole") != "flexible") continue
+        val amount = available(bucket.optString("id"))
+        flex += amount
+        if (category == "No category yet") category = if (hidden) bucket.optString("name") else "${bucket.optString("name")} ${money(amount, false)}"
+    }
+    val upcoming = dash.optJSONArray("upcoming")
+    val bill = if (upcoming == null || upcoming.length() == 0) "No upcoming bill" else {
+        val event = upcoming.getJSONObject(0)
+        if (hidden) event.optString("label", "Bill") else "${event.optString("label", "Bill")} ${event.optString("date")}"
+    }
+    val goals = dash.optJSONArray("goals")
+    val goal = if (goals == null || goals.length() == 0) "No goal yet" else {
+        val row = goals.getJSONObject(0)
+        if (hidden) row.optString("name") else "${row.optString("name")} ${money(row.optLong("availableMinor"), false)}"
+    }
+    return JSONObject()
+        .put("category", category)
+        .put("flex", if (hidden) "Flexible spending hidden" else "Flexible ${money(flex, false)}")
+        .put("bill", bill)
+        .put("goal", goal)
+        .put("quick", "Add a transaction")
+        .toString()
+}
+
 private fun tabIndex(host: String) = when (host) {
     "plan" -> 1
     "activity" -> 2
     "wealth", "investments", "retirement", "reports" -> 3
-    "more", "setup", "accounts", "categories", "fills", "bills", "paycheck", "calendar", "incomeplan", "goals", "debts", "forecast", "rules", "household", "connections", "security", "learn", "assistant", "import", "alerts" -> 4
+    "more", "setup", "accounts", "categories", "fills", "bills", "paycheck", "calendar", "incomeplan", "goals", "debts", "forecast", "rules", "reconcile", "household", "connections", "security", "learn", "assistant", "import", "alerts" -> 4
     else -> 0
 }
 

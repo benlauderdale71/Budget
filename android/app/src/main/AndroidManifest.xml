@@ -53,6 +53,18 @@
                 <data android:scheme="budgetcents" android:host="reset" />
                 <data android:scheme="budgetcents" android:host="invite" />
                 <data android:scheme="budgetcents" android:host="alerts" />
+                <data android:scheme="budgetcents" android:host="transaction" />
+                <data android:scheme="budgetcents" android:host="bill" />
+                <data android:scheme="budgetcents" android:host="goal" />
+                <data android:scheme="budgetcents" android:host="reconcile" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".widget.WidgetConfigureActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
         </activity>
 
@@ -66,6 +78,18 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/summary_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.ConfigurableWidget"
+            android:exported="true"
+            android:label="@string/widget_configurable">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/configurable_widget_info" />
         </receiver>
     </application>
 </manifest>

@@ -14,7 +14,8 @@ class SummaryWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         val store = Store(context)
         val body = when {
-            store.summary.isBlank() -> context.getString(R.string.widget_empty)
+            store.token.isNullOrBlank() || store.summary.isBlank() -> context.getString(R.string.widget_empty)
+            store.biometric -> "Unlock BudgetCents"
             store.privacy -> "Amounts hidden"
             else -> store.summary
         }
@@ -36,4 +37,5 @@ fun refreshWidgets(context: Context) {
     val manager = AppWidgetManager.getInstance(context)
     val ids = manager.getAppWidgetIds(android.content.ComponentName(context, SummaryWidget::class.java))
     if (ids.isNotEmpty()) SummaryWidget().onUpdate(context, manager, ids)
+    refreshConfigurableWidgets(context)
 }

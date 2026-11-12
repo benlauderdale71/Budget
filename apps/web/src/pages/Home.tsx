@@ -15,12 +15,13 @@ import {
   type DashboardDeviceClass,
 } from "@budgetcents/domain/dashboard-layout";
 import { ApiError, api } from "../api.js";
+import { forgetHouseholdCache, readDashboardCache, writeDashboardCache, type CachedDashboard } from "../offline-cache.js";
 import { DASHBOARD_UNDO_STORAGE, readUndoStacks, withUndoStack, writeUndoStacks, type UndoStacks } from "../dashboard-undo.js";
 import { monthLabel } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
 import { OwnershipDashboard } from "../ownership.js";
 import type { Dashboard } from "../types.js";
-import { ErrorNote, Loading, Modal, Money, useLoad } from "../ui.js";
+import { ErrorNote, Loading, Modal, Money, Notice, Page, useLoad } from "../ui.js";
 
 function useDeviceClass(): DashboardDeviceClass {
   const [width, setWidth] = useState(() => window.innerWidth);
@@ -47,6 +48,7 @@ export function Home() {
   const [customizing, setCustomizing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  const [cached, setCached] = useState<CachedDashboard | null>(null);
   const [failed, setFailed] = useState(false);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [retry, setRetry] = useState<{ cards: DashboardCardPreference[]; message: string; focusId: string | null; mode: "change" | "undo" } | null>(null);
@@ -68,6 +70,24 @@ export function Home() {
   const past = historyRef.current.get(historyKey) ?? [];
   const shown = draft?.deviceClass === deviceClass ? draft.cards : saved;
   const state = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  useEffect(() => {
+    const userId = session.user?.id;
+    const householdId = session.householdId;
+    if (!userId || !householdId) return;
+    if (state.data) {
+      writeDashboardCache(localStorage, userId, householdId, state.data);
+      setCached(null);
+      return;
+    }
+    if (!state.error) return;
+    const message = state.error.toLowerCase();
+    if (message.includes("no longer") || message.includes("not found") || message.includes("do not have")) {
+      forgetHouseholdCache(localStorage, userId, householdId);
+      setCached(null);
+      return;
+    }
+    setCached(readDashboardCache(localStorage, userId, householdId));
+  }, [state.data, state.error, session.user?.id, session.householdId]);
   useEffect(() => { if (state.data) session.adoptSpace(state.data.spaceId); }, [state.data?.spaceId]);
   useEffect(() => {
     try {
@@ -160,6 +180,16 @@ export function Home() {
   }
 
   if (state.loading && !state.data) return <Loading label="Loading the household" />;
+  if ((state.error || !state.data) && cached) {
+    const saved = cached.dashboard as Dashboard;
+    return (
+      <Page title="Home" lede="This is the last dashboard this sign-in was allowed to store on this device.">
+        <Notice kind="bad">Saved {new Date(cached.savedAt).toLocaleString()}. These figures are not the current ledger. A change still waiting on this device is not saved.</Notice>
+        <p>Ready to Assign <Money minor={saved.budget.readyToAssignMinor} />. Cash <Money minor={saved.budget.cashPoolMinor} />.</p>
+        <button className="btn" type="button" onClick={session.bump}>Try again</button>
+      </Page>
+    );
+  }
   if (state.error || !state.data) return <ErrorNote message={state.error ?? "No dashboard"} onRetry={session.bump} />;
   const dash = state.data;
   const rows = dashboardDisplayRows(shown, columns);

@@ -57,6 +57,7 @@ export function Investments() {
         </table>
       </div>
       <ul>{state.data.allocation.map((slice) => <li key={slice.key}>{slice.key}: {(slice.weightBps / 100).toFixed(1)}% · <Money minor={slice.valueMinor} /></li>)}</ul>
+      <LotForm positions={state.data.positions.map((position) => ({ id: position.holdingId, symbol: position.symbol }))} />
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         await api(scoped(session.householdId, "/holdings"), { method: "POST", body: JSON.stringify({
@@ -156,6 +157,32 @@ interface RetirementResponse {
     assumptions: string[];
     yearlyDeterministic: { householdAge: number; portfolioMinor: number; contributionMinor: number; spendingMinor: number; benefitMinor: number; unmetMinor: number; people: { modeledAge: number; retired: boolean }[] }[];
   };
+}
+
+function LotForm({ positions }: { positions: { id: string; symbol: string }[] }) {
+  const session = useSession();
+  const form = useFormError();
+  const [note, setNote] = useState("");
+  if (!positions.length) return <p className="muted">Add a holding before recording a lot. A missing cost basis stays missing.</p>;
+  return (
+    <form className="card" onSubmit={(event) => form.run(event, async () => {
+      const data = new FormData(event.currentTarget);
+      const created = await api<{ id: string }>(scoped(session.householdId, "/lots"), { method: "POST", body: JSON.stringify({
+        holdingId: data.get("holdingId"), quantityMicro: Math.round(Number(data.get("shares")) * 1_000_000), costBasisMinor: data.get("basis") ? parseAmount(String(data.get("basis")), session.currency) : null, acquired: String(data.get("acquired") || "2026-11-12"),
+      }) });
+      setNote(data.get("basis") ? `Lot ${created.id} is recorded. A sale is a separate step and does not create a bank transaction.` : "The lot is recorded with no cost basis. A sale stays blocked until you add one.");
+      session.bump();
+    })}>
+      <h2>Tax lot</h2>
+      <Field label="Holding"><select name="holdingId">{positions.map((position) => <option key={position.id} value={position.id}>{position.symbol}</option>)}</select></Field>
+      <Field label="Shares"><input name="shares" required inputMode="decimal" defaultValue="1" /></Field>
+      <Field label="Cost basis"><input name="basis" inputMode="decimal" /></Field>
+      <Field label="Acquired"><input name="acquired" type="date" defaultValue="2026-11-12" /></Field>
+      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+      {note ? <Notice>{note}</Notice> : null}
+      <button className="btn" type="submit">Save lot</button>
+    </form>
+  );
 }
 
 export function Retirement() {
@@ -266,7 +293,38 @@ export function Retirement() {
           </div>
         </>
       ) : null}
+      <MonthlyDistribution />
     </Page>
+  );
+}
+
+function MonthlyDistribution() {
+  const session = useSession();
+  const form = useFormError();
+  const [note, setNote] = useState("");
+  return (
+    <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
+      const data = new FormData(event.currentTarget);
+      const before = await api<Dashboard>(scoped(session.householdId, "/dashboard?evaluate=0", session.spaceId));
+      const result = await api<{ months: { withdrawalMinor: number; rmdMinor: number }[]; assumptions: string[]; guarantee: boolean }>(scoped(session.householdId, "/retirement/monthly"), { method: "POST", body: JSON.stringify({
+        portfolioMinor: parseAmount(String(data.get("portfolio")), session.currency),
+        traditionalMinor: parseAmount(String(data.get("traditional")), session.currency),
+        annualReturnBps: 0, annualSpendingMinor: 0, annualContributionMinor: 0, taxBps: 0,
+        age: Number(data.get("age")), birthYear: Number(data.get("birth")), months: 1,
+      }) });
+      const after = await api<Dashboard>(scoped(session.householdId, "/dashboard?evaluate=0", session.spaceId));
+      setNote(`Modeled withdrawal ${result.months[0]?.withdrawalMinor ?? 0}. Required distribution ${result.months[0]?.rmdMinor ?? 0}. Guarantee ${result.guarantee}. Cash stayed ${before.budget.cashPoolMinor === after.budget.cashPoolMinor ? "unchanged" : "unexpectedly changed"}. ${result.assumptions[2] ?? ""}`);
+    })}>
+      <h2>Monthly required distribution</h2>
+      <p className="muted">This uses the published Uniform Lifetime table for the age and birth year you enter. It does not post a withdrawal.</p>
+      <Field label="Portfolio"><input name="portfolio" required inputMode="decimal" defaultValue="26500.00" /></Field>
+      <Field label="Traditional balance"><input name="traditional" required inputMode="decimal" defaultValue="26500.00" /></Field>
+      <Field label="Age"><input name="age" type="number" required defaultValue={73} /></Field>
+      <Field label="Birth year"><input name="birth" type="number" required defaultValue={1953} /></Field>
+      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+      {note ? <Notice>{note}</Notice> : null}
+      <button className="btn" type="submit">Run monthly model</button>
+    </form>
   );
 }
 

@@ -2,6 +2,7 @@ import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT
 import { Hono } from "hono";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
+import { mountTestIssuer } from "./oidc-test-provider.js";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
 import { getAlert, listAlerts, markAlertRead, markAlertsRead, readAlertSettings, resolveAlert, saveAlertSettings, snoozeAlert, syncAlerts } from "./alerts.js";
@@ -2179,6 +2180,31 @@ export function createApp(db: Database) {
     return c.json({ count: matches.length, sample: matches.slice(0, body.limit) });
   });
 
+  app.post("/api/households/:hid/rules/suggest", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const body = z.object({ payee: z.string().min(1).max(80), amountMinor: z.number().int() }).parse(await c.req.json());
+    const rows = await db.query(`SELECT * FROM rules WHERE household_id = $1 AND enabled = 1`, [member.householdId]);
+    const draft: Transaction = {
+      id: "preview", date: "2026-11-12", accountId: "preview", amountMinor: body.amountMinor, currency: member.currency,
+      type: body.amountMinor < 0 ? "expense" : "income", payee: body.payee, bankStatus: "posted", reviewStatus: "needs_review",
+      cleared: false, reconciled: false, locked: false, splits: [], tags: [], deleted: false, version: 1,
+    };
+    const applied = applyHouseholdRules(draft, rows.map((rule) => ({
+      id: String(rule.id), name: String(rule.name), priority: num(rule.priority), enabled: true,
+      matchMode: String(rule.match_mode) as "all" | "any", conditions: JSON.parse(String(rule.conditions_json)), actions: JSON.parse(String(rule.actions_json)),
+    })));
+    const matched = new Set(applied.matchedRuleIds);
+    const actionTypes = new Set<string>();
+    for (const rule of rows) {
+      if (!matched.has(String(rule.id))) continue;
+      const actions = JSON.parse(String(rule.actions_json)) as { type?: string }[];
+      for (const action of actions) if (action.type) actionTypes.add(action.type);
+    }
+    const missing = matched.size && !actionTypes.has("set_bucket") ? ["category"] : [];
+    return c.json({ changes: applied.changes, skipped: applied.skipped, missing, matchedRuleIds: applied.matchedRuleIds, note: "This preview did not save a rule or a transaction." });
+  });
+
   app.post("/api/devices", async (c) => {
     const me = await actor(c);
     const body = z.object({ name: z.string(), platform: z.string() }).parse(await c.req.json());
@@ -2731,7 +2757,9 @@ export function createApp(db: Database) {
     actor,
     insertTransaction: (user, householdId, body) => insertTransaction(user, householdId, body).then((result) => ({ id: result.id ?? undefined })),
     createGoal: (user, householdId, body) => createManualGoal(user, householdId, body),
+    startSession,
   });
+  if (process.env.OIDC_TEST_MODE === "1") mountTestIssuer(app);
 
   mountReceipts(app, db, {
     actor,
