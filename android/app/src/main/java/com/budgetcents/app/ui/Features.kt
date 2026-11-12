@@ -81,11 +81,11 @@ fun FeatureScreen(
                 val goal = goals.getJSONObject(index)
                 Text("${goal.optString("name")} ${money(goal.optLong("availableMinor"), privacy)} of ${money(goal.optLong("target_minor"), privacy)}")
             }
-            BucketPick(dash, "expense") { bucketId, name, target ->
+            BucketPick(dash, "expense") { bucketId, name, target, goalDate ->
                 scope.launch {
                     runIo(onError) {
                         api.request("POST", "/api/households/$hid/goals", JSONObject()
-                            .put("spaceId", dash?.optString("spaceId")).put("name", name).put("bucketId", bucketId).put("targetMinor", target).put("purpose", "goal"))
+                            .put("spaceId", dash?.optString("spaceId")).put("name", name).put("bucketId", bucketId).put("targetMinor", target).put("purpose", "goal").apply { if (goalDate.isNotBlank()) put("targetDate", goalDate) })
                         onChanged()
                     }
                 }
@@ -111,7 +111,7 @@ fun FeatureScreen(
                 val line = lines.getJSONObject(index)
                 Text("${bucketName(line.optString("bucketId"))} ${money(line.optLong("plannedMinor"), privacy)}")
             }
-            BucketPick(dash, "expense") { bucketId, _, target ->
+            BucketPick(dash, "expense") { bucketId, _, target, _ ->
                 scope.launch {
                     runIo(onError) {
                         val next = org.json.JSONArray()
@@ -1427,7 +1427,7 @@ private fun BillsScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy:
                 }
                 if (row.optString("direction") == "outflow" && row.optString("bucketId").isNotBlank()) {
                     TextButton(onClick = {
-                        scope.launch { runIo(onError) { val saved = api.request("POST", "/api/households/$hid/schedules/${row.optString("id")}/reserve", JSONObject()); onStatus(saved.optString("note").ifBlank { "Reserved." }); reload += 1; onChanged() } }
+                        scope.launch { runIo(onError) { val saved = api.request("POST", "/api/households/$hid/schedules/${row.optString("id")}/reserve", JSONObject().put("planRevision", dash?.optJSONObject("household")?.optInt("planRevision") ?: 0)); onStatus(saved.optString("note").ifBlank { "Reserved." }); reload += 1; onChanged() } }
                     }) { Text("Reserve from cash") }
                 }
             }
@@ -1512,11 +1512,12 @@ private fun BillForm(initial: JSONObject?, onError: (String) -> Unit, onClose: (
 }
 
 @Composable
-private fun BucketPick(dash: JSONObject?, kind: String, onSave: (String, String, Long) -> Unit) {
+private fun BucketPick(dash: JSONObject?, kind: String, onSave: (String, String, Long, String) -> Unit) {
     val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
     var bucketId by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var target by remember { mutableStateOf("") }
+    var targetDate by remember { mutableStateOf("") }
     Text("Envelope")
     for (index in 0 until buckets.length()) {
         val bucket = buckets.getJSONObject(index)
@@ -1527,7 +1528,8 @@ private fun BucketPick(dash: JSONObject?, kind: String, onSave: (String, String,
     }
     OutlinedTextField(name, { name = it }, label = { Text("Goal name") }, modifier = Modifier.fillMaxWidth())
     OutlinedTextField(target, { target = it }, label = { Text("Target") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
-    Button(onClick = { if (bucketId.isBlank() || target.isBlank()) return@Button else onSave(bucketId, name, parseDollars(target)) }) { Text("Save goal") }
+    OutlinedTextField(targetDate, { targetDate = it }, label = { Text("Target date YYYY-MM-DD, optional") }, modifier = Modifier.fillMaxWidth())
+    Button(onClick = { if (bucketId.isBlank() || target.isBlank()) return@Button else onSave(bucketId, name, parseDollars(target), targetDate.trim()) }) { Text("Save goal") }
 }
 
 @Composable

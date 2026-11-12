@@ -31,6 +31,8 @@ import {
   forecastEventsFromSchedules,
   loadSpace,
   lockHousehold,
+  assertPlanRevision,
+  bumpPlanRevision,
   requireMember,
   setAssignment,
   visibleNetWorth,
@@ -444,7 +446,7 @@ export function mountIncome(app: Hono, db: Database, hooks: IncomeHooks) {
 
   app.post("/api/households/:hid/schedules/:id/reserve", async (c) => {
     const me = await hooks.actor(c);
-    return c.json(await reserveBill(db, me, c.req.param("hid"), c.req.param("id"), hooks));
+    return c.json(await reserveBill(db, me, c.req.param("hid"), c.req.param("id"), hooks, await c.req.json().catch(() => ({}))));
   });
 }
 
@@ -891,9 +893,10 @@ export async function skipBill(db: Database, me: Actor, householdId: string, sch
   return { ok: true, nextDate: next };
 }
 
-async function reserveBill(db: Database, me: Actor, householdId: string, scheduleId: string, hooks: IncomeHooks) {
+async function reserveBill(db: Database, me: Actor, householdId: string, scheduleId: string, hooks: IncomeHooks, raw: unknown) {
   const member = await requireMember(db, me.id, householdId);
   assertBudget(member);
+  const body = z.object({ planRevision: z.number().int().nonnegative() }).parse(raw ?? {});
   const rows = await db.query(`SELECT * FROM schedules WHERE id = $1 AND household_id = $2`, [scheduleId, member.householdId]);
   if (!rows.length) throw new ApiError(404, "Not found");
   if (String(rows[0].direction) !== "outflow") throw new ApiError(400, "Only a bill can be reserved from cash already on hand.");
@@ -904,18 +907,25 @@ async function reserveBill(db: Database, me: Actor, householdId: string, schedul
   const loaded = await loadSpace(db, me, householdId, String(rows[0].space_id), String(rows[0].next_date));
   if (loaded.budget.readyToAssignMinor < num(rows[0].amount_minor)) throw new ApiError(400, "Ready to Assign does not have enough cash to reserve this bill.");
   const period = loaded.budget.periodKey;
-  await db.tx(async () => {
+  const outcome = await db.tx(async () => {
     await lockHousehold(db, member.householdId);
     const again = await db.query(`SELECT reserved FROM schedule_details WHERE schedule_id = $1`, [scheduleId]);
-    if (again.length && num(again[0].reserved) === 1) return;
+    if (again.length && num(again[0].reserved) === 1) return { planRevision: body.planRevision, duplicate: true };
+    await assertPlanRevision(db, member.householdId, body.planRevision);
     const current = await db.query(`SELECT amount_minor FROM assignments WHERE space_id = $1 AND bucket_id = $2 AND period_key = $3`, [rows[0].space_id, rows[0].bucket_id, period]);
     await setAssignment(db, member.householdId, String(rows[0].space_id), String(rows[0].bucket_id), period, num(current[0]?.amount_minor) + num(rows[0].amount_minor));
     await db.query(
       `INSERT INTO schedule_details (schedule_id, reserved) VALUES ($1, 1) ON CONFLICT (schedule_id) DO UPDATE SET reserved = 1`,
       [scheduleId],
     );
+    return { planRevision: await bumpPlanRevision(db, member.householdId), duplicate: false };
   });
-  return { reserved: true, duplicate: false, note: "Cash already in Ready to Assign was reserved in the category. Expected income was not used." };
+  return {
+    reserved: true,
+    duplicate: outcome.duplicate,
+    planRevision: outcome.planRevision,
+    note: outcome.duplicate ? "This bill is already reserved." : "Cash already in Ready to Assign was reserved in the category. Expected income was not used.",
+  };
 }
 
 export async function expectedIncomeEvents(db: Database, me: Actor, householdId: string, spaceId: string | undefined, asOf: string | undefined) {

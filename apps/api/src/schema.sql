@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS households (
   time_zone text NOT NULL DEFAULT 'America/Chicago',
   week_start integer NOT NULL DEFAULT 0,
   member_limit integer,
+  plan_revision integer NOT NULL DEFAULT 0,
   created_at text NOT NULL
 );
 
@@ -291,7 +292,7 @@ CREATE TABLE IF NOT EXISTS lots (
   id text PRIMARY KEY,
   holding_id text NOT NULL REFERENCES holdings(id) ON DELETE CASCADE,
   quantity text NOT NULL,
-  cost_basis_minor bigint NOT NULL,
+  cost_basis_minor bigint,
   acquired text NOT NULL
 );
 
@@ -503,6 +504,76 @@ CREATE TABLE IF NOT EXISTS checklist_items (
   done integer NOT NULL DEFAULT 0,
   notes text,
   sort integer NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS provider_events (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  provider text NOT NULL,
+  kind text NOT NULL,
+  external_id text NOT NULL,
+  title text NOT NULL,
+  body text NOT NULL,
+  occurred_on text NOT NULL,
+  created_at text NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS provider_events_external ON provider_events (household_id, provider, external_id);
+
+CREATE TABLE IF NOT EXISTS oidc_states (
+  state text PRIMARY KEY,
+  user_id text,
+  nonce text NOT NULL,
+  code_verifier text NOT NULL,
+  return_path text NOT NULL,
+  created_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS service_requests (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL,
+  kind text NOT NULL,
+  status text NOT NULL,
+  detail text NOT NULL,
+  created_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS benchmarks (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  points_json text NOT NULL,
+  source text NOT NULL,
+  updated_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS support_messages (
+  id text PRIMARY KEY,
+  ticket_id text NOT NULL,
+  user_id text NOT NULL,
+  body text NOT NULL,
+  created_at text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS oidc_identities (
+  issuer text NOT NULL,
+  subject text NOT NULL,
+  user_id text NOT NULL,
+  email text NOT NULL,
+  created_at text NOT NULL,
+  PRIMARY KEY (issuer, subject)
+);
+
+CREATE TABLE IF NOT EXISTS assistant_actions (
+  id text PRIMARY KEY,
+  household_id text NOT NULL,
+  user_id text NOT NULL,
+  kind text NOT NULL,
+  payload_json text NOT NULL,
+  result_json text NOT NULL,
+  undone_at text,
+  created_at text NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS support_tickets (

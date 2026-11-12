@@ -11,7 +11,7 @@ import {
 import { id, localDate, nowIso } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
-import { ApiError, type Actor, assertBudget, audit, loadSpace, lockHousehold, requireMember } from "./finance.js";
+import { ApiError, type Actor, assertBudget, assertPlanRevision, audit, bumpPlanRevision, loadSpace, lockHousehold, requireMember } from "./finance.js";
 
 export type FillCadence = Cadence | "once";
 
@@ -210,7 +210,7 @@ export async function previewFill(db: Database, actor: Actor, householdId: strin
   };
 }
 
-export async function runFill(db: Database, actor: Actor, householdId: string, templateId: string, today?: string) {
+export async function runFill(db: Database, actor: Actor, householdId: string, templateId: string, today?: string, planRevision?: number) {
   const member = await requireMember(db, actor.id, householdId);
   assertBudget(member);
   const zone = await householdZone(db, member.householdId);
@@ -227,8 +227,11 @@ export async function runFill(db: Database, actor: Actor, householdId: string, t
         ...resultOf(String(existing[0].status), num(existing[0].allocated_minor), num(existing[0].shortfall_minor), "This occurrence was already recorded. Running it again changed nothing.", str(fresh.next_date) ?? null),
         duplicate: true,
         skippedDates: skipped,
+        planRevision: await currentPlanRevision(db, member.householdId),
       };
     }
+    if (planRevision == null) throw new ApiError(400, "Reload the plan before running this fill.");
+    await assertPlanRevision(db, member.householdId, planRevision);
     const next = str(fresh.next_date);
     if (next === date) {
       const result = await executeOccurrence(db, actor, fresh, date, true, true);
@@ -386,6 +389,7 @@ async function executeOccurrence(db: Database, actor: Actor, template: Record<st
   }, null);
   if (advance && str(template.next_date) === date) await advanceTemplate(db, template, date);
   await audit(db, householdId, actor.id, "fill.run", `${fillStatusLabel(status)} ${template.name} on ${date}`, "fill", String(template.id));
+  if (plan.totalAllocatedMinor > 0) await bumpPlanRevision(db, householdId);
   const fresh = await mustTemplate(db, householdId, String(template.id));
   return {
     ...resultOf(status, plan.totalAllocatedMinor, plan.shortfallMinor, plan.explanation, str(fresh.next_date) ?? null),
@@ -393,7 +397,13 @@ async function executeOccurrence(db: Database, actor: Actor, template: Record<st
     readyAfterMinor: plan.readyAfterMinor,
     allocations: plan.allocations,
     duplicate: false,
+    planRevision: await currentPlanRevision(db, householdId),
   };
+}
+
+async function currentPlanRevision(db: Database, householdId: string) {
+  const rows = await db.query(`SELECT plan_revision FROM households WHERE id = $1`, [householdId]);
+  return num(rows[0]?.plan_revision);
 }
 
 async function claimOccurrence(db: Database, template: Record<string, unknown>, key: string, manual: boolean) {

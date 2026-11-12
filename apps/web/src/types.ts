@@ -118,6 +118,7 @@ export interface Split {
   amountMinor: number;
   role: string;
   memo?: string;
+  ownerUserId?: string;
 }
 
 export interface Txn {
@@ -159,6 +160,7 @@ export interface Dashboard {
     labelMode: string;
     budgetApproach: string;
     timeZone: string;
+    planRevision?: number;
   };
   spaceId: string;
   spaces: Space[];

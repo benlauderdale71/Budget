@@ -11,11 +11,15 @@ interface SessionValue {
   spaceId?: string;
   currency: string;
   tick: number;
+  draftEpoch: number;
+  incoming: string;
   offline: boolean;
   queued: number;
   syncError: string;
   refresh: (preferHouseholdId?: string) => Promise<void>;
   bump: () => void;
+  holdDraft: () => () => void;
+  acceptIncoming: () => void;
   chooseHousehold: (id: string) => void;
   chooseSpace: (id: string) => void;
   adoptSpace: (id: string) => void;
@@ -52,11 +56,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [householdId, setHouseholdId] = useState("");
   const [spaceId, setSpaceId] = useState<string | undefined>();
   const [tick, setTick] = useState(0);
+  const [draftEpoch, setDraftEpoch] = useState(0);
+  const [incoming, setIncoming] = useState("");
   const [offline, setOffline] = useState(!navigator.onLine);
   const [queued, setQueued] = useState(queuedCount());
   const [syncError, setSyncError] = useState("");
   const userIdRef = useRef<string | null>(null);
   const sessionGen = useRef(0);
+  const holds = useRef(0);
+  const refreshRef = useRef<(preferHouseholdId?: string) => Promise<void>>(async () => undefined);
   userIdRef.current = user?.id ?? null;
 
   async function refresh(preferHouseholdId?: string) {
@@ -86,6 +94,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     writeProfile(data.user, data.households, next, storedSpace);
     api("/api/devices", { method: "POST", body: JSON.stringify({ name: "Web browser", platform: "web" }) }).catch(() => undefined);
   }
+
+  refreshRef.current = refresh;
 
   function restoreProfile() {
     const cached = readProfile();
@@ -142,11 +152,68 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!user?.id || !householdId) return;
+    const watchedUser = user.id;
+    const watchedHousehold = householdId;
+    let since = new Date().toISOString();
+    let seenPlan = -1;
+    let seenRole = "";
+    let seenAlert = -1;
+    let stop = false;
+    const poll = async () => {
+      if (stop || document.hidden || !navigator.onLine) return;
+      const gen = sessionGen.current;
+      try {
+        const data = await api<{ serverTime: string; planRevision: number; role: string; alertVersion: number; events: unknown[] }>(`/api/households/${watchedHousehold}/changes?since=${encodeURIComponent(since)}`);
+        if (stop || gen !== sessionGen.current || userIdRef.current !== watchedUser) return;
+        since = data.serverTime;
+        const roleChanged = seenRole !== "" && seenRole !== data.role;
+        const changed = (seenPlan >= 0 && seenPlan !== data.planRevision) || roleChanged || (seenAlert >= 0 && seenAlert !== data.alertVersion) || data.events.length > 0;
+        seenPlan = data.planRevision;
+        seenRole = data.role;
+        seenAlert = data.alertVersion;
+        if (roleChanged) await refreshRef.current();
+        if (!changed || stop || gen !== sessionGen.current) return;
+        if (holds.current > 0) setIncoming("Someone else saved a change. Your unsaved text is still here. Reload when you want to replace it.");
+        else {
+          setIncoming("");
+          setTick((item) => item + 1);
+        }
+      } catch (error) {
+        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) refreshRef.current().catch(() => undefined);
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 12000);
+    const onVisible = () => { if (!document.hidden && navigator.onLine) void poll(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", onVisible);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onVisible);
+    };
+  }, [user?.id, householdId]);
+
   const currency = households.find((item) => item.id === householdId)?.currency ?? "USD";
   const value = useMemo<SessionValue>(() => ({
-    ready, user, households, householdId, spaceId, currency, tick, offline, queued, syncError,
+    ready, user, households, householdId, spaceId, currency, tick, draftEpoch, incoming, offline, queued, syncError,
     refresh, bump: () => setTick((item) => item + 1),
+    holdDraft: () => {
+      holds.current += 1;
+      return () => { holds.current = Math.max(0, holds.current - 1); };
+    },
+    acceptIncoming: () => {
+      setIncoming("");
+      setDraftEpoch((item) => item + 1);
+      setTick((item) => item + 1);
+    },
     chooseHousehold: (id) => {
+      sessionGen.current += 1;
+      holds.current = 0;
+      setIncoming("");
       localStorage.setItem("budgetcents.household", id);
       setHouseholdId(id);
       setSpaceId(localStorage.getItem(`budgetcents.space.${id}`) ?? undefined);
@@ -170,13 +237,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
     signOut: async () => {
       sessionGen.current += 1;
+      holds.current = 0;
       userIdRef.current = null;
       await api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
       clearLocalSession();
       setUser(null);
       setHouseholdId("");
     },
-  }), [ready, user, households, householdId, spaceId, currency, tick, offline, queued, syncError]);
+  }), [ready, user, households, householdId, spaceId, currency, tick, draftEpoch, incoming, offline, queued, syncError]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

@@ -14,7 +14,7 @@ import { Bills, Debts, Forecast, Goals } from "./pages/Planning.js";
 import { CalendarPage, Paychecks } from "./pages/Paychecks.js";
 import { Receipts } from "./pages/Receipts.js";
 import { Investments, Reports, Retirement, Wealth } from "./pages/Wealth.js";
-import { Assistant, Cases, Checklists, Credit, Household, ImportPage, Learn, More, Providers, Rules, Settings } from "./pages/Tools.js";
+import { Assistant, Cases, Checklists, Credit, HelpCenter, Household, ImportPage, Learn, More, Providers, Rules, Settings } from "./pages/Tools.js";
 import { AccountDeletion, PrivacyPolicy } from "./pages/Legal.js";
 
 interface InstallPrompt extends Event {
@@ -110,7 +110,8 @@ function Shell({ children }: { children: React.ReactNode }) {
         <main id="main" className="content" tabIndex={-1}>
           {household && Number(household.is_demo) === 1 ? <div className="banner demo">Sample household. The people, balances, and prices are fictional and stay separate from a household you create.</div> : null}
           {access.readOnly ? <div className="banner" role="status">{ROLE_LABEL[access.role] ?? "Read-only"} access can view shared accounts and the plan. Private accounts stay with their owner. {access.canReview ? "You can comment and mark a shared transaction for review. That does not change the amount, category, or balance." : "You can comment on a shared transaction. A comment does not change the amount, category, or balance."} Saving, importing, and deleting stay with an owner, admin, editor, or contributor.</div> : null}
-          {session.offline ? <div className="banner bad" role="status">This browser is offline. BudgetCents can open, but account totals are not kept on this device. A transaction saved while its account is on screen stays here until the connection returns. Other changes are not saved offline.{session.queued ? ` ${session.queued} waiting.` : ""}</div> : null}
+          {session.incoming ? <div className="banner" role="status">{session.incoming} <button className="btn-secondary" type="button" onClick={() => session.acceptIncoming()}>Reload</button></div> : null}
+          {session.offline ? <div className="banner bad" role="status">This browser is offline. A waiting transaction or assignment is not saved until the server accepts it. Figures from the last open session are not the current ledger.{session.queued ? ` ${session.queued} waiting.` : ""}</div> : null}
           {session.syncError ? <div className="banner bad" role="alert">{session.syncError}</div> : null}
           {updateReady ? <div className="banner" role="status">A new version is ready. Unsent transactions stay on this device. <button className="btn-secondary" type="button" onClick={() => {
             sessionStorage.setItem("budgetcents.reload", "1");
@@ -163,6 +164,7 @@ export function App() {
         <Route path="/cases" element={<Cases />} />
         <Route path="/credit" element={<Credit />} />
         <Route path="/learn" element={<Learn />} />
+        <Route path="/help" element={<HelpCenter />} />
         <Route path="/checklists" element={<Checklists />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/setup" element={<Setup />} />

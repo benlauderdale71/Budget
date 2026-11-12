@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="plan"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_plan"
+        android:shortcutLongLabel="@string/shortcut_plan">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.budgetcents.app" android:targetClass="com.budgetcents.app.MainActivity" android:data="budgetcents://plan" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="activity"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_activity"
+        android:shortcutLongLabel="@string/shortcut_activity">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.budgetcents.app" android:targetClass="com.budgetcents.app.MainActivity" android:data="budgetcents://activity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="bills"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_bills"
+        android:shortcutLongLabel="@string/shortcut_bills">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.budgetcents.app" android:targetClass="com.budgetcents.app.MainActivity" android:data="budgetcents://bills" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="goals"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_goals"
+        android:shortcutLongLabel="@string/shortcut_goals">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.budgetcents.app" android:targetClass="com.budgetcents.app.MainActivity" android:data="budgetcents://goals" />
+    </shortcut>
+</shortcuts>

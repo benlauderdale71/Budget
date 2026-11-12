@@ -4,9 +4,12 @@ import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableStateOf
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -15,6 +18,7 @@ import androidx.fragment.app.FragmentActivity
 import com.budgetcents.app.ui.BudgetApp
 
 class MainActivity : FragmentActivity() {
+    val navigation = mutableStateOf("home")
     var receiptBytes: ByteArray? = null
     var onReceipt: ((ByteArray) -> Unit)? = null
     var onFile: ((ByteArray) -> Unit)? = null
@@ -44,17 +48,34 @@ class MainActivity : FragmentActivity() {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         ensureChannel()
+        navigation.value = startHost(intent)
+        setContent { BudgetApp(this, navigation.value, linkToken(intent)) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        navigation.value = startHost(intent)
+    }
+
+    private fun startHost(intent: Intent?): String {
         val data = intent?.data
+        val pathToken = invitePathToken(data)
         val host = data?.host
-        val pathToken = data?.pathSegments?.let { segments ->
-            val invite = segments.indexOf("invite")
-            if (invite >= 0 && invite + 1 < segments.size) segments[invite + 1] else null
-        }
-        val inviteToken = data?.getQueryParameter("token")
-            ?: if (host == "invite") data?.lastPathSegment?.takeIf { it.isNotBlank() && it != "invite" } else null
-            ?: pathToken
-        val start = if (host == "invite" || pathToken != null) "invite" else host ?: "home"
-        setContent { BudgetApp(this, start, if (start == "invite") inviteToken else data?.getQueryParameter("token")) }
+        return if (host == "invite" || pathToken != null) "invite" else host ?: "home"
+    }
+
+    private fun linkToken(intent: Intent?): String? {
+        val data = intent?.data
+        return data?.getQueryParameter("token")
+            ?: if (data?.host == "invite") data.lastPathSegment?.takeIf { it.isNotBlank() && it != "invite" } else null
+            ?: invitePathToken(data)
+    }
+
+    private fun invitePathToken(data: Uri?): String? {
+        val segments = data?.pathSegments ?: return null
+        val invite = segments.indexOf("invite")
+        return if (invite >= 0 && invite + 1 < segments.size) segments[invite + 1] else null
     }
 
     fun pickReceipt() {

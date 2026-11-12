@@ -26,6 +26,7 @@ const moreLinks = [
   ["/cases", "Requests", "Cancellation notes, with no biller contacted"],
   ["/credit", "Credit", "A score you type, not a bureau report"],
   ["/learn", "Learn", "Short original lessons"],
+  ["/help", "Help", "Search guidance written for BudgetCents"],
   ["/checklists", "Checklists", "Tax and estate lists, not legal documents"],
   ["/setup", "Setup", "Resume or review household setup"],
   ["/settings", "Settings", "Security, export, and deletion"],
@@ -592,5 +593,41 @@ function Support() {
       {note ? <Notice>{note}</Notice> : null}
       <button className="btn-secondary" type="submit">Save request</button>
     </form>
+  );
+}
+
+export function HelpCenter() {
+  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
+  const articles = useLoad(() => api<{ articles: { id: string; title: string; body: string }[]; note: string }>(`/api/help?q=${encodeURIComponent(query)}`), [query]);
+  const tickets = useLoad(() => api<{ tickets: { id: string; subject: string; status: string }[] }>("/api/support"), []);
+  const form = useFormError();
+  return (
+    <Page title="Help" lede="Search the guidance written for BudgetCents. A saved request is not a reply from a person, and it is not an appointment.">
+      <form role="search" className="row" onSubmit={(event) => { event.preventDefault(); setQuery(q); }}>
+        <Field label="Search help"><input value={q} onChange={(event) => setQ(event.target.value)} /></Field>
+        <button className="btn" type="submit">Search</button>
+      </form>
+      {articles.loading ? <Loading label="Loading help" /> : null}
+      {articles.data?.note ? <p className="muted">{articles.data.note}</p> : null}
+      {(articles.data?.articles ?? []).map((article) => <article key={article.id} className="card"><h2>{article.title}</h2><p>{article.body}</p></article>)}
+      {articles.data && articles.data.articles.length === 0 ? <p>No articles match that search.</p> : null}
+      <h2>Your requests</h2>
+      {(tickets.data?.tickets ?? []).length === 0 ? <p className="muted">No stored requests yet.</p> : <ul>{tickets.data?.tickets.map((ticket) => <li key={ticket.id}>{ticket.subject} — {ticket.status}</li>)}</ul>}
+      <form className="card" onSubmit={(event) => form.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        const created = await api<{ id: string; note: string }>("/api/support", { method: "POST", body: JSON.stringify({ subject: data.get("subject"), body: data.get("body") }) });
+        if (String(data.get("followup") || "").trim()) {
+          await api(`/api/support/${created.id}/messages`, { method: "POST", body: JSON.stringify({ body: data.get("followup") }) });
+        }
+        window.location.assign("/help");
+      })}>
+        <Field label="Subject"><input name="subject" required /></Field>
+        <Field label="What happened"><textarea name="body" required /></Field>
+        <Field label="Another detail, optional"><textarea name="followup" /></Field>
+        {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+        <button className="btn" type="submit">Save request</button>
+      </form>
+    </Page>
   );
 }

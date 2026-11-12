@@ -1,6 +1,7 @@
 import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
+import { mountContinuation } from "./continuation.js";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
 import { getAlert, listAlerts, markAlertRead, markAlertsRead, readAlertSettings, resolveAlert, saveAlertSettings, snoozeAlert, syncAlerts } from "./alerts.js";
@@ -28,6 +29,8 @@ import {
   guidanceFor,
   loadSpace,
   lockHousehold,
+  assertPlanRevision,
+  bumpPlanRevision,
   planView,
   previewAutoAssign,
   publicAccounts,
@@ -108,7 +111,7 @@ export function createApp(db: Database) {
   const hits = new Map<string, { n: number; reset: number }>();
 
   app.onError((err, c) => {
-    if (err instanceof ApiError) return c.json({ error: err.message }, err.status as 400);
+    if (err instanceof ApiError) return c.json({ error: err.message, ...err.extra }, err.status as 400);
     if (err instanceof BudgetError || err instanceof MoneyError || err instanceof DashboardLayoutError) return c.json({ error: err.message }, (err instanceof DashboardLayoutError ? err.status : 400) as 400);
     if (err instanceof z.ZodError) return c.json({ error: err.issues.map((issue) => issue.message).join(" ") }, 400);
     console.error(JSON.stringify({ level: "error", message: err instanceof Error ? err.name : "error" }));
@@ -509,7 +512,7 @@ export function createApp(db: Database) {
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined, c.req.query("month") ?? undefined);
     const guide = guidanceFor(loaded);
     const worth = await withInvestments(loaded);
-    await syncAlerts(db, me, loaded, new Date());
+    if (c.req.query("evaluate") !== "0") await syncAlerts(db, me, loaded, new Date());
     const alerts = (await listAlerts(db, me, loaded)).slice(0, 30);
     const goals = await db.query(`SELECT * FROM goals WHERE space_id = $1 AND archived = 0`, [loaded.spaceId]);
     return c.json({
@@ -947,27 +950,30 @@ export function createApp(db: Database) {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertBudget(member);
-    const body = z.object({ spaceId: z.string(), bucketId: z.string(), periodKey: z.string(), amountMinor: money }).parse(await c.req.json());
+    const body = z.object({ spaceId: z.string(), bucketId: z.string(), periodKey: z.string(), amountMinor: money, planRevision: z.number().int().nonnegative() }).parse(await c.req.json());
     await assertSpace(me.id, member.householdId, body.spaceId);
     await assertBucket(member.householdId, body.spaceId, body.bucketId);
-    await db.tx(async () => {
+    const planRevision = await db.tx(async () => {
       await lockHousehold(db, member.householdId);
+      await assertPlanRevision(db, member.householdId, body.planRevision);
       await setAssignment(db, member.householdId, body.spaceId, body.bucketId, body.periodKey, body.amountMinor);
       await audit(db, member.householdId, me.id, "assign", "Updated an assignment");
+      return bumpPlanRevision(db, member.householdId);
     });
-    return c.json({ ok: true });
+    return c.json({ ok: true, planRevision });
   });
 
   app.post("/api/households/:hid/move", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertBudget(member);
-    const body = z.object({ spaceId: z.string(), fromBucketId: z.string().nullable(), toBucketId: z.string().nullable(), periodKey: z.string(), amountMinor: money.positive() }).parse(await c.req.json());
+    const body = z.object({ spaceId: z.string(), fromBucketId: z.string().nullable(), toBucketId: z.string().nullable(), periodKey: z.string(), amountMinor: money.positive(), planRevision: z.number().int().nonnegative() }).parse(await c.req.json());
     if (body.fromBucketId) await assertBucket(member.householdId, body.spaceId, body.fromBucketId);
     if (body.toBucketId) await assertBucket(member.householdId, body.spaceId, body.toBucketId);
     if (!body.fromBucketId && !body.toBucketId) throw new ApiError(400, "Choose a source or a destination.");
-    await db.tx(async () => {
+    const planRevision = await db.tx(async () => {
       await lockHousehold(db, member.householdId);
+      await assertPlanRevision(db, member.householdId, body.planRevision);
       const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
       const adjust = async (bucketId: string, delta: number) => {
         const current = loaded.budget.buckets.find((row) => row.bucketId === bucketId)?.assignedMinor ?? 0;
@@ -975,15 +981,16 @@ export function createApp(db: Database) {
       };
       if (body.fromBucketId) await adjust(body.fromBucketId, -body.amountMinor);
       if (body.toBucketId) await adjust(body.toBucketId, body.amountMinor);
+      return bumpPlanRevision(db, member.householdId);
     });
-    return c.json({ ok: true });
+    return c.json({ ok: true, planRevision });
   });
 
   app.post("/api/households/:hid/auto-assign", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertBudget(member);
-    const body = z.object({ spaceId: z.string(), strategy: z.enum(["underfunded", "previous", "spending", "average"]), apply: z.boolean().default(false) }).parse(await c.req.json());
+    const body = z.object({ spaceId: z.string(), strategy: z.enum(["underfunded", "previous", "spending", "average"]), apply: z.boolean().default(false), planRevision: z.number().int().nonnegative().optional() }).parse(await c.req.json());
     const loaded = await loadSpace(db, me, member.householdId, body.spaceId);
     const eligible = eligiblePostedIncomeMinor({
       transactions: loaded.input.transactions,
@@ -994,9 +1001,12 @@ export function createApp(db: Database) {
     });
     const preview = previewAutoAssign({ result: loaded.budget, buckets: loaded.input.buckets, strategy: body.strategy, postedIncomeMinor: eligible });
     let lines = preview.lines;
+    let planRevision = member.planRevision;
     if (body.apply) {
+      if (body.planRevision == null) throw new ApiError(400, "Reload the plan before applying assignments.");
       lines = await db.tx(async () => {
         await lockHousehold(db, member.householdId);
+        planRevision = await assertPlanRevision(db, member.householdId, body.planRevision!);
         const fresh = await loadSpace(db, me, member.householdId, body.spaceId);
         const freshEligible = eligiblePostedIncomeMinor({
           transactions: fresh.input.transactions,
@@ -1016,10 +1026,11 @@ export function createApp(db: Database) {
           ready -= give;
           applied.push({ ...line, amountMinor: give });
         }
+        if (applied.length) planRevision = await bumpPlanRevision(db, member.householdId);
         return applied;
       });
     }
-    return c.json({ ...preview, lines, eligiblePostedIncomeMinor: eligible, note: "Automatic assignment stops when Ready to Assign reaches zero." });
+    return c.json({ ...preview, lines, planRevision, eligiblePostedIncomeMinor: eligible, note: "Automatic assignment stops when Ready to Assign reaches zero." });
   });
 
   app.get("/api/households/:hid/schedules", async (c) => {
@@ -1167,7 +1178,10 @@ export function createApp(db: Database) {
 
   app.post("/api/households/:hid/fills/:id/run", async (c) => {
     const me = await actor(c);
-    return c.json(await runFill(db, me, c.req.param("hid"), c.req.param("id"), c.req.query("today") ?? undefined));
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertBudget(member);
+    const body = z.object({ planRevision: z.number().int().nonnegative() }).parse(await c.req.json().catch(() => ({})));
+    return c.json(await runFill(db, me, c.req.param("hid"), c.req.param("id"), c.req.query("today") ?? undefined, body.planRevision));
   });
 
   app.post("/api/households/:hid/fills/:id/skip", async (c) => {
@@ -2577,19 +2591,26 @@ export function createApp(db: Database) {
   }
 
   async function splitsOf(txnId: string): Promise<Transaction["splits"]> {
-    const rows = await db.query(`SELECT bucket_id, amount_minor, role, memo FROM splits WHERE transaction_id = $1`, [txnId]);
+    const rows = await db.query(`SELECT bucket_id, amount_minor, role, memo, owner_user_id FROM splits WHERE transaction_id = $1`, [txnId]);
     return rows.map((row) => ({
       bucketId: row.bucket_id == null ? null : String(row.bucket_id),
       amountMinor: num(row.amount_minor),
       role: String(row.role) as Transaction["splits"][number]["role"],
       memo: str(row.memo),
+      ownerUserId: str(row.owner_user_id),
     }));
   }
 
-  async function replaceSplits(txnId: string, splits: { bucketId: string | null; amountMinor: number; role: string; memo?: string }[]) {
+  async function replaceSplits(txnId: string, splits: { bucketId: string | null; amountMinor: number; role: string; memo?: string; ownerUserId?: string | null }[]) {
+    const owner = await db.query(`SELECT household_id FROM transactions WHERE id = $1`, [txnId]);
+    for (const split of splits) {
+      if (!split.ownerUserId) continue;
+      const member = await db.query(`SELECT user_id FROM memberships WHERE household_id = $1 AND user_id = $2`, [owner[0]?.household_id, split.ownerUserId]);
+      if (!member.length) throw new ApiError(400, "A split owner has to be a current household member.");
+    }
     await db.query(`DELETE FROM splits WHERE transaction_id = $1`, [txnId]);
     for (const split of splits) {
-      await db.query(`INSERT INTO splits (id, transaction_id, bucket_id, amount_minor, role, memo) VALUES ($1,$2,$3,$4,$5,$6)`, [id(), txnId, split.bucketId, split.amountMinor, split.role, split.memo ?? null]);
+      await db.query(`INSERT INTO splits (id, transaction_id, bucket_id, amount_minor, role, memo, owner_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id(), txnId, split.bucketId, split.amountMinor, split.role, split.memo ?? null, split.ownerUserId ?? null]);
     }
   }
 
@@ -2706,6 +2727,12 @@ export function createApp(db: Database) {
     return { version: num(updated[0].version) };
   }
 
+  mountContinuation(app, db, {
+    actor,
+    insertTransaction: (user, householdId, body) => insertTransaction(user, householdId, body).then((result) => ({ id: result.id ?? undefined })),
+    createGoal: (user, householdId, body) => createManualGoal(user, householdId, body),
+  });
+
   mountReceipts(app, db, {
     actor,
     requireMember: (userId, householdId) => requireMember(db, userId, householdId),
@@ -2760,8 +2787,8 @@ function assertKnownType(type: string) {
   if (!TRANSACTION_TYPES.has(type)) throw new ApiError(400, "That transaction type is not supported.");
 }
 
-function splitFromInput(split: { bucketId: string | null; amountMinor: number; role: Transaction["splits"][number]["role"]; memo?: string }): Transaction["splits"][number] {
-  return { bucketId: split.bucketId, amountMinor: split.amountMinor, role: split.role, memo: split.memo };
+function splitFromInput(split: { bucketId: string | null; amountMinor: number; role: Transaction["splits"][number]["role"]; memo?: string; ownerUserId?: string | null }): Transaction["splits"][number] {
+  return { bucketId: split.bucketId, amountMinor: split.amountMinor, role: split.role, memo: split.memo, ownerUserId: split.ownerUserId ?? undefined };
 }
 
 function transactionFromRow(row: Record<string, unknown>, splits: Transaction["splits"], overrides: Partial<Transaction> = {}): Transaction {
@@ -2852,6 +2879,7 @@ const splitSchema = z.object({
   amountMinor: money.nonnegative(),
   role: z.enum(["expense", "income", "principal", "interest", "fee", "escrow", "transfer", "refund"]),
   memo: z.string().optional(),
+  ownerUserId: z.string().nullable().optional(),
 });
 
 const transactionSchema = z.object({

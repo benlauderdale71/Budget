@@ -198,11 +198,12 @@ function CommentForm({ txn, onClose, onSaved }: { txn: Txn; onClose: () => void;
   const session = useSession();
   const form = useFormError();
   const [comments, setComments] = useState<{ id: string; body: string; display_name: string }[]>([]);
+  useEffect(() => session.holdDraft(), []);
   useEffect(() => {
     api<{ comments: { id: string; body: string; display_name: string }[]; note: string }>(scoped(session.householdId, `/comments?transactionId=${encodeURIComponent(txn.id)}`))
       .then((result) => setComments(result.comments))
       .catch((caught: unknown) => form.setError(caught instanceof Error ? caught.message : "Comments could not be loaded."));
-  }, [session.householdId, txn.id]);
+  }, [session.householdId, txn.id, session.draftEpoch]);
   return (
     <Modal title={`Comment on ${txn.payee}`} onClose={onClose}>
       <p>A comment does not change the transaction, category, or balance.</p>
@@ -227,7 +228,9 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
   const addSplitRef = useRef<HTMLButtonElement>(null);
   const splitsRef = useRef<HTMLFieldSetElement>(null);
   const [type, setType] = useState(existing?.type ?? "expense");
-  const [splits, setSplits] = useState(existing?.splits.length ? existing.splits.map((split) => ({ bucketId: split.bucketId ?? "", amount: (split.amountMinor / 100).toFixed(2) })) : [{ bucketId: "", amount: "" }]);
+  const people = useHouseholdPeople();
+  const [splits, setSplits] = useState(existing?.splits.length ? existing.splits.map((split) => ({ bucketId: split.bucketId ?? "", amount: (split.amountMinor / 100).toFixed(2), ownerUserId: split.ownerUserId ?? "" })) : [{ bucketId: "", amount: "", ownerUserId: "" }]);
+  useEffect(() => session.holdDraft(), []);
   const spendBuckets = buckets.filter((bucket) => !bucket.systemRole && bucket.kind === (type === "income" ? "income" : "expense"));
   return (
     <Modal title={existing ? "Edit transaction" : "New transaction"} onClose={onClose}>
@@ -236,7 +239,7 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
         const magnitude = Math.abs(parseAmount(String(data.get("amount")), currency));
         const signed = type === "income" || type === "refund" ? magnitude : -magnitude;
         const splitRows = splits.filter((split) => split.amount).map((split) => ({
-          bucketId: split.bucketId || null, amountMinor: Math.abs(parseAmount(split.amount, currency)), role: type === "income" ? "income" as const : type === "refund" ? "refund" as const : "expense" as const,
+          bucketId: split.bucketId || null, amountMinor: Math.abs(parseAmount(split.amount, currency)), role: type === "income" ? "income" as const : type === "refund" ? "refund" as const : "expense" as const, ownerUserId: split.ownerUserId || null,
         }));
         if (splitRows.length) {
           const sum = splitRows.reduce((total, split) => total + split.amountMinor, 0);
@@ -287,6 +290,10 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
                   {spendBuckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}
                 </select>
                 <input aria-label={`Amount for split ${index + 1}`} inputMode="decimal" value={split.amount} onChange={(event) => setSplits(splits.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} />
+                <select aria-label={`Owner for split ${index + 1}`} value={split.ownerUserId} onChange={(event) => setSplits(splits.map((item, itemIndex) => itemIndex === index ? { ...item, ownerUserId: event.target.value } : item))}>
+                  <option value="">Ours</option>
+                  {(people.data?.people ?? []).map((person) => <option key={person.id} value={person.id}>{person.displayName}</option>)}
+                </select>
                 <button type="button" className="btn-quiet" aria-label={`Remove split ${index + 1}`} onClick={() => {
                   setSplits(splits.filter((_, itemIndex) => itemIndex !== index));
                   addSplitRef.current?.focus();
@@ -294,7 +301,7 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
               </div>
             ))}
             <button ref={addSplitRef} type="button" className="btn-secondary" onClick={() => {
-              setSplits([...splits, { bucketId: "", amount: "" }]);
+              setSplits([...splits, { bucketId: "", amount: "", ownerUserId: "" }]);
               requestAnimationFrame(() => {
                 const rows = splitsRef.current?.querySelectorAll("select");
                 rows?.[rows.length - 1]?.focus();

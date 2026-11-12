@@ -1,4 +1,4 @@
-import { allows, incomeRows, spendingRows, type Transaction } from "@budgetcents/domain";
+import { allows, incomeRows, ownershipMoney, spendingRows, transactionMatchesOwnership, type Transaction } from "@budgetcents/domain";
 import { nowIso } from "./crypto.js";
 import { type Database, num, str } from "./db.js";
 import { ApiError, audit, canSeeAccount, loadSpace, requireMember, type Actor } from "./finance.js";
@@ -21,24 +21,28 @@ export async function ownershipFilter(db: Database, actorId: string, householdId
       throw new ApiError(400, "Choose another current household member for Yours.");
     }
   }
-  return (txn: Transaction) => raw === "all" || (raw === "ours" ? !txn.ownerUserId : txn.ownerUserId === (raw === "mine" ? actorId : personId));
+  return (txn: Transaction) => transactionMatchesOwnership(txn, raw as OwnershipView, actorId, personId);
 }
 
 export async function ownershipSummary(db: Database, me: Actor, householdId: string, view: string, personId?: string, spaceId?: string, asOf?: string) {
   const loaded = await loadSpace(db, me, householdId, spaceId, asOf);
   const matches = await ownershipFilter(db, me.id, householdId, view, personId);
-  const transactions = loaded.input.transactions.filter(matches);
-  const input = { ...loaded.input, transactions };
   const from = loaded.budget.periodStart;
   const to = loaded.input.asOf < loaded.budget.periodEnd ? loaded.input.asOf : loaded.budget.periodEnd;
-  const current = transactions.filter((txn) => txn.date >= from && txn.date <= to && !txn.deleted);
+  const directed = loaded.input.transactions.some((txn) => txn.splits.some((split) => split.ownerUserId));
+  const transactions = directed ? loaded.input.transactions.filter(matches) : loaded.input.transactions.filter(matches);
+  const input = { ...loaded.input, transactions };
+  const current = loaded.input.transactions.filter((txn) => txn.date >= from && txn.date <= to && !txn.deleted && matches(txn));
+  const portions = directed ? ownershipMoney(loaded.input.transactions, view as "all" | "mine" | "yours" | "ours", me.id, personId, from, to) : null;
   return {
     view, personId: view === "yours" ? personId : null, from, to,
-    incomeMinor: incomeRows(input, from, to).reduce((sum, row) => sum + row.amountMinor, 0),
-    spendingMinor: spendingRows(input, from, to, () => "spending").reduce((sum, row) => sum + row.amountMinor, 0),
+    incomeMinor: portions ? portions.incomeMinor : incomeRows(input, from, to).reduce((sum, row) => sum + row.amountMinor, 0),
+    spendingMinor: portions ? portions.spendingMinor : spendingRows(input, from, to, () => "spending").reduce((sum, row) => sum + row.amountMinor, 0),
     reviewCount: current.filter((txn) => txn.reviewStatus === "needs_review").length,
     transactionCount: current.length,
-    note: "Ownership labels filter activity. They do not grant access or divide the shared plan's cash and assignments.",
+    note: directed
+      ? "Split portions are exact integer minor units. The purchase total is unchanged, and the same dollars are not counted twice."
+      : "Ownership labels filter activity. They do not grant access or divide the shared plan's cash and assignments.",
   };
 }
 

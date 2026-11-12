@@ -276,6 +276,16 @@ async function collectFacts(db: Database, loaded: Loaded) {
     pay,
     goals,
     debts,
+    sourceEvents: (await db.query(
+      `SELECT id, kind, title, body, occurred_on FROM provider_events WHERE household_id = $1 AND kind IN ('price_increase', 'credit_change', 'broken_connection')`,
+      [loaded.member.householdId],
+    )).map((row) => ({
+      id: String(row.id),
+      kind: String(row.kind) as "price_increase" | "credit_change" | "broken_connection",
+      title: String(row.title),
+      body: String(row.body),
+      occurredOn: String(row.occurred_on),
+    })),
   };
 }
 

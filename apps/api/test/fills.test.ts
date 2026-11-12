@@ -127,7 +127,7 @@ describe("category editing", () => {
     await api.request(`/api/households/${home.hid}/assignments`, {
       method: "POST",
       headers: auth(home.token),
-      body: JSON.stringify({ spaceId: home.spaceId, bucketId: groceries.id, periodKey: "2026-10", amountMinor: 4000 }),
+      body: JSON.stringify({ spaceId: home.spaceId, bucketId: groceries.id, periodKey: "2026-10", amountMinor: 4000, planRevision: 0 }),
     });
     const preview = await json(await api.request(`/api/households/${home.hid}/buckets/${groceries.id}`, {
       method: "PATCH",
@@ -176,13 +176,15 @@ describe("scheduled fills", () => {
       headers: auth(home.token),
       body: JSON.stringify({ spaceId: home.spaceId, name: "Checking", kind: "checking", onBudget: true, openingBalanceMinor: 100000, openingDate: "2026-11-01" }),
     });
+    let planRevision = 0;
     for (const [bucketId, amountMinor] of [[groceries.id, 10000], [housing.id, 60000]] as const) {
       const assigned = await json(await api.request(`/api/households/${home.hid}/assignments`, {
         method: "POST",
         headers: auth(home.token),
-        body: JSON.stringify({ spaceId: home.spaceId, bucketId, periodKey: "2026-11", amountMinor }),
+        body: JSON.stringify({ spaceId: home.spaceId, bucketId, periodKey: "2026-11", amountMinor, planRevision }),
       }));
       expect(assigned.status).toBe(200);
+      planRevision = assigned.body.planRevision;
     }
     const before = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
     expect(before.body.budget.readyToAssignMinor).toBe(30000);
@@ -218,7 +220,7 @@ describe("scheduled fills", () => {
     }));
     expect(created.status).toBe(201);
     expect(created.body.statusLabel).toBe("Scheduled");
-    const ran = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
+    const ran = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision }) }));
     expect(ran.status).toBe(200);
     expect(ran.body.statusLabel).toBe("Applied");
     expect(ran.body.allocatedMinor).toBe(25000);
@@ -234,7 +236,7 @@ describe("scheduled fills", () => {
     expect(after.body.budget.identityDifferenceMinor).toBe(0);
     const txnsAfter = await json(await api.request(`/api/households/${home.hid}/transactions?asOf=2026-11-10`, { headers: auth(home.token) }));
     expect(txnsAfter.body.transactions.length).toBe(txns.body.transactions.length);
-    const replay = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
+    const replay = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision: ran.body.planRevision }) }));
     expect(replay.body.duplicate).toBe(true);
     const replayDash = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
     expect(replayDash.body.budget.readyToAssignMinor).toBe(5000);
@@ -261,7 +263,7 @@ describe("scheduled fills", () => {
       headers: auth(home.token),
       body: JSON.stringify({ spaceId: home.spaceId, name: "Skip me", cadence: "once", startDate: "2026-11-10", shortfallPolicy: "skip", lines }),
     }));
-    const skipRun = await json(await api.request(`/api/households/${home.hid}/fills/${skipped.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
+    const skipRun = await json(await api.request(`/api/households/${home.hid}/fills/${skipped.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision: 0 }) }));
     expect(skipRun.body.statusLabel).toBe("Skipped");
     expect(skipRun.body.allocatedMinor).toBe(0);
     const partial = await json(await api.request(`/api/households/${home.hid}/fills`, {
@@ -269,7 +271,7 @@ describe("scheduled fills", () => {
       headers: auth(home.token),
       body: JSON.stringify({ spaceId: home.spaceId, name: "Partial", cadence: "once", startDate: "2026-11-10", shortfallPolicy: "partial", lines }),
     }));
-    const partialRun = await json(await api.request(`/api/households/${home.hid}/fills/${partial.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
+    const partialRun = await json(await api.request(`/api/households/${home.hid}/fills/${partial.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision: 0 }) }));
     expect(partialRun.body.statusLabel).toBe("Partially funded");
     expect(partialRun.body.allocatedMinor).toBe(1000);
     const dash = await json(await api.request(`/api/households/${home.hid}/dashboard?asOf=2026-11-10`, { headers: auth(home.token) }));
@@ -323,7 +325,7 @@ describe("scheduled fills", () => {
         lines: [{ bucketId: groceries.id, mode: "percent", percentBps: 1000, priority: 1 }],
       }),
     }));
-    const ran = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
+    const ran = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision: 0 }) }));
     expect(ran.body.allocatedMinor).toBe(2000);
     const archived = await json(await api.request(`/api/households/${home.hid}/buckets/${groceries.id}`, {
       method: "PATCH",
@@ -356,8 +358,8 @@ describe("scheduled fills", () => {
       headers: auth(home.token),
       body: JSON.stringify({ spaceId: home.spaceId, name: "Race", cadence: "once", startDate: "2026-11-10", shortfallPolicy: "partial", lines: [{ bucketId: groceries.id, mode: "add", amountMinor: 4000, priority: 1 }] }),
     }));
-    const first = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
-    const second = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token) }));
+    const first = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision: 0 }) }));
+    const second = await json(await api.request(`/api/households/${home.hid}/fills/${created.body.id}/run?today=2026-11-10`, { method: "POST", headers: auth(home.token), body: JSON.stringify({ planRevision: 0 }) }));
     const results = [first.body, second.body];
     expect(results.filter((result) => result.duplicate)).toHaveLength(1);
     expect(results.filter((result) => result.statusLabel === "Applied" && !result.duplicate)).toHaveLength(1);

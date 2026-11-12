@@ -73,6 +73,10 @@ export function Alerts() {
   const [debt, setDebt] = useState("");
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+  useEffect(() => {
+    if (!dirty) return;
+    return session.holdDraft();
+  }, [dirty]);
 
   function applyServer(next: SettingsPayload, replaceForm: boolean) {
     if (!replaceForm) return;

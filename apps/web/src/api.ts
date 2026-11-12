@@ -37,6 +37,9 @@ export function clearLocalSession() {
   localStorage.removeItem("budgetcents.token");
   localStorage.removeItem("budgetcents.household");
   localStorage.removeItem("budgetcents.profile");
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith("budgetcents.cache.")) localStorage.removeItem(key);
+  }
   setQueueOwner(null);
 }
 
@@ -46,12 +49,14 @@ function currentOwner(): string | null {
 
 function remember(path: string, method: string, body: string | undefined, opId?: string) {
   const ownerId = currentOwner();
-  if (!ownerId || method === "GET" || !path.includes("/transactions")) return false;
+  const plan = path.includes("/assignments") || path.endsWith("/move");
+  const txn = path.includes("/transactions");
+  if (!ownerId || method === "GET" || (!plan && !txn)) return false;
   const queue = readQueue();
-  if (opId && queue.some((item) => item.opId === opId && item.ownerId === ownerId && item.path === path)) return true;
+  if (opId && queue.some((item) => item.opId === opId && item.ownerId === ownerId && item.path === path)) return plan ? "plan" : "transaction";
   queue.push({ path, method, body, at: Date.now(), ownerId, opId });
   writeQueue(queue);
-  return true;
+  return plan ? "plan" : "transaction";
 }
 
 export function queuedCount(): number {
@@ -95,9 +100,11 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
     response = await fetch(path, { ...init, method, body, headers });
   } catch {
     const kept = options.queue !== false && remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
-    throw new ApiError(0, kept
-      ? "You are offline. This transaction stays on this device and will send when the connection returns."
-      : "You are offline. This change was not saved.");
+    throw new ApiError(0, kept === "plan"
+      ? "You are offline. This assignment is waiting on this device. It is not on the plan until the server accepts it."
+      : kept === "transaction"
+        ? "You are offline. This transaction stays on this device and will send when the connection returns. It is not saved until the server accepts it."
+        : "You are offline. This change was not saved.");
   }
   let text: string;
   try {
@@ -105,7 +112,7 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
   } catch {
     const kept = options.queue !== false && remember(path, method, typeof body === "string" ? body : undefined, stamped.opId);
     throw new ApiError(0, kept
-      ? "The server did not finish answering. The transaction stays on this device and will be sent again."
+      ? "The server did not finish answering. This change is waiting on this device. It is not saved until the server accepts it."
       : "The server did not finish answering. This change was not saved.");
   }
   let data: { error?: string } | null = null;

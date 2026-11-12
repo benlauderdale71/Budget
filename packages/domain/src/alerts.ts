@@ -117,7 +117,7 @@ export interface AlertPreferences {
 }
 
 export interface AlertCandidate {
-  kind: AlertKind;
+  kind: AlertKind | "price_increase" | "credit_change" | "broken_connection";
   dedupeKey: string;
   fingerprint: string;
   title: string;
@@ -151,6 +151,8 @@ export interface AlertFacts {
   pay: { id: string; name: string; expectedDate: string; amountMinor: number; status: string }[];
   goals: { id: string; name: string; availableMinor: number; targetMinor: number; targetDate: string | null }[];
   debts: { id: string; name: string; balanceMinor: number; hadActivity: boolean }[];
+  /** Present only when a provider stored the event. Absence means no price, credit, or connection alert. */
+  sourceEvents?: { id: string; kind: "price_increase" | "credit_change" | "broken_connection"; title: string; body: string; occurredOn: string }[];
 }
 
 export interface TrackedAlert {
@@ -544,6 +546,23 @@ export function evaluateAlerts(facts: AlertFacts, preferences: AlertPreferences)
         entityType: "account",
         entityId: debt.id,
         href: accountHref(debt.id),
+      }));
+    }
+  }
+
+  if (preferences.channels.inapp.enabled) {
+    for (const event of facts.sourceEvents ?? []) {
+      if (!event.id || !event.occurredOn || !event.title) continue;
+      out.push(candidate({
+        kind: event.kind,
+        dedupeKey: `${event.kind}:${event.id}`,
+        fingerprint: event.occurredOn,
+        title: event.title,
+        body: event.body,
+        amountMinor: null,
+        entityType: null,
+        entityId: null,
+        href: event.kind === "broken_connection" ? "/connections" : "/alerts",
       }));
     }
   }

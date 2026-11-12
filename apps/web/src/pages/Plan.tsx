@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { api } from "../api.js";
 import { formatMoney, minorToInput, monthLabel, parseAmount, percentBpsFromInput, todayISO } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
@@ -28,7 +28,7 @@ export function Plan() {
     const amountMinor = parseAmount(text, dash.household.currency);
     await api(scoped(session.householdId, "/assignments"), {
       method: "POST",
-      body: JSON.stringify({ spaceId: dash.spaceId, bucketId, periodKey: dash.budget.periodKey, amountMinor }),
+      body: JSON.stringify({ spaceId: dash.spaceId, bucketId, periodKey: dash.budget.periodKey, amountMinor, planRevision: dash.household.planRevision ?? 0 }),
     });
     session.bump();
   }
@@ -47,7 +47,7 @@ export function Plan() {
           const preview = await api<{ explanation: string; lines: { bucketId: string; amountMinor: number }[] }>(scoped(session.householdId, "/auto-assign"), { method: "POST", body: JSON.stringify({ spaceId: dash.spaceId, strategy: "underfunded", apply: false }) });
           setMessage(preview.explanation);
           if (preview.lines.length && window.confirm("Apply this assignment? Expected income is not used.")) {
-            await api(scoped(session.householdId, "/auto-assign"), { method: "POST", body: JSON.stringify({ spaceId: dash.spaceId, strategy: "underfunded", apply: true }) });
+            await api(scoped(session.householdId, "/auto-assign"), { method: "POST", body: JSON.stringify({ spaceId: dash.spaceId, strategy: "underfunded", apply: true, planRevision: dash.household.planRevision ?? 0 }) });
             session.bump();
           }
         }}>Preview underfunded targets</button>
@@ -79,15 +79,33 @@ export function Plan() {
       <ArchivedCategories buckets={dash.buckets} />
       <Fills dash={dash} />
       {editing && dash.buckets.some((bucket) => bucket.id === editing) ? <EditCategory bucket={dash.buckets.find((bucket) => bucket.id === editing) as Bucket} currency={dash.household.currency} periodKey={dash.budget.periodKey} funding={dash.funding} onClose={() => setEditing(null)} /> : null}
-      {move ? <MoveMoney buckets={dash.buckets} periodKey={dash.budget.periodKey} spaceId={dash.spaceId} currency={dash.household.currency} onClose={() => setMove(false)} /> : null}
+      {move ? <MoveMoney buckets={dash.buckets} periodKey={dash.budget.periodKey} spaceId={dash.spaceId} currency={dash.household.currency} planRevision={dash.household.planRevision ?? 0} onClose={() => setMove(false)} /> : null}
     </Page>
   );
 }
 
 function AssignField({ name, value, currency, privacy, locked, onSave }: { name: string; value: number; currency: string; privacy: boolean; locked: boolean; onSave: (text: string) => Promise<void> }) {
+  const session = useSession();
   const [text, setText] = useState(minorToInput(value, currency));
   const [error, setError] = useState("");
   const errorId = useId();
+  const dirty = !privacy && !locked && text !== minorToInput(value, currency);
+  const armed = useRef<number | null>(null);
+  useEffect(() => {
+    if (!dirty) return;
+    return session.holdDraft();
+  }, [dirty]);
+  useEffect(() => {
+    armed.current = value;
+    setText(minorToInput(value, currency));
+    setError("");
+  }, [session.draftEpoch]);
+  useEffect(() => {
+    if (armed.current == null || value === armed.current) return;
+    armed.current = null;
+    setText(minorToInput(value, currency));
+    setError("");
+  }, [value, currency]);
   return (
     <label className="field">
       <span>Assigned</span>
@@ -167,7 +185,7 @@ function NewBucket({ spaceId, locked }: { spaceId: string; locked: boolean }) {
   );
 }
 
-function MoveMoney({ buckets, periodKey, spaceId, currency, onClose }: { buckets: Bucket[]; periodKey: string; spaceId: string; currency: string; onClose: () => void }) {
+function MoveMoney({ buckets, periodKey, spaceId, currency, planRevision, onClose }: { buckets: Bucket[]; periodKey: string; spaceId: string; currency: string; planRevision: number; onClose: () => void }) {
   const session = useSession();
   const form = useFormError();
   const choices = buckets.filter((bucket) => !bucket.systemRole);
@@ -178,7 +196,7 @@ function MoveMoney({ buckets, periodKey, spaceId, currency, onClose }: { buckets
         const from = String(data.get("from") || "");
         const to = String(data.get("to") || "");
         await api(scoped(session.householdId, "/move"), { method: "POST", body: JSON.stringify({
-          spaceId, periodKey, fromBucketId: from || null, toBucketId: to || null, amountMinor: parseAmount(String(data.get("amount")), currency),
+          spaceId, periodKey, fromBucketId: from || null, toBucketId: to || null, amountMinor: parseAmount(String(data.get("amount")), currency), planRevision,
         }) });
         session.bump();
         onClose();
@@ -334,7 +352,7 @@ function Fills({ dash }: { dash: Dashboard }) {
       <p className="muted">A fill gives a job to cash that is already in Ready to Assign. It is not a bank transfer. Saved and Scheduled are not applied fills.</p>
       {state.data?.note ? <p className="muted">{state.data.note}</p> : null}
       <FillEditor key={editing?.id ?? `new-${draftKey}`} dash={dash} choices={choices} existing={editing} locked={!access.canBudget} onDone={() => { setEditing(null); setDraftKey((value) => value + 1); }} />
-      {(state.data?.fills ?? []).map((fill) => <FillCard key={fill.id} fill={fill} onEdit={() => setEditing(fill)} />)}
+      {(state.data?.fills ?? []).map((fill) => <FillCard key={fill.id} fill={fill} planRevision={dash.household.planRevision ?? 0} onEdit={() => setEditing(fill)} />)}
     </section>
   );
 }
@@ -446,14 +464,14 @@ function FillEditor({ dash, choices, existing, locked, onDone }: { dash: Dashboa
   );
 }
 
-function FillCard({ fill, onEdit }: { fill: FillRow; onEdit: () => void }) {
+function FillCard({ fill, planRevision, onEdit }: { fill: FillRow; planRevision: number; onEdit: () => void }) {
   const session = useSession();
   const access = useAccess();
   const [message, setMessage] = useState("");
   const [history, setHistory] = useState<HistoryRow[] | null>(null);
   async function act(path: string, label: string) {
     try {
-      const result = await api<{ statusLabel?: string; note?: string; explanation?: string }>(scoped(session.householdId, path), { method: "POST" });
+      const result = await api<{ statusLabel?: string; note?: string; explanation?: string }>(scoped(session.householdId, path), path.endsWith("/run") ? { method: "POST", body: JSON.stringify({ planRevision }) } : { method: "POST" });
       setMessage(`${label}: ${result.statusLabel ?? ""} ${result.explanation ?? result.note ?? ""}`.trim());
       session.bump();
     } catch (caught) {

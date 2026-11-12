@@ -32,6 +32,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    public extra: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "ApiError";
@@ -60,6 +61,7 @@ export interface Member {
   budgetApproach: string;
   timeZone: string;
   kind: string;
+  planRevision: number;
 }
 
 const WRITE_ROLES = new Set(["owner", "admin", "editor", "contributor"]);
@@ -71,7 +73,7 @@ export function canWrite(role: string): boolean {
 
 export async function requireMember(db: Database, actorId: string, householdId: string): Promise<Member> {
   const rows = await db.query(
-    `SELECT m.role, h.name, h.currency, h.is_demo, h.label_mode, h.budget_approach, h.time_zone, h.kind
+    `SELECT m.role, h.name, h.currency, h.is_demo, h.label_mode, h.budget_approach, h.time_zone, h.kind, h.plan_revision
      FROM memberships m JOIN households h ON h.id = m.household_id
      WHERE m.user_id = $1 AND m.household_id = $2`,
     [actorId, householdId],
@@ -88,6 +90,7 @@ export async function requireMember(db: Database, actorId: string, householdId: 
     budgetApproach: String(row.budget_approach),
     timeZone: String(row.time_zone),
     kind: String(row.kind),
+    planRevision: num(row.plan_revision),
   };
 }
 
@@ -549,6 +552,20 @@ export function assertAdmin(member: Member) {
 
 export async function lockHousehold(db: Database, householdId: string) {
   await db.query(`SELECT id FROM households WHERE id = $1 FOR UPDATE`, [householdId]);
+}
+
+export async function assertPlanRevision(db: Database, householdId: string, expected: number): Promise<number> {
+  const rows = await db.query(`SELECT plan_revision FROM households WHERE id = $1 FOR UPDATE`, [householdId]);
+  const current = num(rows[0]?.plan_revision);
+  if (!Number.isInteger(expected) || current !== expected) {
+    throw new ApiError(409, "Someone else changed the plan. Reload it before assigning again.", { planRevision: current });
+  }
+  return current;
+}
+
+export async function bumpPlanRevision(db: Database, householdId: string): Promise<number> {
+  const rows = await db.query(`UPDATE households SET plan_revision = plan_revision + 1 WHERE id = $1 RETURNING plan_revision`, [householdId]);
+  return num(rows[0]?.plan_revision);
 }
 
 export async function setAssignment(db: Database, householdId: string, spaceId: string, bucketId: string, periodKey: string, amountMinor: number) {

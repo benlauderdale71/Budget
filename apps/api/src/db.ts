@@ -30,6 +30,8 @@ function normalize(row: Record<string, unknown>): Record<string, unknown> {
 export async function migrate(db: Database): Promise<void> {
   await db.exec(schemaSql);
   await db.exec(`ALTER TABLE households ADD COLUMN IF NOT EXISTS member_limit integer`);
+  await db.exec(`ALTER TABLE households ADD COLUMN IF NOT EXISTS plan_revision integer NOT NULL DEFAULT 0`);
+  await db.exec(`ALTER TABLE lots ALTER COLUMN cost_basis_minor DROP NOT NULL`);
   for (const column of ["reviewer_user_id", "review_assigned_by", "review_assigned_at", "review_resolved_by", "review_resolved_at"]) {
     await db.exec(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS ${column} text`);
   }

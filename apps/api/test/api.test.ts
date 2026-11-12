@@ -53,12 +53,14 @@ describe("BudgetCents API", () => {
     }));
     expect(checking.status).toBe(201);
     expect(card.status).toBe(201);
+    let planRevision = 0;
     for (const [bucketId, amountMinor] of [[groceries, 6000], [household, 4000]] as const) {
       const assigned = await json(await api.request(`/api/households/${hid}/assignments`, {
         method: "POST", headers: auth(token),
-        body: JSON.stringify({ spaceId, bucketId, periodKey: "2026-11", amountMinor }),
+        body: JSON.stringify({ spaceId, bucketId, periodKey: "2026-11", amountMinor, planRevision }),
       }));
       expect(assigned.status).toBe(200);
+      planRevision = assigned.body.planRevision;
     }
     const purchase = await json(await api.request(`/api/households/${hid}/transactions`, {
       method: "POST", headers: auth(token),
@@ -213,7 +215,7 @@ describe("authorization, validation, and idempotency", () => {
     }));
     await api.request(`/api/households/${owner.hid}/assignments`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ spaceId: owner.spaceId, bucketId: groceries.id, periodKey: "2026-11", amountMinor: 3000 }),
+      body: JSON.stringify({ spaceId: owner.spaceId, bucketId: groceries.id, periodKey: "2026-11", amountMinor: 3000, planRevision: 0 }),
     });
     const expense = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
       method: "POST", headers: auth(owner.token),
@@ -223,7 +225,7 @@ describe("authorization, validation, and idempotency", () => {
     const otherGroceries = other.buckets.find((bucket) => bucket.name === "Groceries")!;
     await api.request(`/api/households/${other.hid}/assignments`, {
       method: "POST", headers: auth(other.token),
-      body: JSON.stringify({ spaceId: other.spaceId, bucketId: otherGroceries.id, periodKey: "2026-11", amountMinor: 4000 }),
+      body: JSON.stringify({ spaceId: other.spaceId, bucketId: otherGroceries.id, periodKey: "2026-11", amountMinor: 4000, planRevision: 0 }),
     });
     const cross = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
       method: "POST", headers: auth(owner.token),
@@ -243,7 +245,7 @@ describe("authorization, validation, and idempotency", () => {
     }));
     await api.request(`/api/households/${owner.hid}/assignments`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ spaceId: personal.body.id, bucketId: privateBucket.body.id, periodKey: "2026-11", amountMinor: 1200 }),
+      body: JSON.stringify({ spaceId: personal.body.id, bucketId: privateBucket.body.id, periodKey: "2026-11", amountMinor: 1200, planRevision: 1 }),
     });
     await markVerified("owner-reset@example.com");
     const invite = await json(await api.request(`/api/households/${owner.hid}/invitations`, {

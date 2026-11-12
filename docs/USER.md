@@ -16,7 +16,7 @@ A production site served over HTTPS can be installed from the browser. The insta
 
 ## Plan
 
-Ready to Assign is cash that has arrived and has no job. Give it a category. Envelopes and flex groups are the same balances with different labels. Moving money between categories does not move it at the bank.
+Ready to Assign is cash that has arrived and has no job. Give it a category. Envelopes and flex groups are the same balances with different labels. Moving money between categories does not move it at the bank. If someone else saves the plan first, your number stays in the box and the server keeps their assignment. Reload replaces the box with the saved plan.
 
 The income plan compares expected pay with amounts you intend to give each category. Saving it does not fund anything. Funding happens when you assign cash that is already in Ready to Assign.
 
@@ -30,7 +30,7 @@ Choose the account, leave a possible match unchecked unless you mean to add it, 
 
 ## Activity
 
-Record an expense, income, refund, transfer, or card payment. Split an expense across categories. A card payment is not a second expense. A refund lowers spending and is not income.
+Record an expense, income, refund, transfer, or card payment. Split an expense across categories. Each split can stay Ours or name a current member. The split amounts still have to add up to the transaction, and naming an owner does not change that total or count the purchase twice. A card payment is not a second expense. A refund lowers spending and is not income.
 
 Attach a JPEG, PNG, or PDF receipt if you want the file kept. Open Receipts to read it. The BudgetCents server reads the file with Tesseract. The image is not sent to an external OCR service, and the phone does not read it on the device. The confidence score does not prove the total or the categories. Correct each line, add a missing line, or remove a false one, and assign a category. Several lines can share a category. Preview tax, tip, discount, and other charges before you confirm. Upload, reading, and corrections do not change cash or a saved transaction. Confirmation creates one expense with those categories. Linking can keep the existing categories or, if you allow it, replace them. Notes, tags, and a provider id stay. A reconciled transaction can receive the file and is not overwritten.
 
@@ -46,7 +46,7 @@ Goals point at one envelope. The available amount is the progress, so it is not 
 
 Invite someone by email. They must accept with that same address. Private accounts stay hidden from them, including on net worth and in a backup. You can also add a personal space only you see, or a business space with its own plan.
 
-Home has a household ownership activity view. All shows records you may see, Mine uses your ownership label, Ours uses shared ownership, and Yours asks which other member. The summary uses posted income and spending after refunds for the displayed dates. Shared budget assignments and Ready to Assign stay combined. Existing owner labels are kept; check them before relying on ownership comparisons.
+Home has a household ownership activity view. All shows records you may see, Mine uses your ownership label, Ours uses shared ownership, and Yours asks which other member. The summary uses posted income and spending after refunds for the displayed dates. When a purchase has split owners, Mine, Yours, and Ours count only those portions. Shared budget assignments and Ready to Assign stay combined. A transaction with no split owner still uses its whole-transaction label.
 
 In Activity, open Manage people for a transaction to change its ownership label or reviewer. Changing the reviewer requests a new review, including when you choose Unassigned. Choose Assigned to me to see your unfinished reviews. Mark reviewed records the person and time; Reopen review keeps the audit history. A reviewer needs a role that can review and existing access to that record. A read-only member cannot be assigned a review. If the reviewer leaves, is removed, or becomes read-only, unfinished work returns to Unassigned. Labels and assignments do not reveal private accounts or alter money.
 
@@ -54,7 +54,7 @@ In Activity, open Manage people for a transaction to change its ownership label 
 
 Open Alerts from Planning, or from More on a narrow window. The settings belong to you in this household. Another member has a separate copy. They do not change a transaction, a balance, an assignment, or a total.
 
-You can watch bills, trials, renewals, low balance, a projected overdraft, large transactions, unusual spending, overspending, missing expected pay, underfunded goals, debt milestones, and a card reserve gap. A trial or renewal is used only when that date is saved. Unusual spending waits until the category has two earlier months. A goal without a target date is skipped. Price increases, credit-bureau changes, and a broken bank connection are listed as unavailable. BudgetCents does not invent those events.
+You can watch bills, trials, renewals, low balance, a projected overdraft, large transactions, unusual spending, overspending, missing expected pay, underfunded goals, debt milestones, and a card reserve gap. A trial or renewal is used only when that date is saved. Unusual spending waits until the category has two earlier months. A goal without a target date is skipped. Price increases, credit-bureau changes, and a broken bank connection appear only after a connected provider stores that event. BudgetCents does not invent those events. A background refresh does not check alerts again.
 
 Quiet hours can cross midnight. The end minute is not included. A digest waits for the next local time you chose. A clock time that does not exist when daylight saving starts is skipped. Snooze and a digest keep the same alert instead of making another one. Checking again does not repeat an unchanged condition. Mark read, snooze, or resolve from the history. Resolve does not bring the same condition back.
 
@@ -64,10 +64,12 @@ An alert link opens the related record after you are signed in and only when you
 
 ## Assistant and connections
 
-The assistant repeats figures the ledger already calculated. If a figure is missing, it says so. Turning it off leaves the plan and the register working.
+The assistant repeats figures the ledger already calculated. If a figure is missing, it says so. Turning it off leaves the plan and the register working. A proposal is not saved until you confirm it. Undo is available for a transaction that action added, while it is still the latest version and is not reconciled.
 
-Connections lists what is live. A cancellation or negotiation request is stored only after you authorize it, and no biller is contacted. A credit score you add is manual.
+Help searches articles written for BudgetCents. Saving a support request stores it. It does not mean a person has replied, and it is not an appointment.
+
+Connections lists what is live. A sandbox bank connection imports no transactions. A cancellation, transfer, booking, tax, or estate request is stored as authorization only. It is not a completed service. A credit score you add is manual. A retirement month and a tax lot are records you enter. They do not post to the register. Fund look-through stays empty until licensed holdings are configured.
 
 ## Your account
 
-Settings changes theme, hides amounts, manages the authenticator, lists sessions, downloads a backup, and can delete the account. Turning the authenticator on or off asks for the password again. A recovery code is shown once and works once. Another session can be signed out from the list. Deletion asks for the password and the word DELETE. It removes the server account. Signing out, or removing the app, does not. A household you own with other members stays until ownership is transferred. Mail for verification and reset stays in the server outbox until email delivery is configured and tested.
+Settings changes theme, hides amounts, manages the authenticator, lists sessions, downloads a backup, and can delete the account. Turning the authenticator on or off asks for the password again. A recovery code is shown once and works once. Another session can be signed out from the list. Deletion asks for the password and the word DELETE. It removes the server account. Signing out, or removing the app, does not. A household you own with other members stays until ownership is transferred. Mail for verification and reset stays in the server outbox until email delivery is configured and tested. Federated sign-in is off until an identity provider is configured, and completing that sign-in does not accept an invitation.

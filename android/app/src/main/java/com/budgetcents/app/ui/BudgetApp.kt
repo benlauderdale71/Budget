@@ -70,8 +70,13 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
     val scope = rememberCoroutineScope()
     var token by remember { mutableStateOf(store.token) }
     var locked by remember { mutableStateOf(store.biometric && store.token != null) }
+    val host by activity.navigation
     var tab by remember { mutableIntStateOf(tabIndex(start)) }
     var page by remember { mutableStateOf(subpage(start)) }
+    LaunchedEffect(host) {
+        tab = tabIndex(host)
+        page = subpage(host)
+    }
     var openSetup by remember { mutableStateOf(start == "setup") }
     var error by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
@@ -264,7 +269,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
-                                        api.assign(store.householdId!!, JSONObject().put("spaceId", dash?.optString("spaceId")).put("bucketId", bucketId).put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey")).put("amountMinor", amount))
+                                        api.assign(store.householdId!!, JSONObject().put("spaceId", dash?.optString("spaceId")).put("bucketId", bucketId).put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey")).put("amountMinor", amount).put("planRevision", dash?.optJSONObject("household")?.optInt("planRevision") ?: 0))
                                     }
                                 }.onSuccess { reload() }.onFailure { error = it.message ?: "Could not assign." }
                             }
@@ -277,7 +282,8 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                                             .put("fromBucketId", fromId)
                                             .put("toBucketId", toId)
                                             .put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey"))
-                                            .put("amountMinor", amount))
+                                            .put("amountMinor", amount)
+                                            .put("planRevision", dash?.optJSONObject("household")?.optInt("planRevision") ?: 0))
                                     }
                                 }.onSuccess { status = "Moved. No bank transaction was created."; reload() }.onFailure { error = it.message ?: "Could not move money." }
                             }
