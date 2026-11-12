@@ -14,11 +14,11 @@ const fixtures = mkdtempSync(join(tmpdir(), "bc-fixtures-"));
 process.env.BUDGETCENTS_UPLOADS = root;
 
 beforeAll(() => {
-  execFileSync("python3", ["-c", `
+  execFileSync(process.env.BUDGETCENTS_TEST_PYTHON || (process.platform === "win32" ? "python" : "python3"), ["-c", `
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 out = Path(${JSON.stringify(fixtures)})
-font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 42)
+font = ImageFont.truetype(${JSON.stringify(process.env.BUDGETCENTS_TEST_FONT || (process.platform === "win32" ? "C:/Windows/Fonts/arial.ttf" : "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))}, 42)
 def draw(lines):
     img = Image.new("RGB", (980, 70 + 64 * len(lines)), "white")
     pen = ImageDraw.Draw(img)

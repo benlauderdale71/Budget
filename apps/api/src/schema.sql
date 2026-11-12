@@ -260,6 +260,51 @@ CREATE TABLE IF NOT EXISTS plan_lines (
   planned_minor bigint NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bank_links (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label text NOT NULL,
+  secret text NOT NULL,
+  created_at text NOT NULL,
+  last_fetch_at text,
+  revoked_at text,
+  cache_json text
+);
+CREATE TABLE IF NOT EXISTS bank_previews (
+  id text PRIMARY KEY,
+  link_id text NOT NULL REFERENCES bank_links(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  payload text NOT NULL,
+  created_at text NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bank_imported_rows (
+  link_id text NOT NULL REFERENCES bank_links(id) ON DELETE CASCADE,
+  external_account_id text NOT NULL,
+  external_id text NOT NULL,
+  transaction_id text NOT NULL,
+  fingerprint text NOT NULL,
+  PRIMARY KEY (link_id, external_account_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS income_plan_revisions (
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  space_id text NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  period_key text NOT NULL,
+  revision integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (household_id, space_id, period_key)
+);
+
+CREATE TABLE IF NOT EXISTS income_plan_operations (
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  op_id text NOT NULL,
+  fingerprint text NOT NULL,
+  response_json text NOT NULL,
+  created_at text NOT NULL,
+  PRIMARY KEY (household_id, user_id, op_id)
+);
+
 CREATE TABLE IF NOT EXISTS goals (
   id text PRIMARY KEY,
   household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
@@ -296,6 +341,19 @@ CREATE TABLE IF NOT EXISTS lots (
   acquired text NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS lot_sales (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  holding_id text NOT NULL REFERENCES holdings(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  op_id text NOT NULL,
+  request_hash text NOT NULL,
+  sold_on text NOT NULL,
+  result_json text NOT NULL,
+  created_at text NOT NULL,
+  UNIQUE (household_id, user_id, op_id)
+);
+
 CREATE TABLE IF NOT EXISTS quotes (
   id text PRIMARY KEY,
   household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
@@ -305,6 +363,44 @@ CREATE TABLE IF NOT EXISTS quotes (
   source text NOT NULL,
   delayed integer NOT NULL DEFAULT 1,
   currency text NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS provider_rate_limits (
+  provider text PRIMARY KEY,
+  next_at bigint NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remote_messages (
+  id text PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  op_id text NOT NULL,
+  channel text NOT NULL,
+  status text NOT NULL,
+  detail text NOT NULL,
+  created_at text NOT NULL,
+  household_id text,
+  alert_id text,
+  UNIQUE (user_id, op_id)
+);
+
+CREATE TABLE IF NOT EXISTS lot_create_operations (
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  op_id text NOT NULL,
+  request_hash text NOT NULL,
+  result_json text NOT NULL,
+  PRIMARY KEY (household_id, user_id, op_id)
+);
+
+CREATE TABLE IF NOT EXISTS quote_previews (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  holding_id text NOT NULL REFERENCES holdings(id) ON DELETE CASCADE,
+  previous_id text,
+  payload text NOT NULL,
+  created_at text NOT NULL,
+  applied_at text
 );
 
 CREATE TABLE IF NOT EXISTS valuations (

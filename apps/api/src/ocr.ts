@@ -2,6 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sharp from "sharp";
 export interface ReaderStatus {
   engine: "tesseract";
   available: boolean;
@@ -116,8 +117,18 @@ async function readPdf(bytes: Buffer, dir: string, engine: string): Promise<Rece
 async function recognizeImage(path: string): Promise<{ text: string; confidence: number | null; confidenceNote: string }> {
   const first = await tesseract(path, "4");
   const letters = first.text.match(/[A-Za-z]/g)?.length ?? 0;
-  const chosen = letters >= 8 ? first : await tesseract(path, "1");
-  const better = (chosen.text.match(/[A-Za-z]/g)?.length ?? 0) >= letters ? chosen : first;
+  let better = first;
+  // Sparse receipts can fool Tesseract's orientation detector. Compare actual
+  // quarter-turn readings when the initial read has too little reliable text.
+  if (letters < 8 || (first.confidence ?? 0) < 80) {
+    const score = (read: typeof first) => (read.confidence ?? 0) * Math.min(1, (read.text.match(/[A-Za-z]/g)?.length ?? 0) / 20);
+    for (const angle of [90, 180, 270]) {
+      const rotated = `${path}.${angle}.png`;
+      await sharp(path, { limitInputPixels: MAX_PIXELS }).rotate(angle).png().toFile(rotated);
+      const candidate = await tesseract(rotated, "4");
+      if (score(candidate) > score(better)) better = candidate;
+    }
+  }
   return {
     text: better.text,
     confidence: better.confidence,

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { BankConnection } from "./BankConnection.js";
+import { LiveMessageTests } from "./LiveMessageTests.js";
 import { api, clearLocalSession, downloadFile } from "../api.js";
 import { formatMoney, parseAmount } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
@@ -480,7 +482,8 @@ export function Providers() {
   const [attemptStatus, setAttemptStatus] = useState("");
   if (!state.data) return <Loading />;
   return (
-    <Page title="Connections" lede="Manual entry, file import, and the built-in sandbox fixtures work now. A missing row has no adapter. A test sink can accept a message, and that acceptance is not delivery.">
+    <Page title="Connections" lede="Connect a data source, review its history, and choose what enters your ledger. Provider setup and delivery status are listed below.">
+      <BankConnection key={session.householdId} />
       <article className="card" style={{ marginBottom: 12 }}>
         <h2>Sandbox bank</h2>
         <p>Connect imports the built-in test history into Sandbox Checking. Sync posts the pending line in place and adds the next fixture. This is not your bank.</p>
@@ -543,6 +546,7 @@ export function Providers() {
           } catch (caught) { setNote(caught instanceof Error ? caught.message : "Opt-out was not saved."); }
         }}>Opt out</button>
       </form>
+      <LiveMessageTests />
       {note ? <Notice>{note}</Notice> : null}
       {state.data.note ? <p className="muted">{state.data.note}</p> : null}
       {state.data.providers.map((provider) => (

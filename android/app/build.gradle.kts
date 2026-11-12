@@ -14,6 +14,10 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+        for (name in listOf("FIREBASE_PROJECT_ID", "FIREBASE_APP_ID", "FIREBASE_API_KEY", "FIREBASE_SENDER_ID")) {
+            val value = (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"")
+            buildConfigField("String", name, "\"$value\"")
+        }
     }
 
     val productionKeystore = System.getenv("BUDGETCENTS_KEYSTORE")
@@ -58,7 +62,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 }
 
 gradle.taskGraph.whenReady {
@@ -70,6 +74,7 @@ gradle.taskGraph.whenReady {
 }
 
 dependencies {
+    implementation("com.google.firebase:firebase-messaging:26.0.2")
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
     implementation("androidx.core:core-ktx:1.15.0")

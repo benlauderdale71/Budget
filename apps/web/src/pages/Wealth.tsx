@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { MonthlyDistribution } from "./MonthlyRetirement.js";
+import { InvestmentLots } from "./InvestmentLots.js";
 import { Link } from "react-router-dom";
 import { api, downloadFile } from "../api.js";
 import { parseAmount } from "../format.js";
-import { scoped, useSession } from "../session.js";
+import { scoped, useAccess, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, SankeyChart, useFormError, useLoad } from "../ui.js";
 
@@ -57,7 +59,9 @@ export function Investments() {
         </table>
       </div>
       <ul>{state.data.allocation.map((slice) => <li key={slice.key}>{slice.key}: {(slice.weightBps / 100).toFixed(1)}% · <Money minor={slice.valueMinor} /></li>)}</ul>
-      <LotForm positions={state.data.positions.map((position) => ({ id: position.holdingId, symbol: position.symbol }))} />
+      <LotForm positions={state.data.positions.map((position) => ({ id: position.holdingId, symbol: position.symbol, currency: position.currency }))} />
+      <InvestmentLots key={session.householdId} />
+      <MarketPriceForm positions={state.data.positions.filter((position) => position.currency === "USD").map((position) => ({ id: position.holdingId, symbol: position.symbol }))} />
       <form className="card" onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         await api(scoped(session.householdId, "/holdings"), { method: "POST", body: JSON.stringify({
@@ -144,6 +148,36 @@ export function Investments() {
   );
 }
 
+function MarketPriceForm({ positions }: { positions: { id: string; symbol: string }[] }) {
+  const session = useSession();
+  const access = useAccess();
+  const form = useFormError();
+  const [holdingId, setHoldingId] = useState(positions[0]?.id ?? "");
+  const [preview, setPreview] = useState<{ previewId: string; quote: { symbol: string; priceMinor: number; asOf: string; retrievedAt: string }; note: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  if (!positions.length) return null;
+  return <form className="card" onSubmit={(event) => form.run(event, async () => {
+    if (busy) return;
+    setBusy(true); setSaved(false);
+    try {
+      if (preview) {
+        await api(scoped(session.householdId, `/holdings/${holdingId}/quote/confirm`), { method: "POST", body: JSON.stringify({ previewId: preview.previewId }) });
+        setPreview(null); setSaved(true); session.bump();
+      } else setPreview(await api(scoped(session.householdId, `/holdings/${holdingId}/quote/preview`), { method: "POST", body: "{}" }));
+    } finally { setBusy(false); }
+  })}>
+    <h2>Market price</h2>
+    <p>Fetch a U.S. stock or ETF price from Finnhub. A server key and a suitable personal-use plan are required. Manual prices remain available.</p>
+    <Field label="Holding"><select value={holdingId} disabled={busy} onChange={(event) => { setHoldingId(event.target.value); setPreview(null); setSaved(false); }}>{positions.map((position) => <option key={position.id} value={position.id}>{position.symbol}</option>)}</select></Field>
+    {preview ? <Notice>{preview.quote.symbol}: <Money minor={preview.quote.priceMinor} /> USD per share. Quoted {preview.quote.asOf}; retrieved {preview.quote.retrievedAt}. {preview.note}</Notice> : null}
+    {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+    {saved ? <Notice>Price saved. Cash and the transaction register were unchanged.</Notice> : null}
+    <button className="btn" disabled={busy || session.offline || !access.canWrite} type="submit">{busy ? "Working…" : preview ? "Confirm market price" : "Preview market price"}</button>
+    {preview ? <button type="button" className="btn secondary" disabled={busy} onClick={() => setPreview(null)}>Cancel preview</button> : null}
+  </form>;
+}
+
 interface RetirementResponse {
   result: {
     successRateBps: number;
@@ -159,30 +193,33 @@ interface RetirementResponse {
   };
 }
 
-function LotForm({ positions }: { positions: { id: string; symbol: string }[] }) {
-  const session = useSession();
-  const form = useFormError();
-  const [note, setNote] = useState("");
+function LotForm({ positions }: { positions: { id: string; symbol: string; currency: string }[] }) {
+  const session = useSession(); const access = useAccess(); const form = useFormError();
+  const [note, setNote] = useState(""); const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<{ fingerprint: string; id: string } | null>(null);
+  const [finished, setFinished] = useState(false);
   if (!positions.length) return <p className="muted">Add a holding before recording a lot. A missing cost basis stays missing.</p>;
-  return (
-    <form className="card" onSubmit={(event) => form.run(event, async () => {
-      const data = new FormData(event.currentTarget);
-      const created = await api<{ id: string }>(scoped(session.householdId, "/lots"), { method: "POST", body: JSON.stringify({
-        holdingId: data.get("holdingId"), quantityMicro: Math.round(Number(data.get("shares")) * 1_000_000), costBasisMinor: data.get("basis") ? parseAmount(String(data.get("basis")), session.currency) : null, acquired: String(data.get("acquired") || "2026-11-12"),
-      }) });
-      setNote(data.get("basis") ? `Lot ${created.id} is recorded. A sale is a separate step and does not create a bank transaction.` : "The lot is recorded with no cost basis. A sale stays blocked until you add one.");
-      session.bump();
-    })}>
-      <h2>Tax lot</h2>
-      <Field label="Holding"><select name="holdingId">{positions.map((position) => <option key={position.id} value={position.id}>{position.symbol}</option>)}</select></Field>
-      <Field label="Shares"><input name="shares" required inputMode="decimal" defaultValue="1" /></Field>
-      <Field label="Cost basis"><input name="basis" inputMode="decimal" /></Field>
-      <Field label="Acquired"><input name="acquired" type="date" defaultValue="2026-11-12" /></Field>
-      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-      {note ? <Notice>{note}</Notice> : null}
-      <button className="btn" type="submit">Save lot</button>
-    </form>
-  );
+  return <form className="card" onChange={() => setFinished(false)} onSubmit={(event) => form.run(event, async () => {
+    if (busy || finished) return;
+    const data = new FormData(event.currentTarget); const holding = positions.find((p) => p.id === data.get("holdingId"))!;
+    const shares = String(data.get("shares"));
+    if (!/^\d+(\.\d{1,6})?$/.test(shares)) throw new Error("Use at most six decimal places for shares.");
+    const [whole, fraction = ""] = shares.split(".");
+    const body = { holdingId: holding.id, quantityMicro: Number(BigInt(whole) * 1000000n + BigInt(fraction.padEnd(6, "0"))), costBasisMinor: data.get("basis") ? parseAmount(String(data.get("basis")), holding.currency) : null, acquired: String(data.get("acquired")) };
+    const fingerprint = JSON.stringify(body); const opId = operation?.fingerprint === fingerprint ? operation.id : crypto.randomUUID();
+    setOperation({ fingerprint, id: opId }); setBusy(true);
+    try { await api(scoped(session.householdId, "/lots"), { method: "POST", body: JSON.stringify({ ...body, opId }) });
+      setNote("Lot recorded. It describes shares already in this holding and does not add a cash transaction."); setFinished(true); session.bump();
+    } finally { setBusy(false); }
+  })}>
+    <h2>Tax lot</h2>
+    <Field label="Holding"><select name="holdingId">{positions.map((p) => <option key={p.id} value={p.id}>{p.symbol} · {p.currency}</option>)}</select></Field>
+    <Field label="Shares"><input name="shares" required inputMode="decimal" defaultValue="1" /></Field>
+    <Field label="Cost basis in the holding’s currency"><input name="basis" inputMode="decimal" /></Field>
+    <Field label="Acquired"><input name="acquired" required type="date" defaultValue={new Date().toISOString().slice(0, 10)} /></Field>
+    {form.error && <Notice kind="bad">{form.error}</Notice>}{note && <Notice>{note}</Notice>}
+    <button className="btn" disabled={busy || finished || session.offline || !access.canWrite}>{finished ? "Lot saved" : "Save lot"}</button>
+  </form>;
 }
 
 export function Retirement() {
@@ -295,36 +332,6 @@ export function Retirement() {
       ) : null}
       <MonthlyDistribution />
     </Page>
-  );
-}
-
-function MonthlyDistribution() {
-  const session = useSession();
-  const form = useFormError();
-  const [note, setNote] = useState("");
-  return (
-    <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
-      const data = new FormData(event.currentTarget);
-      const before = await api<Dashboard>(scoped(session.householdId, "/dashboard?evaluate=0", session.spaceId));
-      const result = await api<{ months: { withdrawalMinor: number; rmdMinor: number }[]; assumptions: string[]; guarantee: boolean }>(scoped(session.householdId, "/retirement/monthly"), { method: "POST", body: JSON.stringify({
-        portfolioMinor: parseAmount(String(data.get("portfolio")), session.currency),
-        traditionalMinor: parseAmount(String(data.get("traditional")), session.currency),
-        annualReturnBps: 0, annualSpendingMinor: 0, annualContributionMinor: 0, taxBps: 0,
-        age: Number(data.get("age")), birthYear: Number(data.get("birth")), months: 1,
-      }) });
-      const after = await api<Dashboard>(scoped(session.householdId, "/dashboard?evaluate=0", session.spaceId));
-      setNote(`Modeled withdrawal ${result.months[0]?.withdrawalMinor ?? 0}. Required distribution ${result.months[0]?.rmdMinor ?? 0}. Guarantee ${result.guarantee}. Cash stayed ${before.budget.cashPoolMinor === after.budget.cashPoolMinor ? "unchanged" : "unexpectedly changed"}. ${result.assumptions[2] ?? ""}`);
-    })}>
-      <h2>Monthly required distribution</h2>
-      <p className="muted">This uses the published Uniform Lifetime table for the age and birth year you enter. It does not post a withdrawal.</p>
-      <Field label="Portfolio"><input name="portfolio" required inputMode="decimal" defaultValue="26500.00" /></Field>
-      <Field label="Traditional balance"><input name="traditional" required inputMode="decimal" defaultValue="26500.00" /></Field>
-      <Field label="Age"><input name="age" type="number" required defaultValue={73} /></Field>
-      <Field label="Birth year"><input name="birth" type="number" required defaultValue={1953} /></Field>
-      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-      {note ? <Notice>{note}</Notice> : null}
-      <button className="btn" type="submit">Run monthly model</button>
-    </form>
   );
 }
 

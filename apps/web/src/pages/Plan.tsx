@@ -570,36 +570,60 @@ interface LineDraft {
   sourceBucketId: string;
 }
 
+type IncomePlanData = { plannedMinor: number; expectedIncomeMinor: number; unplannedMinor: number; balanced: boolean; note: string; lines: { bucketId: string; plannedMinor: number }[]; periodKey: string; spaceId: string; revision: number };
+
 function IncomePlan({ currency, buckets }: { currency: string; buckets: Bucket[] }) {
   const session = useSession();
+  const state = useLoad(() => api<IncomePlanData>(scoped(session.householdId, "/income-plan", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
+  if (state.loading && !state.data) return <Loading label="Loading the income plan" />;
+  if (!state.data) return <ErrorNote message={state.error ?? "No income plan"} />;
+  return <IncomePlanForm key={`${session.householdId}:${state.data.spaceId}:${state.data.periodKey}:${session.draftEpoch}`} latest={state.data} currency={currency} buckets={buckets} />;
+}
+
+function IncomePlanForm({ latest, currency, buckets }: { latest: IncomePlanData; currency: string; buckets: Bucket[] }) {
+  const session = useSession();
+  const access = useAccess();
+  const [plan, setPlan] = useState(latest);
+  const amountsFor = (value: IncomePlanData) => Object.fromEntries(value.lines.map((line) => [line.bucketId, minorToInput(line.plannedMinor, currency)]));
+  const [amounts, setAmounts] = useState<Record<string, string>>(() => amountsFor(latest));
   const [editingDraft, setEditingDraft] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const attempt = useRef<{ payload: string; opId: string } | null>(null);
+  const form = useFormError();
   useEffect(() => {
     if (!editingDraft) return;
     return session.holdDraft();
   }, [editingDraft, session]);
-  const state = useLoad(() => api<{ plannedMinor: number; expectedIncomeMinor: number; unplannedMinor: number; balanced: boolean; note: string; lines: { bucketId: string; plannedMinor: number }[]; periodKey: string; spaceId: string }>(scoped(session.householdId, "/income-plan", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
-  const form = useFormError();
-  if (state.loading && !state.data) return <Loading label="Loading the income plan" />;
-  if (!state.data) return <ErrorNote message={state.error ?? "No income plan"} />;
-  const plan = state.data;
+  useEffect(() => {
+    if (!editingDraft) { setPlan(latest); setAmounts(amountsFor(latest)); }
+  }, [latest, editingDraft]);
+  const stale = latest.revision !== plan.revision;
+  const expenseBuckets = buckets.filter((bucket) => bucket.kind === "expense" && !bucket.systemRole && !bucket.archived);
   return (
-    <form className="card" onFocus={() => setEditingDraft(true)} onSubmit={(event) => form.run(event, async () => {
-      const data = new FormData(event.currentTarget);
-      const lines = buckets.filter((bucket) => bucket.kind === "expense" && !bucket.systemRole).map((bucket) => ({
-        bucketId: bucket.id, plannedMinor: parseAmount(String(data.get(bucket.id) || "0"), currency),
-      }));
-      await api(scoped(session.householdId, "/income-plan"), { method: "PUT", body: JSON.stringify({ spaceId: plan.spaceId, periodKey: plan.periodKey, lines }) });
-      session.bump();
+    <form className="card" onSubmit={(event) => form.run(event, async () => {
+      if (saving || stale || session.offline || !access.canBudget) return;
+      const lines = expenseBuckets.map((bucket) => ({ bucketId: bucket.id, plannedMinor: parseAmount(amounts[bucket.id] || "0", currency) }));
+      const payload = JSON.stringify({ spaceId: plan.spaceId, periodKey: plan.periodKey, expectedRevision: plan.revision, lines });
+      if (attempt.current?.payload !== payload) attempt.current = { payload, opId: crypto.randomUUID() };
+      setSaving(true);
+      try {
+        await api(scoped(session.householdId, "/income-plan"), { method: "PUT", body: JSON.stringify({ ...JSON.parse(payload), opId: attempt.current.opId }) });
+        attempt.current = null;
+        setEditingDraft(false);
+        session.acceptIncoming();
+      } finally { setSaving(false); }
     })}>
       <p>{plan.note}</p>
       <p>Expected income <Money minor={plan.expectedIncomeMinor} /> · Planned <Money minor={plan.plannedMinor} /> · Left unplanned <Money minor={plan.unplannedMinor} /></p>
-      {buckets.filter((bucket) => bucket.kind === "expense" && !bucket.systemRole).map((bucket) => (
+      {stale ? <Notice>A newer income plan is saved. Your draft is still here.</Notice> : null}
+      {expenseBuckets.map((bucket) => (
         <Field key={bucket.id} label={bucket.name}>
-          <input name={bucket.id} defaultValue={minorToInput(plan.lines.find((line) => line.bucketId === bucket.id)?.plannedMinor ?? 0, currency)} />
+          <input name={bucket.id} inputMode="decimal" value={amounts[bucket.id] ?? "0.00"} onChange={(event) => { setEditingDraft(true); setAmounts({ ...amounts, [bucket.id]: event.target.value }); }} />
         </Field>
       ))}
       {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-      <button className="btn" type="submit">Save income plan</button>
+      <button className="btn" type="submit" disabled={saving || stale || session.offline || !access.canBudget}>{saving ? "Saving…" : "Save income plan"}</button>
+      {(editingDraft || stale || form.error) && <button className="btn-quiet" type="button" disabled={saving || session.offline} onClick={session.acceptIncoming}>Discard draft and load latest income plan</button>}
     </form>
   );
 }

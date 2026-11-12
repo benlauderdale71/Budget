@@ -105,43 +105,7 @@ fun FeatureScreen(
         "fills" -> FillsScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
         "paycheck" -> PaycheckScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
         "calendar" -> CalendarScreen(api, hid, privacy, onError)
-        "incomeplan" -> RemoteScreen("paycheck", { api.request("GET", "/api/households/$hid/income-plan?spaceId=${dash?.optString("spaceId") ?: ""}") }) { data ->
-            Text(data.optString("note"))
-            Text("Expected this period ${money(data.optLong("expectedIncomeMinor"), privacy)}")
-            Text("Planned ${money(data.optLong("plannedMinor"), privacy)} · Still unplanned ${money(data.optLong("unplannedMinor"), privacy)}")
-            val lines = data.optJSONArray("lines") ?: JSONArray()
-            if (lines.length() == 0) Text("No paycheck allocations yet. This plan does not move money.")
-            val buckets = dash?.optJSONArray("buckets") ?: JSONArray()
-            fun bucketName(id: String): String {
-                for (index in 0 until buckets.length()) if (buckets.getJSONObject(index).optString("id") == id) return buckets.getJSONObject(index).optString("name")
-                return "Category"
-            }
-            for (index in 0 until lines.length()) {
-                val line = lines.getJSONObject(index)
-                Text("${bucketName(line.optString("bucketId"))} ${money(line.optLong("plannedMinor"), privacy)}")
-            }
-            BucketPick(dash, "expense") { bucketId, _, target, _ ->
-                scope.launch {
-                    runIo(onError) {
-                        val next = org.json.JSONArray()
-                        var replaced = false
-                        for (index in 0 until lines.length()) {
-                            val line = lines.getJSONObject(index)
-                            val same = line.optString("bucketId") == bucketId
-                            next.put(JSONObject().put("bucketId", line.optString("bucketId")).put("plannedMinor", if (same) target else line.optLong("plannedMinor")))
-                            if (same) replaced = true
-                        }
-                        if (!replaced) next.put(JSONObject().put("bucketId", bucketId).put("plannedMinor", target))
-                        val saved = api.request("PUT", "/api/households/$hid/income-plan", JSONObject()
-                            .put("spaceId", data.optString("spaceId").ifBlank { dash?.optString("spaceId") })
-                            .put("periodKey", data.optString("periodKey"))
-                            .put("lines", next))
-                        onStatus(saved.optString("note").ifBlank { "Paycheck plan saved." })
-                        onChanged()
-                    }
-                }
-            }
-        }
+        "incomeplan" -> IncomePlanScreen(api, hid, dash, privacy, onChanged)
         "forecast" -> {
             RemoteScreen("forecast", { api.request("GET", "/api/households/$hid/forecast?days=30") }) { data ->
             Text(data.optString("note"))
@@ -183,8 +147,11 @@ fun FeatureScreen(
                 val value = if (row.isNull("marketValueMinor")) "No price" else money(row.optLong("marketValueMinor"), privacy)
                 Text("${row.optString("symbol")} ${row.optString("quoteSource")} $value")
             }
+            ConnectedInvestments(api, hid, positions, privacy, onChanged)
         }
-        "retirement" -> RetirementScreen(onError) { body ->
+        "retirement" -> {
+          MonthlyRetirementScreen(api, hid, privacy)
+          RetirementScreen(onError) { body ->
             scope.launch {
                 runIo(onError) {
                     val result = api.request("POST", "/api/households/$hid/retirement", body)
@@ -192,6 +159,7 @@ fun FeatureScreen(
                     onStatus("Deterministic ending ${money(model.optLong("deterministicEndingMinor"), privacy)}. Simulated ${(model.optInt("successRateBps") / 100.0)}%. ${model.optString("metric")}")
                 }
             }
+          }
         }
         "reports" -> ReportScreen(api, hid, privacy, onError, onOpenTransactions)
         "reconcile" -> ReconcileScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
@@ -226,7 +194,8 @@ fun FeatureScreen(
         }
         "household" -> SharingScreen(api, store, hid, dash?.optJSONObject("household")?.optString("role") ?: "", onError, onStatus, onChanged, onSignedOut)
         "connections" -> RemoteScreen("connections", { api.request("GET", "/api/providers") }) { data ->
-            Text("These services are not live. A stored request is not a completed cancellation, score, or transfer.")
+            SimplefinScreen(api, hid, privacy, onChanged)
+            Text("Each service shows whether its client is configured. A stored request is not a completed cancellation, score, or transfer.")
             Button(onClick = {
                 scope.launch {
                     runIo(onError) {
@@ -245,7 +214,7 @@ fun FeatureScreen(
                     }
                 }
             }) { Text("Sync sandbox") }
-            MessageEnrollment(api, onError, onStatus)
+            MessageEnrollment(api, store, onError, onStatus)
             val providers = data.optJSONArray("providers") ?: JSONArray()
             for (index in 0 until providers.length()) {
                 val provider = providers.getJSONObject(index)
@@ -1865,12 +1834,15 @@ private fun ReconcileScreen(api: BudgetApi, hid: String, dash: JSONObject?, priv
 }
 
 @Composable
-private fun MessageEnrollment(api: BudgetApi, onError: (String) -> Unit, onStatus: (String) -> Unit) {
+private fun MessageEnrollment(api: BudgetApi, store: Store, onError: (String) -> Unit, onStatus: (String) -> Unit) {
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var channel by rememberSaveable { mutableStateOf("email") }
     var label by rememberSaveable { mutableStateOf("test inbox") }
     var attemptId by rememberSaveable { mutableStateOf("") }
     var attemptStatus by rememberSaveable { mutableStateOf("") }
+    var liveOperation by rememberSaveable(channel) { mutableStateOf(java.util.UUID.randomUUID().toString()) }
+    var sending by remember { mutableStateOf(false) }
     Text("Message enrollment stores consent. A test sink is not delivery.")
     listOf("email", "sms", "push").forEach { choice ->
         TextButton(onClick = { channel = choice }) { Text(if (channel == choice) "Selected · $choice" else choice) }
@@ -1879,6 +1851,25 @@ private fun MessageEnrollment(api: BudgetApi, onError: (String) -> Unit, onStatu
     Button(onClick = {
         scope.launch { runIo(onError) { api.request("POST", "/api/messages/enrollment", JSONObject().put("channel", channel).put("destinationLabel", label).put("consent", true)); onStatus("Consent is stored. No message was sent.") } }
     }) { Text("Save consent") }
+    if (channel == "push") Button(enabled = !sending, onClick = {
+        sending = true
+        scope.launch {
+            try { com.budgetcents.app.RemotePush.enroll(context, store, api); onStatus("This phone is enrolled for remote push. No notification was sent.") }
+            catch (e: Exception) { onError(e.message ?: "The phone could not be enrolled.") }
+            finally { sending = false }
+        }
+    }) { Text("Allow and enroll this phone") }
+    if (channel != "sms") Button(enabled = !sending, onClick = {
+        sending = true
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { api.request("POST", "/api/notifications/send-test", JSONObject().put("channel", channel).put("opId", liveOperation)) }
+                onStatus(result.optString("note"))
+                liveOperation = java.util.UUID.randomUUID().toString()
+            } catch (e: Exception) { onError(e.message ?: "The real test was not accepted.") }
+            finally { sending = false }
+        }
+    }) { Text(if (channel == "email") "Send real test to my verified email" else "Send real test to enrolled phones") }
     TextButton(onClick = {
         scope.launch {
             runIo(onError) {
@@ -1902,6 +1893,7 @@ private fun MessageEnrollment(api: BudgetApi, onError: (String) -> Unit, onStatu
         }) { Text("Retry failed test") }
     }
     TextButton(onClick = {
+        if (channel == "push") com.budgetcents.app.RemotePush.disable(context, store)
         scope.launch { runIo(onError) { val opted = api.request("POST", "/api/messages/opt-out", JSONObject().put("channel", channel)); onStatus(opted.optString("note")) } }
     }) { Text("Opt out") }
 }

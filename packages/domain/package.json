@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./dashboard-layout": "./src/dashboard-layout.ts",
-    "./access": "./src/access.ts"
+    "./access": "./src/access.ts",
+    "./lots": "./src/lots.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -32,6 +32,14 @@ export async function migrate(db: Database): Promise<void> {
   await db.exec(`ALTER TABLE households ADD COLUMN IF NOT EXISTS member_limit integer`);
   await db.exec(`ALTER TABLE households ADD COLUMN IF NOT EXISTS plan_revision integer NOT NULL DEFAULT 0`);
   await db.exec(`ALTER TABLE lots ALTER COLUMN cost_basis_minor DROP NOT NULL`);
+  await db.exec(`ALTER TABLE holdings ADD COLUMN IF NOT EXISTS lot_revision integer NOT NULL DEFAULT 0`);
+  await db.exec(`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS saved_sequence bigserial`);
+  await db.exec(`ALTER TABLE outbox ADD COLUMN IF NOT EXISTS transport_status text NOT NULL DEFAULT 'local'`);
+  await db.exec(`ALTER TABLE outbox ADD COLUMN IF NOT EXISTS attempted_at text`);
+  await db.exec(`ALTER TABLE outbox ADD COLUMN IF NOT EXISTS accepted_at text`);
+  await db.exec(`ALTER TABLE remote_messages ADD COLUMN IF NOT EXISTS household_id text`);
+  await db.exec(`ALTER TABLE remote_messages ADD COLUMN IF NOT EXISTS alert_id text`);
+  await db.exec(`ALTER TABLE remote_messages ADD COLUMN IF NOT EXISTS received_at text`);
   for (const column of ["reviewer_user_id", "review_assigned_by", "review_assigned_at", "review_resolved_by", "review_resolved_at"]) {
     await db.exec(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS ${column} text`);
   }

@@ -75,7 +75,7 @@ export function mountOnboarding(app: Hono, db: Database, hooks: OnboardingHooks)
       step: z.string().optional(),
       complete: z.string().optional(),
       skip: z.string().optional(),
-      draft: z.record(z.unknown()).optional(),
+      draft: z.record(z.string(), z.unknown()).optional(),
       who: whoSchema.optional(),
       preferences: preferencesSchema.optional(),
       finish: z.boolean().optional(),

@@ -7,7 +7,7 @@ import androidx.security.crypto.MasterKey
 import org.json.JSONArray
 import org.json.JSONObject
 
-class Store(context: Context) {
+class Store(private val context: Context) {
     private val prefs: SharedPreferences = run {
         val master = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
         EncryptedSharedPreferences.create(
@@ -40,6 +40,12 @@ class Store(context: Context) {
     var userId: String?
         get() = prefs.getString("userId", null)
         set(value) { prefs.edit().putString("userId", value).apply() }
+    var remotePushEnabled: Boolean
+        get() = prefs.getBoolean("remotePush", false)
+        set(value) { prefs.edit().putBoolean("remotePush", value).apply() }
+    var remoteDeviceId: String?
+        get() = prefs.getString("remoteDevice", null)
+        set(value) { prefs.edit().putString("remoteDevice", value).apply() }
     var theme: String
         get() = prefs.getString("theme", "system") ?: "system"
         set(value) { prefs.edit().putString("theme", value).apply() }
@@ -110,8 +116,9 @@ class Store(context: Context) {
     }
 
     fun clearSession() {
+        RemotePush.disable(context, this)
         clearCache()
-        prefs.edit().remove("token").remove("household").remove("summary").remove("userId").apply()
+        prefs.edit().remove("token").remove("household").remove("summary").remove("userId").remove("remotePush").remove("remoteDevice").apply()
     }
 
     fun hasNotified(id: String): Boolean = notifiedAlerts().contains(id)

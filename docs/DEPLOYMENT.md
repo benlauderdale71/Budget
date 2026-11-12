@@ -30,7 +30,9 @@ Receipts are written under `BUDGETCENTS_UPLOADS`. Back that directory up with th
 
 ## Mail
 
-Password reset and address verification are written to the outbox until `SMTP_URL` is set. The API response does not include the raw token. In development, `GET /api/dev/outbox?email=` returns that mailbox. The route is absent when `NODE_ENV` is `production`. That outbox is not proof that SMTP delivered the message.
+New reset, verification and invitation messages queue for SMTP only with `BUDGETCENTS_MAIL_ENABLED=true`, `SMTP_URL`, and `SMTP_FROM`. Configure the public HTTPS `BUDGETCENTS_PUBLIC_URL` before enabling delivery. Otherwise they remain local. Old local copies are never automatically sent. SMTP acceptance is not inbox-delivery evidence. In development, `GET /api/dev/outbox?email=` reads the local mailbox; the route is absent in production. See [provider setup](PROVIDERS.md) for TLS, workers, consent and Firebase configuration.
+
+Node does not load `.env` automatically. Export the values in the host environment, or run `node --env-file=.env --import tsx apps/api/src/server.ts` from the repository root. Supabase can host PostgreSQL, but keep the BudgetCents tables inaccessible to its public Data API. The existing custom authentication is not replaced by setting a database URL.
 
 ## Scheduled fills
 

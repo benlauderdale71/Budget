@@ -17,11 +17,12 @@ export interface LotSale {
 
 /** FIFO sale. Quantity is in millionths of a share so the result stays an integer. */
 export function realizeFifo(lots: TaxLot[], sellQuantityMicro: number, proceedsMinor: number): { sales: LotSale[]; remaining: TaxLot[]; gainMinor: number } {
-  if (!Number.isInteger(sellQuantityMicro) || sellQuantityMicro <= 0) throw new MoneyError("Sell a positive whole number of millionths of a share.");
-  if (!Number.isInteger(proceedsMinor)) throw new MoneyError("Proceeds must be integer minor units.");
+  if (!Number.isSafeInteger(sellQuantityMicro) || sellQuantityMicro <= 0) throw new MoneyError("Sell a positive whole number of millionths of a share.");
+  if (!Number.isSafeInteger(proceedsMinor) || proceedsMinor < 0) throw new MoneyError("Proceeds must be non-negative integer minor units.");
+  if (new Set(lots.map((lot) => lot.id)).size !== lots.length || lots.some((lot) => !Number.isSafeInteger(lot.quantityMicro) || lot.quantityMicro <= 0 || !Number.isSafeInteger(lot.costBasisMinor) || lot.costBasisMinor < 0 || !/^\d{4}-\d{2}-\d{2}$/.test(lot.acquired) || !Number.isFinite(Date.parse(lot.acquired)) || new Date(lot.acquired).toISOString().slice(0, 10) !== lot.acquired)) throw new MoneyError("Each lot needs a unique id, a valid date, positive quantity, and non-negative basis.");
   const ordered = [...lots].sort((a, b) => a.acquired.localeCompare(b.acquired) || a.id.localeCompare(b.id));
-  const available = ordered.reduce((sum, lot) => sum + lot.quantityMicro, 0);
-  if (sellQuantityMicro > available) throw new MoneyError("That sale is larger than the remaining lots.");
+  const available = ordered.reduce((sum, lot) => sum + BigInt(lot.quantityMicro), 0n);
+  if (BigInt(sellQuantityMicro) > available) throw new MoneyError("That sale is larger than the remaining lots.");
   let left = sellQuantityMicro;
   let basis = 0;
   const sales: LotSale[] = [];
@@ -32,10 +33,11 @@ export function realizeFifo(lots: TaxLot[], sellQuantityMicro: number, proceedsM
       continue;
     }
     const take = Math.min(lot.quantityMicro, left);
-    const takenBasis = Math.floor((lot.costBasisMinor * take) / lot.quantityMicro);
-    const takenProceeds = Math.floor((proceedsMinor * take) / sellQuantityMicro);
+    const takenBasis = Number(BigInt(lot.costBasisMinor) * BigInt(take) / BigInt(lot.quantityMicro));
+    const takenProceeds = Number(BigInt(proceedsMinor) * BigInt(take) / BigInt(sellQuantityMicro));
     sales.push({ lotId: lot.id, quantityMicro: take, basisMinor: takenBasis, proceedsMinor: takenProceeds, gainMinor: takenProceeds - takenBasis });
     basis += takenBasis;
+    if (!Number.isSafeInteger(basis)) throw new MoneyError("The combined cost basis is too large.");
     left -= take;
     if (take < lot.quantityMicro) remaining.push({ ...lot, quantityMicro: lot.quantityMicro - take, costBasisMinor: lot.costBasisMinor - takenBasis });
   }

@@ -1,5 +1,7 @@
 # Source reconciliation
 
+The current personal-use continuation is in [CONTINUATION_2026_11_12.md](CONTINUATION_2026_11_12.md). It adds SimpleFIN, Finnhub, SMTP and Android FCM clients plus income-plan revisions, lot-sale history and monthly retirement corrections. The comparisons below retain historical scope; “live” services still require real activation and verification. Other professional/valuation providers remain unimplemented.
+
 This is not a claim of feature parity. The public pages below were the research inputs. BudgetCents implements the behavior in its own interface and its own words. It does not copy those products’ logos, marketing, or screen layouts.
 
 The original mapping is attached unchanged in `docs/source/LedgerOne_Complete_Build_Prompt.txt`.

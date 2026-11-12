@@ -7,6 +7,7 @@ import {
   evaluateAlerts,
   isLiability,
   isOnBudgetCash,
+  isQuietHours,
   parseAlertPreferences,
   periodFromDate,
   planAlertChanges,
@@ -20,9 +21,85 @@ import {
 import { id, nowIso } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
-import { ApiError, forecastEventsFromSchedules, type Actor, type Loaded } from "./finance.js";
+import { ApiError, forecastEventsFromSchedules, loadSpace, lockHousehold, requireMember, type Actor, type Loaded } from "./finance.js";
+import { smtpConfigured } from "./providers/smtp.js";
+import { fcmConfigured } from "./providers/fcm.js";
+import { sendOwnMessage } from "./providers/live-messages.js";
 
 const REDACTED = "That record is no longer available to you.";
+
+async function withRemoteStatus(db: Database, alert: PublicAlert, userId: string) {
+  const rows = await db.query(`SELECT channel, status FROM remote_messages WHERE user_id = $1 AND alert_id = $2`, [userId, alert.id]);
+  if (smtpConfigured()) alert.channels.email = "not_requested";
+  if (fcmConfigured()) alert.channels.push = "not_requested";
+  for (const row of rows) alert.channels[String(row.channel)] = String(row.status);
+  return alert;
+}
+
+async function queueRemoteAlerts(db: Database, actor: Actor, loaded: Loaded, preferences: AlertPreferences, now: Date) {
+  if ((!smtpConfigured() && !fcmConfigured()) || isQuietHours(now, preferences)) return;
+  const access = await accessIndex(db, loaded);
+  const alerts = await db.query(`SELECT * FROM alerts WHERE user_id = $1 AND household_id = $2 AND status = 'unread' AND delivery_status = 'delivered'`, [actor.id, loaded.member.householdId]);
+  for (const channel of ["email", "push"] as const) {
+    if (!preferences.channels[channel].consent || (channel === "email" ? !smtpConfigured() : !fcmConfigured())) continue;
+    const enrollment = (await db.query(`SELECT consented_at, opted_out_at FROM message_enrollments WHERE user_id = $1 AND channel = $2`, [actor.id, channel]))[0];
+    if (!enrollment?.consented_at || enrollment.opted_out_at) continue;
+    for (const row of alerts) {
+      if (!presentAlert(row, access).targetAvailable || String(row.created_at) < String(enrollment.consented_at)) continue;
+      await db.query(`INSERT INTO remote_messages (id,user_id,op_id,channel,status,detail,created_at,household_id,alert_id) VALUES ($1,$2,$3,$4,'queued','Generic notification waiting for delivery',$5,$6,$7) ON CONFLICT (user_id,op_id) DO NOTHING`, [id(), actor.id, `alert:${row.id}:${channel}`, channel, now.toISOString(), loaded.member.householdId, row.id]);
+    }
+  }
+}
+
+/** Evaluate for current members, then recheck access and consent immediately before each send. */
+export async function runRemoteAlerts(db: Database) {
+  if (!smtpConfigured() && !fcmConfigured()) return;
+  const rows = await db.query(`SELECT u.*, p.household_id, p.settings_json FROM alert_preferences p JOIN users u ON u.id = p.user_id JOIN memberships m ON m.user_id = p.user_id AND m.household_id = p.household_id WHERE u.deleted_at IS NULL`);
+  for (const row of rows) {
+    const prefs = parseAlertPreferences(JSON.parse(String(row.settings_json)), String(row.time_zone));
+    if (!prefs.ok || (!prefs.value.channels.email.consent && !prefs.value.channels.push.consent)) continue;
+    const actor: Actor = { id: String(row.id), email: String(row.email), displayName: String(row.display_name), privacyMode: num(row.privacy_mode) === 1, aiEnabled: num(row.ai_enabled) === 1, locale: String(row.locale), timeZone: String(row.time_zone), theme: String(row.theme), weekStart: num(row.week_start) };
+    try {
+      const loaded = await loadSpace(db, actor, String(row.household_id));
+      await syncAlerts(db, actor, loaded);
+    } catch { /* A removed member or unavailable household must not abort other recipients. */ }
+  }
+  const pending = await db.query(`SELECT id, household_id FROM remote_messages WHERE status = 'queued' AND alert_id IS NOT NULL ORDER BY created_at LIMIT 30`);
+  for (const item of pending) {
+    const claimed = await db.tx(async () => {
+      await lockHousehold(db, String(item.household_id));
+      const message = (await db.query(`SELECT * FROM remote_messages WHERE id = $1 AND status = 'queued' FOR UPDATE`, [item.id]))[0];
+      if (!message) return null;
+      const channel = String(message.channel) as "email" | "push";
+      if (channel === "email" ? !smtpConfigured() : !fcmConfigured()) return null;
+      try {
+        const member = await requireMember(db, String(message.user_id), String(message.household_id));
+        const settings = await ensurePreferences(db, String(message.user_id), member.householdId, member.timeZone);
+        const consent = (await db.query(`SELECT consented_at, opted_out_at FROM message_enrollments WHERE user_id = $1 AND channel = $2`, [message.user_id, channel]))[0];
+        const alert = (await db.query(`SELECT * FROM alerts WHERE id = $1 AND user_id = $2 AND household_id = $3`, [message.alert_id, message.user_id, message.household_id]))[0];
+        if (!consent?.consented_at || consent.opted_out_at || !settings.settings.channels[channel].consent || !settings.settings.channels.inapp.enabled || !alert || ["read", "resolved"].includes(String(alert.status))) throw new Error("cancelled");
+        const user = (await db.query(`SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL`, [message.user_id]))[0];
+        if (!user) throw new Error("cancelled");
+        const recipient: Actor = { id: String(user.id), email: String(user.email), displayName: String(user.display_name), privacyMode: num(user.privacy_mode) === 1, aiEnabled: num(user.ai_enabled) === 1, locale: String(user.locale), timeZone: String(user.time_zone), theme: String(user.theme), weekStart: num(user.week_start) };
+        const loaded = await loadSpace(db, recipient, member.householdId);
+        if (!presentAlert(alert, await accessIndex(db, loaded)).targetAvailable) throw new Error("cancelled");
+        if (alert.status === "snoozed" || isQuietHours(new Date(), settings.settings)) return null;
+        await db.query(`UPDATE remote_messages SET status = 'attempted', detail = 'Provider acceptance pending' WHERE id = $1`, [message.id]);
+        return message;
+      } catch {
+        await db.query(`UPDATE remote_messages SET status = 'cancelled', detail = 'Access, consent, or alert state changed before sending' WHERE id = $1`, [message.id]);
+        return null;
+      }
+    });
+    if (!claimed) continue;
+    try {
+      const result = await sendOwnMessage(db, String(claimed.user_id), String(claimed.channel) as "email" | "push", String(claimed.id));
+      await db.query(`UPDATE remote_messages SET status = CASE WHEN received_at IS NULL THEN 'accepted' ELSE 'delivered' END, detail = $1 WHERE id = $2`, [result.note, claimed.id]);
+    } catch {
+      await db.query(`UPDATE remote_messages SET status = CASE WHEN received_at IS NULL THEN 'failed' ELSE 'delivered' END, detail = 'Acceptance was not confirmed. This message will not be resent automatically.' WHERE id = $1`, [claimed.id]);
+    }
+  }
+}
 
 export interface PublicAlert {
   id: string;
@@ -82,6 +159,7 @@ export async function syncAlerts(db: Database, actor: Actor, loaded: Loaded, now
       await persistChanges(db, actor.id, loaded.member.householdId, changes, now, preferences.settings);
       existing = await loadTracked(db, actor.id, loaded.member.householdId);
     }
+    await queueRemoteAlerts(db, actor, loaded, preferences.settings, now);
   });
 }
 
@@ -91,13 +169,13 @@ export async function listAlerts(db: Database, actor: Actor, loaded: Loaded): Pr
     [actor.id, loaded.member.householdId],
   );
   const access = await accessIndex(db, loaded);
-  return rows.map((row) => presentAlert(row, access));
+  return Promise.all(rows.map(async (row) => withRemoteStatus(db, presentAlert(row, access), actor.id)));
 }
 
 export async function getAlert(db: Database, actor: Actor, loaded: Loaded, alertId: string): Promise<PublicAlert> {
   const rows = await db.query(`SELECT * FROM alerts WHERE id = $1 AND user_id = $2 AND household_id = $3`, [alertId, actor.id, loaded.member.householdId]);
   if (!rows.length) throw new ApiError(404, "Not found");
-  return presentAlert(rows[0], await accessIndex(db, loaded));
+  return withRemoteStatus(db, presentAlert(rows[0], await accessIndex(db, loaded)), actor.id);
 }
 
 export async function markAlertRead(db: Database, actor: Actor, householdId: string, alertId: string) {
@@ -160,11 +238,14 @@ function settingsPayload(version: number, settings: AlertPreferences) {
   return {
     version,
     settings,
-    channels: channelCatalog(settings),
+    channels: channelCatalog(settings).map((channel) => {
+      const configured = channel.id === "email" ? smtpConfigured() : channel.id === "push" ? fcmConfigured() : false;
+      return configured ? { ...channel, available: true, enabled: channel.consent, reason: "Provider configured. Also save message consent in Connections. New in-app alerts can send a generic notification; acceptance is not proof of delivery." } : channel;
+    }),
     unsupported: [
       { kind: "price_increase", reason: "No price history or bill-data provider is connected. A bill amount range is not a detected price increase." },
       { kind: "credit_change", reason: "No credit-bureau connection is configured. A score entered by hand is not a bureau change." },
-      { kind: "broken_connection", reason: "Bank aggregation is not connected, so there is no bank connection that can break." },
+      { kind: "broken_connection", reason: "SimpleFIN errors appear in the bank preview. Automated connection-status alert events are not implemented." },
     ],
     kinds: Object.entries(settings.types).map(([id, enabled]) => ({ id, label: ALERT_KIND_LABELS[id as keyof typeof ALERT_KIND_LABELS], enabled })),
   };

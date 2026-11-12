@@ -106,7 +106,8 @@ describe("retirement distributions", () => {
     });
     expect(year.months[0].rmdMinor).toBe(100000);
     expect(year.months[0].withdrawalMinor).toBe(100000);
-    expect(year.months[0].portfolioMinor).toBe(2550000);
+    expect(year.months[0].portfolioMinor).toBe(2650000);
+    expect(year.months[0].otherMinor).toBe(100000);
     expect(year.assumptions.join(" ")).toMatch(/590-B/);
     expect(rmd.note).toMatch(/not used/);
   });

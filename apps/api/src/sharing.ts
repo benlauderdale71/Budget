@@ -12,6 +12,7 @@ import { id, nowIso, randomToken, sha256 } from "./crypto.js";
 import { type Database, num } from "./db.js";
 import { ApiError, type Actor, audit, requireMember } from "./finance.js";
 import { releaseReviewer } from "./collaboration.js";
+import { queueAccountMail } from "./providers/smtp.js";
 
 const WEEK_MS = 7 * 86_400_000;
 
@@ -53,7 +54,7 @@ function invitationMessage(origin: string, token: string, householdName: string,
     summary,
     `${origin}/invite/${token}`,
     `budgetcents://invite?token=${token}`,
-    "This copy is in the local outbox. It is not proof that email was delivered.",
+    "Sign in with the invited address and review the disclosure before choosing to join.",
   ].join("\n");
 }
 
@@ -67,10 +68,7 @@ async function storeInvitation(db: Database, householdId: string, email: string,
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [inviteId, householdId, email, role, sha256(token), new Date(Date.now() + WEEK_MS).toISOString(), disclosure.summary, created],
   );
-  await db.query(
-    `INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id(), actorId, email, `BudgetCents invitation to ${householdName}`, invitationMessage(origin, token, householdName, role, disclosure.summary), created],
-  );
+  await queueAccountMail(db, actorId, email, `BudgetCents invitation to ${householdName}`, invitationMessage(origin, token, householdName, role, disclosure.summary), created);
   return { token, inviteId, summary: disclosure.summary };
 }
 

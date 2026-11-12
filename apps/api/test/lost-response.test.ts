@@ -86,7 +86,7 @@ describe("lost response retry", () => {
       opId: "bad-1",
     }]));
     const rejected = await flushQueue();
-    expect(rejected.rejected).toMatch(/integer/i);
+    expect(rejected.rejected).toMatch(/\bint(?:eger)?\b/i);
     expect(JSON.parse(store.get("budgetcents.queue") ?? "[]")).toEqual([]);
     expect(await db.query(`SELECT id FROM transactions WHERE payee = 'Bad cents'`)).toHaveLength(0);
 

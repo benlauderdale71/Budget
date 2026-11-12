@@ -64,7 +64,8 @@ export function mountMessageRoutes(app: Hono, db: Database, actor: (c: { req: { 
     const rows = await db.query(`SELECT * FROM delivery_attempts WHERE id = $1 AND user_id = $2`, [c.req.param("id"), me.id]);
     if (!rows.length) throw new ApiError(404, "Not found");
     if (String(rows[0].status) !== "failed") throw new ApiError(409, "Only a failed attempt can be retried. A queued or accepted message was not sent again.");
-    const result = classifyTestDelivery({ outcome: "accepted", quiet: await quietFor(db, me.id), optedOut: false, consented: true });
+    const enrollment = (await db.query(`SELECT consented_at, opted_out_at FROM message_enrollments WHERE user_id = $1 AND channel = $2`, [me.id, rows[0].channel]))[0];
+    const result = classifyTestDelivery({ outcome: "accepted", quiet: await quietFor(db, me.id), optedOut: !!enrollment?.opted_out_at, consented: !!enrollment?.consented_at && !enrollment?.opted_out_at });
     const attemptId = id();
     await db.query(`INSERT INTO delivery_attempts (id, user_id, channel, status, detail, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [attemptId, me.id, rows[0].channel, result.status, result.note, nowIso()]);
     return c.json({ id: attemptId, retriedFrom: rows[0].id, ...result });

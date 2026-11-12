@@ -1,13 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
-import { createOidcStart, oidcReturnPath, projectMonthlyRetirement, realizeFifo, type TaxLot } from "@budgetcents/domain";
+import { createOidcStart, oidcReturnPath, projectMonthlyRetirement } from "@budgetcents/domain";
 import { auditAssistant, confirmAssistantAction, undoAssistantAction } from "./assistant-actions.js";
 import { id, nowIso } from "./crypto.js";
 import type { Database } from "./db.js";
-import { num, str } from "./db.js";
-import { ApiError, type Actor, assertBudget, assertWrite, audit, canSeeAccount, requireMember } from "./finance.js";
+import { num } from "./db.js";
+import { ApiError, type Actor, assertBudget, assertWrite, audit, requireMember } from "./finance.js";
 import { mountLearningRoutes } from "./learning-routes.js";
+import { mountInvestmentLots } from "./investment-lots.js";
 import { mountMessageRoutes } from "./message-routes.js";
 import { completeOidcCallback, completeOidcLink, completeOidcMfa } from "./oidc-flow.js";
 import { activityFromWebhook, connectSandbox, importSandboxActivities, reconnectSandbox, sandboxConnection, syncSandbox } from "./sandbox-import.js";
@@ -129,62 +130,7 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     return c.json({ ok: true, note: "The goal target changed. Envelope balances and the register did not." });
   });
 
-  app.get("/api/households/:hid/lots", async (c) => {
-    const me = await deps.actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    const lots = await visibleLots(db, me.id, member.householdId);
-    return c.json({
-      lots,
-      missingBasis: lots.filter((lot) => lot.costBasisMinor == null).length,
-      note: "Lots are manual records. A missing cost basis stays missing and is not treated as zero. Selling a lot does not by itself create a bank transaction.",
-    });
-  });
-
-  app.post("/api/households/:hid/lots", async (c) => {
-    const me = await deps.actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const body = z.object({ holdingId: z.string(), quantityMicro: z.number().int().positive(), costBasisMinor: z.number().int().nonnegative().nullable(), acquired: z.string() }).parse(await c.req.json());
-    await visibleHolding(db, me.id, member.householdId, body.holdingId);
-    const lotId = id();
-    await db.query(`INSERT INTO lots (id, holding_id, quantity, cost_basis_minor, acquired) VALUES ($1,$2,$3,$4,$5)`, [lotId, body.holdingId, String(body.quantityMicro), body.costBasisMinor, body.acquired]);
-    await audit(db, member.householdId, me.id, "lot.create", "Added a tax lot. The register was not changed.", "holding", body.holdingId);
-    return c.json({ id: lotId }, 201);
-  });
-
-  app.patch("/api/households/:hid/lots/:id", async (c) => {
-    const me = await deps.actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const body = z.object({ costBasisMinor: z.number().int().nonnegative().nullable() }).parse(await c.req.json());
-    const lot = await ownedLot(db, me.id, member.householdId, c.req.param("id"));
-    await db.query(`UPDATE lots SET cost_basis_minor = $1 WHERE id = $2`, [body.costBasisMinor, lot.id]);
-    return c.json({ ok: true, note: body.costBasisMinor == null ? "The cost basis is missing. It was not set to zero." : "The cost basis was saved. The register was not changed." });
-  });
-
-  app.post("/api/households/:hid/lots/sell", async (c) => {
-    const me = await deps.actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertWrite(member);
-    const body = z.object({ holdingId: z.string(), quantityMicro: z.number().int().positive(), proceedsMinor: z.number().int().nonnegative() }).parse(await c.req.json());
-    await visibleHolding(db, me.id, member.householdId, body.holdingId);
-    const before = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [member.householdId]);
-    const rows = await db.query(`SELECT * FROM lots WHERE holding_id = $1`, [body.holdingId]);
-    if (rows.some((row) => row.cost_basis_minor == null)) throw new ApiError(400, "Add the missing cost basis before recording this sale. Missing basis is not zero.");
-    const lots: TaxLot[] = rows.map((row) => ({ id: String(row.id), quantityMicro: Number(row.quantity), costBasisMinor: num(row.cost_basis_minor), acquired: String(row.acquired) }));
-    const result = realizeFifo(lots, body.quantityMicro, body.proceedsMinor);
-    await db.tx(async () => {
-      const remaining = new Set(result.remaining.map((lot) => lot.id));
-      for (const lot of lots) {
-        if (!remaining.has(lot.id)) await db.query(`DELETE FROM lots WHERE id = $1`, [lot.id]);
-      }
-      for (const lot of result.remaining) await db.query(`UPDATE lots SET quantity = $1, cost_basis_minor = $2 WHERE id = $3`, [String(lot.quantityMicro), lot.costBasisMinor, lot.id]);
-      await audit(db, member.householdId, me.id, "lot.sell", "Recorded a lot sale. No bank transaction was created.", "holding", body.holdingId);
-    });
-    const after = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [member.householdId]);
-    if (num(before[0].n) !== num(after[0].n)) throw new Error("A lot sale must not create a bank transaction.");
-    return c.json({ gainMinor: result.gainMinor, sales: result.sales, note: "This realized gain is lot history. It is not a register transaction and it is not tax advice." });
-  });
+  mountInvestmentLots(app, db, deps.actor);
 
   app.post("/api/households/:hid/benchmarks", async (c) => {
     const me = await deps.actor(c);
@@ -216,18 +162,26 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
       age: z.number().int().min(0).max(120),
       birthYear: z.number().int().optional(),
       months: z.number().int().min(1).max(600),
+      priorYearTraditionalMinor: z.number().int().safe().nonnegative().optional(),
+      strategy: z.enum(["other_first", "traditional_first"]).optional(),
+      inheritedAccount: z.boolean().optional(),
+      youngerSpouseSoleBeneficiary: z.boolean().optional(),
     }).parse(await c.req.json());
     const projection = projectMonthlyRetirement(body);
     const after = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [member.householdId]);
     if (num(before[0].n) !== num(after[0].n)) throw new Error("A retirement projection must not post to the ledger.");
-    return c.json({ ...projection, guarantee: false });
+    const summarize = (strategy: "other_first" | "traditional_first") => {
+      const result = projectMonthlyRetirement({ ...body, strategy });
+      return { strategy, endingMinor: result.months.at(-1)!.portfolioMinor, taxMinor: result.months.reduce((sum, month) => sum + month.taxMinor, 0), unmetSpendingMinor: result.months.reduce((sum, month) => sum + month.unmetSpendingMinor, 0) };
+    };
+    return c.json({ ...projection, comparison: [summarize("other_first"), summarize("traditional_first")], guarantee: false });
   });
 
   app.post("/api/households/:hid/assistant/actions/preview", async (c) => {
     const me = await deps.actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ kind: z.enum(["create_transaction", "create_goal", "create_rule", "create_category", "set_category", "set_tags", "adjust_plan"]), payload: z.record(z.unknown()) }).parse(await c.req.json());
+    const body = z.object({ kind: z.enum(["create_transaction", "create_goal", "create_rule", "create_category", "set_category", "set_tags", "adjust_plan"]), payload: z.record(z.string(), z.unknown()) }).parse(await c.req.json());
     if (body.kind === "create_goal" || body.kind === "create_category" || body.kind === "adjust_plan") assertBudget(member);
     const actionId = id();
     await db.query(
@@ -365,10 +319,17 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
 
   app.post("/api/devices/:id/push-token", async (c) => {
     const me = await deps.actor(c);
-    const body = z.object({ token: z.string().min(1).max(400) }).parse(await c.req.json());
-    const updated = await db.query(`UPDATE devices SET push_token = $1 WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL RETURNING id`, [body.token, c.req.param("id"), me.id]);
-    if (!updated.length) throw new ApiError(404, "Not found");
-    return c.json({ stored: true, delivery: "not_configured", note: "The token is stored. No remote notification was sent." });
+    const body = z.object({ token: z.string().min(1).max(4096) }).parse(await c.req.json());
+    await db.tx(async () => {
+      await db.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [me.id]);
+      const enrollment = (await db.query(`SELECT consented_at, opted_out_at FROM message_enrollments WHERE user_id = $1 AND channel = 'push'`, [me.id]))[0];
+      if (!enrollment?.consented_at || enrollment.opted_out_at) throw new ApiError(409, "Save push consent before enrolling this phone.");
+      const device = await db.query(`SELECT id FROM devices WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`, [c.req.param("id"), me.id]);
+      if (!device.length) throw new ApiError(404, "Not found");
+      await db.query(`UPDATE devices SET push_token = NULL WHERE push_token = $1`, [body.token]);
+      await db.query(`UPDATE devices SET push_token = $1 WHERE id = $2`, [body.token, c.req.param("id")]);
+    });
+    return c.json({ stored: true, delivery: "enrolled", note: "The phone token is stored. No remote notification was sent." });
   });
 
   app.post("/api/notifications/email-test", async (c) => {
@@ -385,34 +346,4 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
 
   mountMessageRoutes(app, db, deps.actor);
   mountLearningRoutes(app, db, deps.actor);
-}
-
-async function visibleHolding(db: Database, userId: string, householdId: string, holdingId: string) {
-  const rows = await db.query(`SELECT h.id, a.visibility, a.owner_user_id FROM holdings h JOIN accounts a ON a.id = h.account_id WHERE h.id = $1 AND h.household_id = $2`, [holdingId, householdId]);
-  if (!rows.length || !canSeeAccount(userId, { visibility: String(rows[0].visibility), owner_user_id: str(rows[0].owner_user_id) ?? null })) throw new ApiError(404, "Not found");
-  return rows[0];
-}
-
-async function ownedLot(db: Database, userId: string, householdId: string, lotId: string) {
-  const rows = await db.query(`SELECT l.id, l.holding_id FROM lots l JOIN holdings h ON h.id = l.holding_id WHERE l.id = $1 AND h.household_id = $2`, [lotId, householdId]);
-  if (!rows.length) throw new ApiError(404, "Not found");
-  await visibleHolding(db, userId, householdId, String(rows[0].holding_id));
-  return rows[0];
-}
-
-async function visibleLots(db: Database, userId: string, householdId: string) {
-  const rows = await db.query(
-    `SELECT l.id, l.holding_id, l.quantity, l.cost_basis_minor, l.acquired, h.symbol, a.visibility, a.owner_user_id
-     FROM lots l JOIN holdings h ON h.id = l.holding_id JOIN accounts a ON a.id = h.account_id
-     WHERE h.household_id = $1`,
-    [householdId],
-  );
-  return rows.filter((row) => canSeeAccount(userId, { visibility: String(row.visibility), owner_user_id: str(row.owner_user_id) ?? null })).map((row) => ({
-    id: String(row.id),
-    holdingId: String(row.holding_id),
-    symbol: String(row.symbol),
-    quantityMicro: Number(row.quantity),
-    costBasisMinor: row.cost_basis_minor == null ? null : num(row.cost_basis_minor),
-    acquired: String(row.acquired),
-  }));
 }

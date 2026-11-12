@@ -8,6 +8,9 @@ import { openDatabase } from "./db.js";
 import { ensureDemo } from "./seed.js";
 import { contentType, resolveStaticFile, resolveWebRoot } from "./paths.js";
 import { shouldServeAppShell } from "./static-fallback.js";
+import { flushAccountMail, smtpConfigured } from "./providers/smtp.js";
+import { fcmConfigured } from "./providers/fcm.js";
+import { runRemoteAlerts } from "./alerts.js";
 
 const db = await openDatabase();
 if (process.env.SEED_DEMO !== "false") await ensureDemo(db);
@@ -50,10 +53,25 @@ app.use("*", async (c, next) => {
 
 const fillPollMs = Number(process.env.BUDGETCENTS_FILL_POLL_MS ?? 0);
 
-serve({ fetch: app.fetch, port }, () => {
+serve({ fetch: app.fetch, port, hostname: process.env.HOST }, () => {
   console.log(`BudgetCents API listening on http://127.0.0.1:${port}`);
   console.log(`Serving the web build from ${webRoot}`);
   if (demoLoginAllowed()) console.log("Sample household login is enabled for this environment.");
+  if (smtpConfigured()) {
+    const pollMail = () => flushAccountMail(db).catch(() => console.error("Account email queue could not be processed. Check mail configuration."));
+    void pollMail();
+    setInterval(pollMail, 30000).unref();
+  }
+  if (smtpConfigured() || fcmConfigured()) {
+    let alertPollRunning = false;
+    const pollAlerts = async () => {
+      if (alertPollRunning) return;
+      alertPollRunning = true;
+      try { await runRemoteAlerts(db); } catch { console.error("Remote alert check could not finish."); }
+      finally { alertPollRunning = false; }
+    };
+    void pollAlerts(); setInterval(pollAlerts, 60000).unref();
+  }
   if (Number.isFinite(fillPollMs) && fillPollMs >= 1000) {
     setInterval(() => {
       runDueFills(db)

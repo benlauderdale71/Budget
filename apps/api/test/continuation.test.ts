@@ -121,21 +121,21 @@ describe("live plan revisions and later features", () => {
     }));
     const missing = await json(await api.request(`/api/households/${owner.hid}/lots`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ holdingId: holding.body.id, quantityMicro: 1_000_000, costBasisMinor: null, acquired: "2020-01-01" }),
+      body: JSON.stringify({ holdingId: holding.body.id, quantityMicro: 1_000_000, costBasisMinor: null, acquired: "2020-01-01", opId: "add-first-lot" }),
     }));
     expect(missing.status).toBe(201);
     const blocked = await json(await api.request(`/api/households/${owner.hid}/lots/sell`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ holdingId: holding.body.id, quantityMicro: 1_000_000, proceedsMinor: 3000 }),
+      body: JSON.stringify({ holdingId: holding.body.id, quantityMicro: 1_000_000, proceedsMinor: 3000, expectedRevision: 1, opId: "blocked-sale", soldOn: "2026-11-12" }),
     }));
     expect(blocked.status).toBe(400);
     await json(await api.request(`/api/households/${owner.hid}/lots/${missing.body.id}`, {
-      method: "PATCH", headers: auth(owner.token), body: JSON.stringify({ costBasisMinor: 2000 }),
+      method: "PATCH", headers: auth(owner.token), body: JSON.stringify({ costBasisMinor: 2000, expectedRevision: 1 }),
     }));
     const before = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [owner.hid]);
     const sold = await json(await api.request(`/api/households/${owner.hid}/lots/sell`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ holdingId: holding.body.id, quantityMicro: 1_000_000, proceedsMinor: 3000 }),
+      body: JSON.stringify({ holdingId: holding.body.id, quantityMicro: 1_000_000, proceedsMinor: 3000, expectedRevision: 2, opId: "sale-test", soldOn: "2026-11-12" }),
     }));
     expect(sold.body.gainMinor).toBe(1000);
     const modeled = await json(await api.request(`/api/households/${owner.hid}/retirement/monthly`, {

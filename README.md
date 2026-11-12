@@ -4,6 +4,8 @@ BudgetCents is a household finance app for the browser and Android. Categories, 
 
 The product was specified as LedgerOne and renamed to BudgetCents. The original prompt, coverage ledger, and source list are unchanged in [docs/source/LedgerOne_Complete_Build_Prompt.txt](docs/source/LedgerOne_Complete_Build_Prompt.txt).
 
+The November 12 personal-use continuation adds conflict-safe income plans, SimpleFIN history previews/imports, Finnhub price confirmation, SMTP and Android FCM clients, revisioned FIFO sale history, and corrected monthly retirement accounting. Start with [provider setup and costs](docs/PROVIDERS.md) and [the current verification record](docs/CONTINUATION_2026_11_12.md). AmFirst coverage, real delivery, device checks and public deployment remain pending; this is not a claim that the entire original specification is complete.
+
 ## Run it
 
 ```bash

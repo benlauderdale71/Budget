@@ -3,13 +3,18 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
 import { mountTestIssuer } from "./oidc-test-provider.js";
-import { LESSONS, PROVIDERS } from "./content.js";
+import { LESSONS, providerCatalog } from "./content.js";
 import { saveCategory } from "./categories.js";
 import { getAlert, listAlerts, markAlertRead, markAlertsRead, readAlertSettings, resolveAlert, saveAlertSettings, snoozeAlert, syncAlerts } from "./alerts.js";
 import { collaborationPeople, ownershipFilter, ownershipSummary, recordReviewResolution, updateCollaboration } from "./collaboration.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
 import { mountLoans } from "./loans.js";
+import { mountIncomePlan } from "./income-plan.js";
+import { mountBankRoutes } from "./providers/bank-routes.js";
+import { mountMarketRoutes } from "./providers/market.js";
+import { queueAccountMail } from "./providers/smtp.js";
+import { mountLiveMessages } from "./providers/live-messages.js";
 import { mountOnboarding } from "./onboarding.js";
 import { planRestore } from "./restore.js";
 import { acceptInvitation, changeMemberRole, createInvitation, leaveHousehold, listAccess, previewInvitation, reissueInvitation, removeMember, revokeInvitation, setMemberLimit, transferOwnership, visibleAudit } from "./sharing.js";
@@ -64,7 +69,7 @@ const categoryEditSchema = z.object({
   purpose: z.string().max(40).nullable().optional(),
   archived: z.boolean(),
   hidden: z.boolean().optional(),
-  target: z.record(z.unknown()).nullable().optional(),
+  target: z.record(z.string(), z.unknown()).nullable().optional(),
   effectivePeriod: z.string(),
   recalculate: z.boolean().default(false),
   preview: z.boolean().default(false),
@@ -253,9 +258,7 @@ export function createApp(db: Database) {
         `INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'verify',$3,$4)`,
         [id(), userId, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
       );
-      await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
-        id(), userId, email, "Verify your BudgetCents email", verificationMessage(origin, verify), created,
-      ]);
+      await queueAccountMail(db, userId, email, "Verify your BudgetCents email", verificationMessage(origin, verify), created);
     });
     const token = await startSession(userId, c.req.header("user-agent") ?? "web");
     return c.json({ token, user: await publicUser(userId), verificationRequired: true });
@@ -312,9 +315,7 @@ export function createApp(db: Database) {
       const token = randomToken();
       const expires = new Date(Date.now() + 3_600_000).toISOString();
       await db.query(`INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'reset',$3,$4)`, [id(), rows[0].id, sha256(token), expires]);
-      await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
-        id(), rows[0].id, body.email.toLowerCase(), "Reset your BudgetCents password", resetMessage(appOrigin(c), token), nowIso(),
-      ]);
+      await queueAccountMail(db, String(rows[0].id), body.email.toLowerCase(), "Reset your BudgetCents password", resetMessage(appOrigin(c), token));
     }
     return c.json({ ok: true, message: "If that email has an account, a reset message was created." });
   });
@@ -355,9 +356,7 @@ export function createApp(db: Database) {
         `INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'verify',$3,$4)`,
         [id(), me.id, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
       );
-      await db.query(`INSERT INTO outbox (id, user_id, to_email, subject, body, created_at) VALUES ($1,$2,$3,$4,$5,$6)`, [
-        id(), me.id, String(rows[0].email), "Verify your BudgetCents email", verificationMessage(appOrigin(c), verify), created,
-      ]);
+      await queueAccountMail(db, me.id, String(rows[0].email), "Verify your BudgetCents email", verificationMessage(appOrigin(c), verify), created);
     });
     return c.json({ ok: true, message: "A new verification message was created." });
   });
@@ -378,7 +377,7 @@ export function createApp(db: Database) {
       payCadence: z.string().optional(),
       budgetApproach: z.enum(["category", "zero", "envelope", "flex"]).optional(),
       labelMode: z.enum(["categories", "envelopes"]).optional(),
-      alertSettings: z.record(z.unknown()).optional(),
+      alertSettings: z.record(z.string(), z.unknown()).optional(),
       onboardingStep: z.string().max(40).nullable().optional(),
     }).parse(raw);
     const sets: string[] = [];
@@ -1040,41 +1039,7 @@ export function createApp(db: Database) {
     return c.json({ schedules: loaded.input.schedules ?? [] });
   });
 
-  app.get("/api/households/:hid/income-plan", async (c) => {
-    const me = await actor(c);
-    const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined, c.req.query("asOf") ?? undefined);
-    const expected = (loaded.input.schedules ?? []).filter((schedule) => schedule.direction === "inflow" && !schedule.paused).reduce((sum, schedule) => sum + schedule.amountMinor, 0);
-    const plan = evaluateIncomePlan(loaded.input.planLines ?? [], expected, loaded.budget.periodKey);
-    return c.json({ ...plan, lines: loaded.input.planLines ?? [], periodKey: loaded.budget.periodKey, spaceId: loaded.spaceId });
-  });
-
-  app.put("/api/households/:hid/income-plan", async (c) => {
-    const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    assertBudget(member);
-    const body = z.object({
-      spaceId: z.string(),
-      periodKey: z.string(),
-      lines: z.array(z.object({ bucketId: z.string(), plannedMinor: money })),
-    }).parse(await c.req.json());
-    await assertSpace(me.id, member.householdId, body.spaceId);
-    for (const line of body.lines) {
-      if (line.plannedMinor === 0) continue;
-      await assertBucket(member.householdId, body.spaceId, line.bucketId);
-    }
-    await db.tx(async () => {
-      await db.query(`DELETE FROM plan_lines WHERE household_id = $1 AND space_id = $2 AND period_key = $3`, [member.householdId, body.spaceId, body.periodKey]);
-      for (const line of body.lines) {
-        if (line.plannedMinor === 0) continue;
-        await db.query(
-          `INSERT INTO plan_lines (id, household_id, space_id, bucket_id, period_key, planned_minor) VALUES ($1,$2,$3,$4,$5,$6)`,
-          [id(), member.householdId, body.spaceId, line.bucketId, body.periodKey, line.plannedMinor],
-        );
-      }
-    });
-    await audit(db, member.householdId, me.id, "income_plan", "Updated the income plan");
-    return c.json({ ok: true, note: "This plan does not fund envelopes until the money arrives and is assigned." });
-  });
+  mountIncomePlan(app, db, actor);
 
   app.get("/api/households/:hid/members", async (c) => {
     const me = await actor(c);
@@ -1508,7 +1473,7 @@ export function createApp(db: Database) {
       profile: z.string().optional(),
       format: z.enum(["csv", "ofx", "qif"]),
       text: z.string().max(2_000_000),
-      mapping: z.record(z.string().max(80)).optional(),
+      mapping: z.record(z.string(), z.string().max(80)).optional(),
       dateOrder: z.enum(["mdy", "dmy"]).optional(),
       decimal: z.enum(["period", "comma"]).optional(),
       inflowSign: z.enum(["positive_in", "positive_out"]).optional(),
@@ -1593,7 +1558,7 @@ export function createApp(db: Database) {
     const body = z.object({
       accountId: z.string(),
       rowNumbers: z.array(z.number().int()).max(5000),
-      categoryMap: z.record(z.string().max(80)).optional(),
+      categoryMap: z.record(z.string(), z.string().max(80)).optional(),
       createMissingCategories: z.boolean().optional(),
     }).parse(await c.req.json());
     if (Object.keys(body.categoryMap ?? {}).length > 200) throw new ApiError(400, "Map fewer categories at once. Nothing was imported.");
@@ -1836,7 +1801,7 @@ export function createApp(db: Database) {
   app.get("/api/providers", async (c) => {
     await actor(c);
     return c.json({
-      providers: PROVIDERS,
+      providers: providerCatalog(),
       note: "A fixture or a test sink is not a live provider. Missing means no adapter is implemented. A stored request is not a completed service.",
     });
   });
@@ -1863,7 +1828,7 @@ export function createApp(db: Database) {
       kind: z.enum(["cancellation", "negotiation", "refund_review"]),
       merchant: z.string().min(1),
       authorized: z.boolean(),
-      details: z.record(z.unknown()).default({}),
+      details: z.record(z.string(), z.unknown()).default({}),
     }).parse(await c.req.json());
     if (!body.authorized) throw new ApiError(400, "This request is stored only after you explicitly authorize it. Nothing is sent to a biller automatically.");
     const caseId = id();
@@ -2225,7 +2190,7 @@ export function createApp(db: Database) {
     assertWrite(member);
     const body = z.object({
       spaceId: z.string().optional(), name: z.string(), priority: z.number().int().default(100), matchMode: z.enum(["all", "any"]),
-      conditions: z.array(z.record(z.unknown())), actions: z.array(z.record(z.unknown())), enabled: z.boolean().default(true),
+      conditions: z.array(z.record(z.string(), z.unknown())), actions: z.array(z.record(z.string(), z.unknown())), enabled: z.boolean().default(true),
     }).parse(await c.req.json());
     if (body.spaceId) await assertSpace(me.id, member.householdId, body.spaceId);
     const ruleId = id();
@@ -2492,7 +2457,7 @@ export function createApp(db: Database) {
       rollover: z.enum(["both", "positive", "negative", "none", "capped"]).default("both"),
       rolloverCapMinor: money.optional(), purpose: z.string().optional(), icon: z.string().optional(),
       displayOrder: z.number().int().min(0).max(9999).optional(),
-      target: z.record(z.unknown()).nullable().optional(),
+      target: z.record(z.string(), z.unknown()).nullable().optional(),
     }).parse(raw);
     await assertSpace(me.id, member.householdId, body.spaceId);
     if (body.target) targetJson(body.target);
@@ -2715,7 +2680,7 @@ export function createApp(db: Database) {
 
   async function withInvestments(loaded: Awaited<ReturnType<typeof loadSpace>>) {
     const holdings = await db.query(`SELECT * FROM holdings WHERE household_id = $1`, [loaded.member.householdId]);
-    const quotes = await db.query(`SELECT * FROM quotes WHERE household_id = $1`, [loaded.member.householdId]);
+    const quotes = await db.query(`SELECT * FROM quotes WHERE household_id = $1 ORDER BY as_of DESC, saved_sequence DESC`, [loaded.member.householdId]);
     const overrides: { accountId: string; valueMinor: number }[] = [];
     const byAccount = new Map<string, number>();
     for (const holding of holdings) {
@@ -2768,9 +2733,9 @@ export function createApp(db: Database) {
 
   async function visibleAllocation(userId: string, householdId: string) {
     const holdings = await db.query(`SELECT * FROM holdings WHERE household_id = $1`, [householdId]);
-    const accountRows = await db.query(`SELECT id, visibility, owner_user_id FROM accounts WHERE household_id = $1`, [householdId]);
-    const visibleAccounts = new Set(accountRows.filter((account) => canSeeAccount(userId, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null })).map((account) => String(account.id)));
-    const quotes = await db.query(`SELECT * FROM quotes WHERE household_id = $1`, [householdId]);
+    const accountRows = await db.query(`SELECT a.id, a.visibility, a.owner_user_id, s.kind AS space_kind, s.owner_user_id AS space_owner FROM accounts a JOIN spaces s ON s.id = a.space_id AND s.household_id = a.household_id WHERE a.household_id = $1`, [householdId]);
+    const visibleAccounts = new Set(accountRows.filter((account) => canSeeAccount(userId, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null }) && !(account.space_kind === "personal" && account.space_owner && account.space_owner !== userId)).map((account) => String(account.id)));
+    const quotes = await db.query(`SELECT * FROM quotes WHERE household_id = $1 ORDER BY as_of DESC, saved_sequence DESC`, [householdId]);
     const positions = holdings.filter((row) => visibleAccounts.has(String(row.account_id))).map((row) => {
       const sameCurrency = quotes.find((item) => item.symbol === row.symbol && String(item.currency) === String(row.currency));
       const quote = sameCurrency ?? quotes.find((item) => item.symbol === row.symbol);
@@ -2821,6 +2786,9 @@ export function createApp(db: Database) {
     return { version: num(updated[0].version) };
   }
 
+  mountBankRoutes(app, db, actor, (user, householdId, body) => insertTransaction(user, householdId, transactionSchema.parse(body)).then((result) => ({ id: result.id ?? undefined })));
+  mountMarketRoutes(app, db, actor);
+  mountLiveMessages(app, db, actor);
   mountContinuation(app, db, {
     actor,
     insertTransaction: (user, householdId, body) => insertTransaction(user, householdId, body).then((result) => ({ id: result.id ?? undefined })),

@@ -22,7 +22,7 @@ export async function confirmAssistantAction(db: Database, actor: Actor, member:
   if (kind === "create_rule") {
     const rule = z.object({
       spaceId: z.string().optional(), name: z.string(), priority: z.number().int().default(100), matchMode: z.enum(["all", "any"]),
-      conditions: z.array(z.record(z.unknown())), actions: z.array(z.record(z.unknown())),
+      conditions: z.array(z.record(z.string(), z.unknown())), actions: z.array(z.record(z.string(), z.unknown())),
     }).parse(payload);
     const ruleId = id();
     await db.query(`INSERT INTO rules (id, household_id, space_id, name, priority, enabled, match_mode, conditions_json, actions_json) VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8)`, [ruleId, member.householdId, rule.spaceId ?? null, rule.name, rule.priority, rule.matchMode, JSON.stringify(rule.conditions), JSON.stringify(rule.actions)]);
