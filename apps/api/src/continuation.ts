@@ -226,7 +226,9 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
   app.post("/api/households/:hid/assistant/actions/preview", async (c) => {
     const me = await deps.actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
+    assertWrite(member);
     const body = z.object({ kind: z.enum(["create_transaction", "create_goal", "create_rule", "create_category", "set_category", "set_tags", "adjust_plan"]), payload: z.record(z.unknown()) }).parse(await c.req.json());
+    if (body.kind === "create_goal" || body.kind === "create_category" || body.kind === "adjust_plan") assertBudget(member);
     const actionId = id();
     await db.query(
       `INSERT INTO assistant_actions (id, household_id, user_id, kind, payload_json, result_json, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,

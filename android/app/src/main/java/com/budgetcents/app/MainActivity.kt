@@ -75,6 +75,8 @@ class MainActivity : FragmentActivity() {
             "transaction" -> "activity"
             "bill" -> "bills"
             "goal" -> "goals"
+            "account" -> "accounts"
+            "category" -> "categories"
             else -> host
         }
         return if (mapped == "invite" || pathToken != null) "invite" else mapped ?: "home"
@@ -82,7 +84,8 @@ class MainActivity : FragmentActivity() {
 
     private fun recordId(intent: Intent?): String? {
         val data = intent?.data ?: return null
-        return data.getQueryParameter("id") ?: data.lastPathSegment?.takeIf { data.host == "transaction" || data.host == "bill" || data.host == "goal" }
+        val recordHosts = setOf("transaction", "bill", "goal", "account", "accounts", "category", "categories")
+        return data.getQueryParameter("id") ?: data.lastPathSegment?.takeIf { data.host in recordHosts && it != data.host }
     }
 
     private fun linkToken(intent: Intent?): String? {

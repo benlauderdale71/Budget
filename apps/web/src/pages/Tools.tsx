@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, clearLocalSession, downloadFile } from "../api.js";
-import { parseAmount } from "../format.js";
+import { formatMoney, parseAmount } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
-import type { Dashboard } from "../types.js";
+import type { Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
 const moreLinks = [
@@ -46,10 +46,7 @@ export function Assistant() {
   const session = useSession();
   const [answer, setAnswer] = useState<{ text: string; facts: { label: string; formula?: string }[]; missing: string[] } | null>(null);
   const form = useFormError();
-  const action = useFormError();
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
-  const [proposal, setProposal] = useState<{ id: string; note: string } | null>(null);
-  const [actionNote, setActionNote] = useState("");
   return (
     <Page title="Assistant" lede="Questions are answered from figures BudgetCents already calculated. Text you paste is data, not an instruction to move money.">
       <form onSubmit={(event) => form.run(event, async () => {
@@ -61,44 +58,156 @@ export function Assistant() {
         <button className="btn" type="submit">Ask</button>
       </form>
       {answer ? <article className="card" style={{ marginTop: 16 }}><p>{answer.text}</p>{answer.facts.map((fact) => <p key={fact.label} className="formula">{fact.label}{fact.formula ? ` — ${fact.formula}` : ""}</p>)}{answer.missing.length ? <p>Missing: {answer.missing.join(", ")}</p> : null}</article> : null}
-      <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => action.run(event, async () => {
-        const data = new FormData(event.currentTarget);
-        const preview = await api<{ id: string; note: string }>(scoped(session.householdId, "/assistant/actions/preview"), { method: "POST", body: JSON.stringify({
-          kind: "create_transaction",
-          payload: {
-            date: data.get("date"), accountId: data.get("accountId"), amountMinor: -Math.abs(parseAmount(String(data.get("amount")), session.currency)),
-            type: "expense", payee: data.get("payee"), bankStatus: "posted", splits: data.get("bucketId") ? [{ bucketId: data.get("bucketId"), amountMinor: Math.abs(parseAmount(String(data.get("amount")), session.currency)), role: "expense" }] : [],
-          },
-        }) });
-        setProposal(preview);
-        setActionNote(preview.note);
-      })}>
-        <h2>Propose a transaction</h2>
-        <p className="muted">Preview does not change the register. Confirm uses the same save path as Activity, and undo is available only while that transaction is still untouched.</p>
+      <AssistantActions dash={dash.data} />
+    </Page>
+  );
+}
+
+const ASSISTANT_KINDS = [
+  ["create_transaction", "Transaction"],
+  ["create_category", "Category"],
+  ["set_category", "Categorize"],
+  ["set_tags", "Tags"],
+  ["create_rule", "Rule"],
+  ["create_goal", "Goal"],
+  ["adjust_plan", "Plan"],
+] as const;
+
+type AssistantKind = (typeof ASSISTANT_KINDS)[number][0];
+
+function AssistantActions({ dash }: { dash?: Dashboard }) {
+  const session = useSession();
+  const action = useFormError();
+  const txns = useLoad(() => api<{ transactions: Txn[] }>(scoped(session.householdId, "/transactions?limit=40")), [session.householdId, session.tick]);
+  const [kind, setKind] = useState<AssistantKind>("create_transaction");
+  const [proposal, setProposal] = useState<{ id: string; payload: Record<string, unknown>; summary: string } | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [note, setNote] = useState("");
+  const [auditLine, setAuditLine] = useState("");
+  const currency = session.currency || dash?.household.currency || "USD";
+  const buckets = dash?.buckets.filter((bucket) => !bucket.systemRole) ?? [];
+  function payloadFrom(data: FormData): Record<string, unknown> {
+    const spaceId = dash?.spaceId;
+    if (kind === "create_transaction") {
+      const amount = Math.abs(parseAmount(String(data.get("amount")), currency));
+      const bucketId = String(data.get("bucketId") || "");
+      return {
+        date: data.get("date"), accountId: data.get("accountId"), amountMinor: -amount, type: "expense", payee: data.get("payee"), bankStatus: "posted",
+        splits: bucketId ? [{ bucketId, amountMinor: amount, role: "expense" }] : [],
+      };
+    }
+    if (kind === "create_category") return { spaceId, name: data.get("name"), group: data.get("group") || "Spending", kind: data.get("categoryKind") || "expense", flexRole: data.get("flexRole") || "flexible" };
+    if (kind === "set_category" || kind === "set_tags") {
+      const txn = txns.data?.transactions.find((row) => row.id === data.get("transactionId"));
+      return kind === "set_category"
+        ? { transactionId: data.get("transactionId"), version: txn?.version ?? 1, bucketId: data.get("bucketId") }
+        : { transactionId: data.get("transactionId"), version: txn?.version ?? 1, tags: String(data.get("tags") || "").split(",").map((tag) => tag.trim()).filter(Boolean) };
+    }
+    if (kind === "create_rule") {
+      return {
+        spaceId, name: data.get("name"), priority: 50, matchMode: "all",
+        conditions: [{ field: "payee", op: "contains", value: data.get("payee") }],
+        actions: [{ type: "add_tag", value: data.get("tag") }],
+      };
+    }
+    if (kind === "create_goal") {
+      return { spaceId, name: data.get("name"), bucketId: data.get("bucketId"), targetMinor: Math.abs(parseAmount(String(data.get("amount")), currency)), purpose: "goal", targetDate: data.get("date") || undefined };
+    }
+    return { spaceId, bucketId: data.get("bucketId"), periodKey: dash?.budget.periodKey, amountMinor: Math.abs(parseAmount(String(data.get("amount")), currency)), planRevision: dash?.household.planRevision ?? 0 };
+  }
+  function describe(nextKind: AssistantKind, payload: Record<string, unknown>) {
+    const account = dash?.accounts.find((row) => row.id === payload.accountId)?.name ?? "the selected account";
+    const bucket = buckets.find((row) => row.id === payload.bucketId)?.name ?? "the selected category";
+    const txn = txns.data?.transactions.find((row) => row.id === payload.transactionId);
+    if (nextKind === "create_transaction") return `Expense ${formatMoney(Math.abs(Number(payload.amountMinor)), currency)} to ${String(payload.payee)} on ${String(payload.date)} from ${account}.`;
+    if (nextKind === "create_category") return `New ${String(payload.kind)} category ${String(payload.name)} in ${String(payload.group)}, ${String(payload.flexRole)}.`;
+    if (nextKind === "set_category") return `Set ${txn?.payee ?? "that transaction"} to ${bucket}.`;
+    if (nextKind === "set_tags") return `Set tags on ${txn?.payee ?? "that transaction"} to ${(payload.tags as string[]).join(", ") || "none"}.`;
+    if (nextKind === "create_rule") return `Rule ${String(payload.name)} adds the tag ${String((payload.actions as { value?: string }[])[0]?.value)} when the payee contains ${String((payload.conditions as { value?: string }[])[0]?.value)}.`;
+    if (nextKind === "create_goal") return `Goal ${String(payload.name)} for ${formatMoney(Number(payload.targetMinor), currency)} on ${bucket}.`;
+    return `Assign ${formatMoney(Number(payload.amountMinor), currency)} to ${bucket} for ${String(payload.periodKey)}.`;
+  }
+  async function rememberAudit(actionName: string) {
+    const audit = await api<{ events: { action: string; summary: string }[] }>(scoped(session.householdId, "/audit"));
+    setAuditLine(audit.events.find((event) => event.action === actionName)?.summary ?? "");
+  }
+  return (
+    <form id="assistant-action-fields" className="card" style={{ marginTop: 16 }} onSubmit={(event) => action.run(event, async () => {
+      const payload = payloadFrom(new FormData(event.currentTarget));
+      const preview = await api<{ id: string; note: string }>(scoped(session.householdId, "/assistant/actions/preview"), { method: "POST", body: JSON.stringify({ kind, payload }) });
+      setProposal({ id: preview.id, payload, summary: describe(kind, payload) });
+      setConfirmed(false);
+      setNote(`${preview.note} ${describe(kind, payload)}`);
+      setAuditLine("");
+    })}>
+      <h2>Propose a change</h2>
+      <p className="muted">Preview does not save. Edit the fields and preview again before confirming. Confirm uses the same save path as the rest of the household, and undo is refused after something else changes that record.</p>
+      <div className="row" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {ASSISTANT_KINDS.map(([id, label]) => <button className={kind === id ? "btn" : "btn-secondary"} key={id} type="button" onClick={() => { setKind(id); setProposal(null); setConfirmed(false); setNote(""); setAuditLine(""); }}>{label}</button>)}
+      </div>
+      {kind === "create_transaction" ? <>
         <Field label="Payee"><input name="payee" required /></Field>
         <Field label="Amount"><input name="amount" required inputMode="decimal" /></Field>
         <Field label="Date"><input name="date" type="date" required defaultValue="2026-11-12" /></Field>
-        <Field label="Account"><select name="accountId" required>{dash.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        <Field label="Category"><select name="bucketId"><option value="">Leave uncategorized</option>{dash.data?.buckets.filter((bucket) => !bucket.systemRole).map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
-        {action.error ? <Notice kind="bad">{action.error}</Notice> : null}
-        {actionNote ? <Notice>{actionNote}</Notice> : null}
-        <button className="btn" type="submit">Preview</button>
-        {proposal ? <button className="btn" type="button" onClick={async () => {
-          try {
-            const confirmed = await api<{ note: string }>(scoped(session.householdId, `/assistant/actions/${proposal.id}/confirm`), { method: "POST" });
-            setActionNote(confirmed.note);
-            session.bump();
-          } catch (caught) { setActionNote(caught instanceof Error ? caught.message : "That did not save."); }
-        }}>Confirm</button> : null}
-        {proposal ? <button className="btn-secondary" type="button" onClick={async () => {
-          try {
-            await api(scoped(session.householdId, `/assistant/actions/${proposal.id}/undo`), { method: "POST" });
-            setActionNote("The transaction was undone.");
-            session.bump();
-          } catch (caught) { setActionNote(caught instanceof Error ? caught.message : "That was not undone."); }
-        }}>Undo</button> : null}
-      </form>
-    </Page>
+        <Field label="Account"><select name="accountId" required>{dash?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        <Field label="Category"><select name="bucketId"><option value="">Leave uncategorized</option>{buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+      </> : null}
+      {kind === "create_category" ? <>
+        <Field label="Name"><input name="name" required /></Field>
+        <Field label="Group"><input name="group" defaultValue="Spending" /></Field>
+        <Field label="Kind"><select name="categoryKind"><option value="expense">Expense</option><option value="income">Income</option></select></Field>
+        <Field label="Role"><select name="flexRole"><option value="flexible">Flexible</option><option value="fixed">Fixed</option><option value="non_monthly">Non-monthly</option></select></Field>
+      </> : null}
+      {kind === "set_category" || kind === "set_tags" ? <>
+        <Field label="Transaction"><select name="transactionId" required>{txns.data?.transactions.map((txn) => <option key={txn.id} value={txn.id}>{txn.date} {txn.payee}</option>)}</select></Field>
+        {kind === "set_category" ? <Field label="Category"><select name="bucketId" required>{buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field> : <Field label="Tags"><input name="tags" required placeholder="food, weekly" /></Field>}
+      </> : null}
+      {kind === "create_rule" ? <>
+        <Field label="Rule name"><input name="name" required /></Field>
+        <Field label="Payee contains"><input name="payee" required /></Field>
+        <Field label="Tag to add"><input name="tag" required defaultValue="food" /></Field>
+      </> : null}
+      {kind === "create_goal" ? <>
+        <Field label="Goal name"><input name="name" required /></Field>
+        <Field label="Envelope"><select name="bucketId" required>{buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+        <Field label="Target"><input name="amount" required inputMode="decimal" /></Field>
+        <Field label="Target date"><input name="date" type="date" /></Field>
+      </> : null}
+      {kind === "adjust_plan" ? <>
+        <Field label="Category"><select name="bucketId" required>{buckets.map((bucket) => <option key={bucket.id} value={bucket.id}>{bucket.name}</option>)}</select></Field>
+        <Field label="Assigned amount"><input name="amount" required inputMode="decimal" /></Field>
+        <p className="muted">Period {dash?.budget.periodKey}. Plan revision {dash?.household.planRevision ?? 0}. A stale revision is refused and nothing is assigned.</p>
+      </> : null}
+      {action.error ? <Notice kind="bad">{action.error}</Notice> : null}
+      {note ? <Notice>{note}</Notice> : null}
+      {auditLine ? <p>Audit: {auditLine}</p> : null}
+      <button className="btn" type="submit">Preview</button>
+      {proposal ? <button className="btn" type="button" onClick={async (event) => {
+        const form = event.currentTarget.form;
+        if (!form) return;
+        try {
+          const current = payloadFrom(new FormData(form));
+          if (JSON.stringify(current) !== JSON.stringify(proposal.payload)) {
+            setNote("Those fields changed. Preview again. Nothing was saved.");
+            return;
+          }
+          const confirmedResult = await api<{ note: string }>(scoped(session.householdId, `/assistant/actions/${proposal.id}/confirm`), { method: "POST" });
+          setConfirmed(true);
+          setNote(confirmedResult.note);
+          await rememberAudit("assistant.confirm");
+          session.bump();
+        } catch (caught) { setNote(caught instanceof Error ? caught.message : "That did not save."); }
+      }}>Confirm</button> : null}
+      {proposal && confirmed ? <button className="btn-secondary" type="button" onClick={async () => {
+        try {
+          await api(scoped(session.householdId, `/assistant/actions/${proposal.id}/undo`), { method: "POST" });
+          setConfirmed(false);
+          setNote("That change was undone.");
+          await rememberAudit("assistant.undo");
+          session.bump();
+        } catch (caught) { setNote(caught instanceof Error ? caught.message : "That was not undone."); }
+      }}>Undo</button> : null}
+    </form>
   );
 }
 
@@ -364,12 +473,14 @@ export { Household } from "./Sharing.js";
 
 export function Providers() {
   const session = useSession();
-  const state = useLoad(() => api<{ providers: { id: string; name: string; group: string; status: string; needs: string; capabilities: string[] }[] }>("/api/providers"), []);
+  const state = useLoad(() => api<{ providers: { id: string; name: string; group: string; status: string; implementation?: string; needs: string; capabilities: string[] }[]; note?: string }>("/api/providers"), []);
   const dash = useLoad(() => session.householdId ? api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)) : Promise.resolve(null), [session.householdId, session.spaceId]);
   const [note, setNote] = useState("");
+  const [attemptId, setAttemptId] = useState("");
+  const [attemptStatus, setAttemptStatus] = useState("");
   if (!state.data) return <Loading />;
   return (
-    <Page title="Connections" lede="Manual entry and file import work now. Other providers stay off until their credentials and consent are configured. Nothing here pretends a bank or bureau responded.">
+    <Page title="Connections" lede="Manual entry, file import, and the built-in sandbox fixtures work now. A missing row has no adapter. A test sink can accept a message, and that acceptance is not delivery.">
       <article className="card" style={{ marginBottom: 12 }}>
         <h2>Sandbox bank</h2>
         <p>Connect imports the built-in test history into Sandbox Checking. Sync posts the pending line in place and adds the next fixture. This is not your bank.</p>
@@ -397,23 +508,47 @@ export function Providers() {
         const data = new FormData(event.currentTarget);
         try {
           await api("/api/messages/enrollment", { method: "POST", body: JSON.stringify({ channel: data.get("channel"), destinationLabel: data.get("label"), consent: true }) });
-          const sent = await api<{ status: string; note: string; provenDelivered: boolean }>("/api/notifications/test", { method: "POST", body: JSON.stringify({ channel: data.get("channel"), outcome: "accepted" }) });
-          setNote(`${sent.status}. ${sent.note}`);
+          setNote("Consent is stored. No message was sent.");
         } catch (caught) {
-          setNote(caught instanceof Error ? caught.message : "The test was not sent.");
+          setNote(caught instanceof Error ? caught.message : "Consent was not stored.");
         }
       }}>
         <h2>Message enrollment</h2>
         <p className="muted">Consent is stored even when no live provider is connected. A test sink can accept a message. Accepted is not delivered.</p>
-        <Field label="Channel"><select name="channel"><option value="email">Email</option><option value="sms">SMS</option><option value="push">Push</option></select></Field>
+        <Field label="Channel"><select name="channel" id="message-channel"><option value="email">Email</option><option value="sms">SMS</option><option value="push">Push</option></select></Field>
         <Field label="Label"><input name="label" required defaultValue="test inbox" /></Field>
-        <button className="btn" type="submit">Save consent and send a test</button>
+        <button className="btn" type="submit">Save consent</button>
+        <button className="btn-secondary" type="button" onClick={async () => {
+          const channel = (document.getElementById("message-channel") as HTMLSelectElement).value;
+          try {
+            const sent = await api<{ id: string; status: string; note: string; provenDelivered: boolean }>("/api/notifications/test", { method: "POST", body: JSON.stringify({ channel, outcome: "rejected" }) });
+            setAttemptId(sent.id);
+            setAttemptStatus(sent.status);
+            setNote(`${sent.status}. ${sent.note} Proven delivered: ${sent.provenDelivered}.`);
+          } catch (caught) { setNote(caught instanceof Error ? caught.message : "The test was not sent."); }
+        }}>Send a rejected test</button>
+        <button className="btn-secondary" type="button" disabled={!attemptId || attemptStatus !== "failed"} onClick={async () => {
+          try {
+            const retried = await api<{ id: string; status: string; note: string; provenDelivered: boolean }>(`/api/notifications/test/${attemptId}/retry`, { method: "POST" });
+            setAttemptId(retried.id);
+            setAttemptStatus(retried.status);
+            setNote(`Retry ${retried.status}. ${retried.note} Proven delivered: ${retried.provenDelivered}.`);
+          } catch (caught) { setNote(caught instanceof Error ? caught.message : "That was not retried."); }
+        }}>Retry failed test</button>
+        <button className="btn-secondary" type="button" onClick={async () => {
+          const channel = (document.getElementById("message-channel") as HTMLSelectElement).value;
+          try {
+            const opted = await api<{ note: string }>("/api/messages/opt-out", { method: "POST", body: JSON.stringify({ channel }) });
+            setNote(opted.note);
+          } catch (caught) { setNote(caught instanceof Error ? caught.message : "Opt-out was not saved."); }
+        }}>Opt out</button>
       </form>
       {note ? <Notice>{note}</Notice> : null}
+      {state.data.note ? <p className="muted">{state.data.note}</p> : null}
       {state.data.providers.map((provider) => (
         <article key={provider.id} className="card" style={{ marginBottom: 12 }}>
           <div className="link-row"><h2>{provider.name}</h2><span>{provider.status.replaceAll("_", " ")}</span></div>
-          <p className="muted">{provider.group} · {provider.capabilities.join(", ")}</p>
+          <p className="muted">{provider.group} · {provider.implementation ?? provider.status} · {provider.capabilities.join(", ")}</p>
           <p>{provider.needs}</p>
         </article>
       ))}

@@ -76,3 +76,6 @@ class BudgetApi(private val store: Store) {
         return json
     }
 }
+
+/** JSON null is not a value. Android's optString turns it into the word "null". */
+fun JSONObject.hasText(key: String): Boolean = !isNull(key) && optString(key).isNotBlank()

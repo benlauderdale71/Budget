@@ -150,6 +150,10 @@ function NewBucket({ spaceId, locked }: { spaceId: string; locked: boolean }) {
   const session = useSession();
   const [open, setOpen] = useState(false);
   const form = useFormError();
+  useEffect(() => {
+    if (!open) return;
+    return session.holdDraft();
+  }, [open, session]);
   if (!open) return <button className="btn" type="button" disabled={locked} onClick={() => setOpen(true)}>New category</button>;
   return (
     <Modal title="New category" onClose={() => setOpen(false)}>
@@ -188,6 +192,7 @@ function NewBucket({ spaceId, locked }: { spaceId: string; locked: boolean }) {
 function MoveMoney({ buckets, periodKey, spaceId, currency, planRevision, onClose }: { buckets: Bucket[]; periodKey: string; spaceId: string; currency: string; planRevision: number; onClose: () => void }) {
   const session = useSession();
   const form = useFormError();
+  useEffect(() => session.holdDraft(), [session]);
   const choices = buckets.filter((bucket) => !bucket.systemRole);
   return (
     <Modal title="Move money" onClose={onClose}>
@@ -361,6 +366,11 @@ function Fills({ dash }: { dash: Dashboard }) {
 function FillEditor({ dash, choices, existing, locked, onDone }: { dash: Dashboard; choices: Bucket[]; existing: FillRow | null; locked: boolean; onDone: () => void }) {
   const session = useSession();
   const form = useFormError();
+  const [editingDraft, setEditingDraft] = useState(false);
+  useEffect(() => {
+    if (!editingDraft) return;
+    return session.holdDraft();
+  }, [editingDraft, session]);
   const [preview, setPreview] = useState("");
   const [name, setName] = useState(existing?.name ?? "Payday fill");
   const [cadence, setCadence] = useState(existing?.cadence ?? "monthly");
@@ -412,7 +422,7 @@ function FillEditor({ dash, choices, existing, locked, onDone }: { dash: Dashboa
     setLines(next.map((line, lineIndex) => ({ ...line, priority: String(lineIndex + 1) })));
   }
   return (
-    <form id={existing ? "fill-edit" : "fill-create"} className="card" onSubmit={(event) => form.run(event, async () => {
+    <form id={existing ? "fill-edit" : "fill-create"} className="card" onFocus={() => setEditingDraft(true)} onSubmit={(event) => form.run(event, async () => {
       const body = payload();
       if (existing) await api(scoped(session.householdId, `/fills/${existing.id}`), { method: "PATCH", body: JSON.stringify(body) });
       else await api(scoped(session.householdId, "/fills"), { method: "POST", body: JSON.stringify(body) });
@@ -562,13 +572,18 @@ interface LineDraft {
 
 function IncomePlan({ currency, buckets }: { currency: string; buckets: Bucket[] }) {
   const session = useSession();
+  const [editingDraft, setEditingDraft] = useState(false);
+  useEffect(() => {
+    if (!editingDraft) return;
+    return session.holdDraft();
+  }, [editingDraft, session]);
   const state = useLoad(() => api<{ plannedMinor: number; expectedIncomeMinor: number; unplannedMinor: number; balanced: boolean; note: string; lines: { bucketId: string; plannedMinor: number }[]; periodKey: string; spaceId: string }>(scoped(session.householdId, "/income-plan", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   const form = useFormError();
   if (state.loading && !state.data) return <Loading label="Loading the income plan" />;
   if (!state.data) return <ErrorNote message={state.error ?? "No income plan"} />;
   const plan = state.data;
   return (
-    <form className="card" onSubmit={(event) => form.run(event, async () => {
+    <form className="card" onFocus={() => setEditingDraft(true)} onSubmit={(event) => form.run(event, async () => {
       const data = new FormData(event.currentTarget);
       const lines = buckets.filter((bucket) => bucket.kind === "expense" && !bucket.systemRole).map((bucket) => ({
         bucketId: bucket.id, plannedMinor: parseAmount(String(data.get(bucket.id) || "0"), currency),

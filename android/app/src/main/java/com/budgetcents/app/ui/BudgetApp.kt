@@ -2,6 +2,7 @@ package com.budgetcents.app.ui
 
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -46,9 +47,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
 import com.budgetcents.app.ApiException
 import com.budgetcents.app.BudgetApi
+import com.budgetcents.app.hasText
 import com.budgetcents.app.MainActivity
 import com.budgetcents.app.R
 import com.budgetcents.app.Store
+import com.budgetcents.app.widget.WidgetHostActivity
 import com.budgetcents.app.widget.refreshWidgets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -72,28 +75,6 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
     var token by remember { mutableStateOf(store.token) }
     var locked by remember { mutableStateOf(store.biometric && store.token != null) }
     var linkNote by remember { mutableStateOf("") }
-    LaunchedEffect(recordId, token, locked) {
-        if (recordId.isNullOrBlank()) {
-            linkNote = ""
-        } else if (token == null) {
-            linkNote = "Sign in to open this record."
-        } else if (locked) {
-            linkNote = "This link waits until you unlock. Amounts stay hidden."
-        } else if (activity.navigation.value == "activity") {
-            val hid = store.householdId
-            if (!hid.isNullOrBlank()) {
-                try {
-                    val body = withContext(Dispatchers.IO) { api.request("GET", "/api/households/$hid/transactions?ids=$recordId&limit=1") }
-                    val rows = body.optJSONArray("transactions")
-                    linkNote = if (rows == null || rows.length() == 0) "That record is not available to you." else "Opened the linked record. Amounts follow your privacy setting."
-                } catch (caught: ApiException) {
-                    linkNote = if (caught.status == 403 || caught.status == 404) "That record is not available to you." else (caught.message ?: "")
-                }
-            }
-        } else {
-            linkNote = "Opened from a link. Amounts follow your privacy setting."
-        }
-    }
     val host by activity.navigation
     var tab by rememberSaveable { mutableIntStateOf(tabIndex(start)) }
     var page by rememberSaveable { mutableStateOf(subpage(start)) }
@@ -109,6 +90,50 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
     var error by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var dash by remember { mutableStateOf<JSONObject?>(null) }
+    LaunchedEffect(recordId, token, locked, host, dash) {
+        val id = recordId
+        if (id.isNullOrBlank()) {
+            linkNote = ""
+            return@LaunchedEffect
+        }
+        if (token == null) {
+            linkNote = "Sign in to open this record."
+            return@LaunchedEffect
+        }
+        if (locked) {
+            linkNote = "This link waits until you unlock. Amounts stay hidden."
+            return@LaunchedEffect
+        }
+        val hid = store.householdId
+        if (hid.isNullOrBlank()) {
+            linkNote = "Sign in to a household to open this record."
+            return@LaunchedEffect
+        }
+        if ((host == "accounts" || host == "categories" || host == "goals") && dash == null) {
+            linkNote = "Checking whether this record is available."
+            return@LaunchedEffect
+        }
+        try {
+            val visible = withContext(Dispatchers.IO) {
+                when (host) {
+                    "activity" -> {
+                        val body = api.request("GET", "/api/households/$hid/transactions?ids=$id&limit=1")
+                        (body.optJSONArray("transactions")?.length() ?: 0) > 0
+                    }
+                    "bills" -> arrayHas(api.request("GET", "/api/households/$hid/schedules").optJSONArray("schedules"), id)
+                    "accounts" -> arrayHas(dash?.optJSONArray("accounts"), id)
+                    "categories" -> arrayHas(dash?.optJSONArray("buckets"), id)
+                    "goals" -> arrayHas(dash?.optJSONArray("goals"), id)
+                    else -> true
+                }
+            }
+            linkNote = if (visible) "Opened the linked record. Amounts follow your privacy setting." else "That record is not available to you."
+        } catch (caught: ApiException) {
+            linkNote = if (caught.status == 403 || caught.status == 404) "That record is not available to you." else (caught.message ?: "")
+        } catch (_: Exception) {
+            linkNote = "That record is not available to you."
+        }
+    }
     var txns by remember { mutableStateOf<JSONObject?>(null) }
     var activityIds by remember { mutableStateOf<String?>(null) }
     var activityLabel by remember { mutableStateOf("") }
@@ -130,6 +155,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         scope.launch {
             error = ""
             status = ""
+            refreshWidgets(context)
             try {
                 val flush = flushQueue(api, store)
                 val loaded = withContext(Dispatchers.IO) { api.dashboard(hid) }
@@ -149,7 +175,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                 val label = if (short) "Short" else "Safe to spend"
                 store.summary = "$label ${money(amount, store.privacy)}"
                 store.saveDashboardCache(loaded.toString())
-                store.widgetFacts = widgetFacts(loaded, store.privacy || store.biometric)
+                store.widgetFacts = widgetFacts(loaded, store.privacy || store.biometric, fresh = true)
                 refreshWidgets(context)
                 notifyAlerts(context, loaded, store)
                 if (flush.rejected.isNotBlank()) error = flush.rejected
@@ -159,7 +185,10 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                 else if (caught is java.io.IOException) {
                     val saved = store.cachedDashboard()
                     if (saved != null) {
-                        dash = JSONObject(saved)
+                        val cached = JSONObject(saved)
+                        dash = cached
+                        store.widgetFacts = widgetFacts(cached, store.privacy || store.biometric, fresh = false)
+                        refreshWidgets(context)
                         status = "Showing saved figures from this device. They are not the current ledger."
                     }
                 }
@@ -174,7 +203,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         lightColorScheme(primary = Teal, onPrimary = Color.White, background = Color(0xFFF3F6F4), surface = Color.White)
     }) {
         if (token == null) {
-            SignIn(store, api, error, start, linkToken, { openSetup = true }) { message ->
+            SignIn(store, api, error, start, linkToken, if (recordId.isNullOrBlank()) "" else "Sign in to open this record.", { openSetup = true }) { message ->
                 if (message != null) error = message else {
                     token = store.token
                     themeName = store.theme
@@ -234,6 +263,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
             Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("BudgetCents", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
                 Text("Unlock this device to see the household.")
+                if (linkNote.isNotBlank()) Text(linkNote)
                 Button(onClick = { activity.unlock({ locked = false; reload() }, { error = it }) }) { Text("Unlock") }
                 if (error.isNotBlank()) Text(error)
             }
@@ -402,6 +432,7 @@ private fun SignIn(
     error: String,
     start: String,
     linkToken: String?,
+    notice: String,
     onRegistered: () -> Unit,
     done: (String?) -> Unit,
 ) {
@@ -420,6 +451,7 @@ private fun SignIn(
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("BudgetCents", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+        if (notice.isNotBlank()) Text(notice)
         Text("Same household as the web app. The emulator reaches a computer at 10.0.2.2.", color = Ink)
         OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -579,7 +611,7 @@ private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssi
     for (index in 0 until rows.length()) {
         val row = rows.getJSONObject(index)
         val meta = (0 until buckets.length()).map { buckets.getJSONObject(it) }.find { it.optString("id") == row.optString("bucketId") }
-        if (meta?.optString("systemRole").isNullOrBlank().not()) continue
+        if (meta?.hasText("systemRole") == true) continue
         val bucketId = row.optString("bucketId")
         var text by remember(bucketId) { mutableStateOf((row.optLong("assignedMinor") / 100.0).let { if (it == 0.0) "" else money(row.optLong("assignedMinor"), false).removePrefix("$") }) }
         Text("${row.optString("name")} available ${money(row.optLong("availableMinor"), privacy)} · ${meta?.optString("flexRole") ?: "category"}")
@@ -670,7 +702,7 @@ private fun ActivityTab(
         TextButton(onClick = { bucketId = "" }) { Text(if (bucketId.isBlank()) "Selected · Uncategorized" else "Uncategorized") }
         for (index in 0 until buckets.length()) {
             val bucket = buckets.getJSONObject(index)
-            if (bucket.optString("systemRole").isNotBlank()) continue
+            if (bucket.hasText("systemRole")) continue
             val wanted = if (type == "income") "income" else "expense"
             if (bucket.optString("kind") != wanted) continue
             TextButton(onClick = { bucketId = bucket.optString("id") }) {
@@ -786,7 +818,7 @@ private fun TransactionEditor(row: JSONObject, accounts: JSONArray, buckets: JSO
                 TextButton(onClick = { drafts = drafts.mapIndexed { index, item -> if (index == splitIndex) item.copy(bucketId = "") else item } }) { Text(if (draft.bucketId.isBlank()) "Category · Uncategorized" else "Uncategorized") }
                 for (index in 0 until buckets.length()) {
                     val bucket = buckets.getJSONObject(index)
-                    if (bucket.optString("systemRole").isNotBlank()) continue
+                    if (bucket.hasText("systemRole")) continue
                     TextButton(onClick = { drafts = drafts.mapIndexed { itemIndex, item -> if (itemIndex == splitIndex) item.copy(bucketId = bucket.optString("id")) else item } }) {
                         Text(if (bucket.optString("id") == draft.bucketId) "Category · ${bucket.optString("name")}" else bucket.optString("name"))
                     }
@@ -851,6 +883,7 @@ private fun WealthTab(dash: JSONObject?, privacy: Boolean, open: (String) -> Uni
 
 @Composable
 private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> Unit, reload: () -> Unit, signOut: () -> Unit) {
+    val context = LocalContext.current
     var biometric by remember { mutableStateOf(store.biometric) }
     var privacy by remember { mutableStateOf(store.privacy) }
     Text("Waiting to sync: ${store.pendingForCurrentUser().size}")
@@ -895,6 +928,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
         TextButton(onClick = { open(id) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
     }
     Text("Bank, credit, and negotiation connections stay disconnected until a provider is configured. The Connections screen shows each requirement.")
+    TextButton(onClick = { context.startActivity(Intent(context, WidgetHostActivity::class.java)) }, modifier = Modifier.fillMaxWidth()) { Text("Place a widget") }
     TextButton(onClick = signOut) { Text("Sign out") }
 }
 
@@ -956,7 +990,13 @@ private suspend fun flushQueue(api: BudgetApi, store: Store): FlushResult = with
     FlushResult(sent, rejected)
 }
 
-private fun widgetFacts(dash: JSONObject, hidden: Boolean): String {
+private fun arrayHas(rows: JSONArray?, id: String): Boolean {
+    if (rows == null) return false
+    for (index in 0 until rows.length()) if (rows.getJSONObject(index).optString("id") == id) return true
+    return false
+}
+
+private fun widgetFacts(dash: JSONObject, hidden: Boolean, fresh: Boolean): String {
     val buckets = dash.optJSONArray("buckets") ?: JSONArray()
     val budget = dash.optJSONObject("budget")?.optJSONArray("buckets") ?: JSONArray()
     fun available(id: String): Long {
@@ -966,30 +1006,37 @@ private fun widgetFacts(dash: JSONObject, hidden: Boolean): String {
         }
         return 0
     }
-    var category = "No category yet"
+    val categories = JSONObject()
     var flex = 0L
     for (index in 0 until buckets.length()) {
         val bucket = buckets.getJSONObject(index)
-        if (bucket.optString("flexRole") != "flexible") continue
-        val amount = available(bucket.optString("id"))
-        flex += amount
-        if (category == "No category yet") category = if (hidden) bucket.optString("name") else "${bucket.optString("name")} ${money(amount, false)}"
+        if (bucket.hasText("systemRole")) continue
+        val id = bucket.optString("id")
+        val amount = available(id)
+        categories.put(id, if (hidden) bucket.optString("name") else "${bucket.optString("name")} ${money(amount, false)}")
+        if (bucket.optString("flexRole") == "flexible") flex += amount
     }
-    val upcoming = dash.optJSONArray("upcoming")
-    val bill = if (upcoming == null || upcoming.length() == 0) "No upcoming bill" else {
-        val event = upcoming.getJSONObject(0)
-        if (hidden) event.optString("label", "Bill") else "${event.optString("label", "Bill")} ${event.optString("date")}"
+    val bills = JSONObject()
+    val upcoming = dash.optJSONArray("upcoming") ?: JSONArray()
+    for (index in 0 until upcoming.length()) {
+        val event = upcoming.getJSONObject(index)
+        val id = event.optString("scheduleId").ifBlank { event.optString("id") }
+        if (id.isBlank() || bills.has(id)) continue
+        bills.put(id, if (hidden) event.optString("label", "Bill") else "${event.optString("label", "Bill")} ${event.optString("date")}")
     }
-    val goals = dash.optJSONArray("goals")
-    val goal = if (goals == null || goals.length() == 0) "No goal yet" else {
-        val row = goals.getJSONObject(0)
-        if (hidden) row.optString("name") else "${row.optString("name")} ${money(row.optLong("availableMinor"), false)}"
+    val goals = JSONObject()
+    val goalRows = dash.optJSONArray("goals") ?: JSONArray()
+    for (index in 0 until goalRows.length()) {
+        val row = goalRows.getJSONObject(index)
+        goals.put(row.optString("id"), if (hidden) row.optString("name") else "${row.optString("name")} ${money(row.optLong("availableMinor"), false)}")
     }
     return JSONObject()
-        .put("category", category)
+        .put("fresh", fresh)
+        .put("householdId", dash.optJSONObject("household")?.optString("householdId") ?: "")
+        .put("categories", categories)
+        .put("bills", bills)
+        .put("goals", goals)
         .put("flex", if (hidden) "Flexible spending hidden" else "Flexible ${money(flex, false)}")
-        .put("bill", bill)
-        .put("goal", goal)
         .put("quick", "Add a transaction")
         .toString()
 }

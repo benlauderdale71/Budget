@@ -230,6 +230,17 @@ describe("assistant, learning, and test delivery", () => {
     await db.query(`UPDATE memberships SET role = 'readonly' WHERE user_id = $1`, [owner.userId]);
     const denied = await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${preview.body.id}/undo`, { method: "POST", headers: auth(owner.token) }));
     expect(denied.status).toBe(403);
+    const previewDenied = await json(await api.request(`/api/households/${owner.hid}/assistant/actions/preview`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ kind: "create_category", payload: { spaceId: owner.spaceId, name: "Blocked", group: "Spending", kind: "expense", flexRole: "flexible" } }),
+    }));
+    expect(previewDenied.status).toBe(403);
+    await db.query(`UPDATE memberships SET role = 'contributor' WHERE user_id = $1`, [owner.userId]);
+    const budgetDenied = await json(await api.request(`/api/households/${owner.hid}/assistant/actions/preview`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ kind: "adjust_plan", payload: { spaceId: owner.spaceId, bucketId: groceries!.id, periodKey: "2026-11", amountMinor: 100, planRevision: mid.body.household.planRevision } }),
+    }));
+    expect(budgetDenied.status).toBe(403);
     await db.query(`UPDATE memberships SET role = 'owner' WHERE user_id = $1`, [owner.userId]);
     expect((await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${planned.body.id}/undo`, { method: "POST", headers: auth(owner.token) }))).status).toBe(200);
     expect((await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${tagged.body.id}/undo`, { method: "POST", headers: auth(owner.token) }))).status).toBe(200);
@@ -322,5 +333,138 @@ describe("assistant, learning, and test delivery", () => {
     expect(preview.body.note).toMatch(/did not save/);
     const after = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [owner.hid]);
     expect(Number(after[0].n)).toBe(Number(before[0].n));
+  });
+});
+
+describe("reconciliation and assistant surfaces", () => {
+  it("compares without writing, posts one adjustment, and unlocks only with a reason", async () => {
+    const api = await app();
+    const owner = await register(api, "reconcile@example.com");
+    const account = await json(await api.request(`/api/households/${owner.hid}/accounts`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ spaceId: owner.spaceId, name: "Checking", kind: "checking", onBudget: true, openingBalanceMinor: 0, openingDate: "2026-11-01" }),
+    }));
+    const expense = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ date: "2026-11-02", accountId: account.body.id, amountMinor: -500, type: "expense", payee: "Market", bankStatus: "posted", splits: [] }),
+    }));
+    const before = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1 AND deleted = 0`, [owner.hid]);
+    const preview = await json(await api.request(`/api/households/${owner.hid}/reconcile`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, statementDate: "2026-11-30", statementBalanceMinor: -400, clearedIds: [expense.body.id], lock: true, mode: "preview" }),
+    }));
+    expect(preview.status).toBe(200);
+    expect(preview.body.wrote).toBe(false);
+    expect(preview.body.locked).toBe(false);
+    expect(preview.body.differenceMinor).toBe(100);
+    expect(preview.body.canLock).toBe(false);
+    const flags = await db.query(`SELECT cleared, reconciled, locked FROM transactions WHERE id = $1`, [expense.body.id]);
+    expect(Number(flags[0].cleared)).toBe(0);
+    expect(Number(flags[0].reconciled)).toBe(0);
+    const refused = await json(await api.request(`/api/households/${owner.hid}/reconcile`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, statementDate: "2026-11-30", statementBalanceMinor: -400, clearedIds: [expense.body.id], lock: true, mode: "commit", versions: [{ id: expense.body.id, version: 1 }] }),
+    }));
+    expect(refused.status).toBe(409);
+    expect(Number((await db.query(`SELECT reconciled FROM transactions WHERE id = $1`, [expense.body.id]))[0].reconciled)).toBe(0);
+    const adjustmentPreview = await json(await api.request(`/api/households/${owner.hid}/reconcile/adjustment`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, date: "2026-11-30", amountMinor: 100, payee: "Reconciliation adjustment", preview: true }),
+    }));
+    expect(adjustmentPreview.body.wrote).toBe(false);
+    expect(Number((await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1 AND deleted = 0`, [owner.hid]))[0].n)).toBe(Number(before[0].n));
+    const opId = "recon-adjust-once-01";
+    const posted = await json(await api.request(`/api/households/${owner.hid}/reconcile/adjustment`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, date: "2026-11-30", amountMinor: 100, payee: "Reconciliation adjustment", opId, reason: "Statement fee" }),
+    }));
+    expect(posted.status).toBe(201);
+    const again = await json(await api.request(`/api/households/${owner.hid}/reconcile/adjustment`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, date: "2026-11-30", amountMinor: 100, payee: "Reconciliation adjustment", opId, reason: "Statement fee" }),
+    }));
+    expect(again.body.duplicate).toBe(true);
+    expect(again.body.wrote).toBe(false);
+    const adjustments = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1 AND type = 'reconciliation' AND deleted = 0`, [owner.hid]);
+    expect(Number(adjustments[0].n)).toBe(1);
+    const balanced = await json(await api.request(`/api/households/${owner.hid}/reconcile`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        accountId: account.body.id, statementDate: "2026-11-30", statementBalanceMinor: -400,
+        clearedIds: [expense.body.id, posted.body.id], lock: true, mode: "commit",
+        versions: [{ id: expense.body.id, version: 1 }, { id: posted.body.id, version: 1 }],
+      }),
+    }));
+    expect(balanced.status).toBe(200);
+    expect(balanced.body.locked).toBe(true);
+    expect(balanced.body.differenceMinor).toBe(0);
+    await api.request(`/api/households/${owner.hid}/transactions/${expense.body.id}`, {
+      method: "PATCH", headers: auth(owner.token),
+      body: JSON.stringify({ payee: "Market edited", version: 1, reason: "Correct the payee" }),
+    });
+    const stale = await json(await api.request(`/api/households/${owner.hid}/reconcile/unlock`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, transactionIds: [expense.body.id], reason: "Need to edit", versions: [{ id: expense.body.id, version: 1 }] }),
+    }));
+    expect(stale.status).toBe(409);
+    expect(Number((await db.query(`SELECT locked FROM transactions WHERE id = $1`, [expense.body.id]))[0].locked)).toBe(1);
+    const missingReason = await json(await api.request(`/api/households/${owner.hid}/reconcile/unlock`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, transactionIds: [expense.body.id], versions: [{ id: expense.body.id, version: 2 }] }),
+    }));
+    expect(missingReason.status).toBe(400);
+    const unlocked = await json(await api.request(`/api/households/${owner.hid}/reconcile/unlock`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ accountId: account.body.id, transactionIds: [expense.body.id], reason: "Bank corrected the payee", versions: [{ id: expense.body.id, version: 2 }] }),
+    }));
+    expect(unlocked.status).toBe(200);
+    expect(Number((await db.query(`SELECT locked FROM transactions WHERE id = $1`, [expense.body.id]))[0].locked)).toBe(0);
+    const audit = await json(await api.request(`/api/households/${owner.hid}/audit`, { headers: auth(owner.token) }));
+    expect(audit.body.events.some((event: { summary: string }) => event.summary.includes("Bank corrected the payee"))).toBe(true);
+    expect(audit.body.events.some((event: { summary: string }) => event.summary.includes("Statement fee"))).toBe(true);
+  });
+
+  it("previews a goal and a rule without writing, then confirms and undoes each once", async () => {
+    const api = await app();
+    const owner = await register(api, "goal-rule@example.com");
+    const groceries = owner.buckets.find((bucket) => bucket.name === "Groceries");
+    const goalsBefore = await db.query(`SELECT count(*) AS n FROM goals WHERE household_id = $1`, [owner.hid]);
+    const rulesBefore = await db.query(`SELECT count(*) AS n FROM rules WHERE household_id = $1`, [owner.hid]);
+    const goal = await json(await api.request(`/api/households/${owner.hid}/assistant/actions/preview`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({ kind: "create_goal", payload: { spaceId: owner.spaceId, name: "Trip", bucketId: groceries!.id, targetMinor: 5000, purpose: "goal" } }),
+    }));
+    const rule = await json(await api.request(`/api/households/${owner.hid}/assistant/actions/preview`, {
+      method: "POST", headers: auth(owner.token),
+      body: JSON.stringify({
+        kind: "create_rule",
+        payload: { name: "Tag market", matchMode: "all", conditions: [{ field: "payee", op: "contains", value: "market" }], actions: [{ type: "add_tag", value: "food" }] },
+      }),
+    }));
+    expect(Number((await db.query(`SELECT count(*) AS n FROM goals WHERE household_id = $1`, [owner.hid]))[0].n)).toBe(Number(goalsBefore[0].n));
+    expect(Number((await db.query(`SELECT count(*) AS n FROM rules WHERE household_id = $1`, [owner.hid]))[0].n)).toBe(Number(rulesBefore[0].n));
+    expect((await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${goal.body.id}/confirm`, { method: "POST", headers: auth(owner.token) }))).status).toBe(200);
+    expect((await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${rule.body.id}/confirm`, { method: "POST", headers: auth(owner.token) }))).status).toBe(200);
+    const repeat = await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${goal.body.id}/confirm`, { method: "POST", headers: auth(owner.token) }));
+    expect(repeat.status).toBe(409);
+    expect((await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${goal.body.id}/undo`, { method: "POST", headers: auth(owner.token) }))).status).toBe(200);
+    expect((await json(await api.request(`/api/households/${owner.hid}/assistant/actions/${rule.body.id}/undo`, { method: "POST", headers: auth(owner.token) }))).status).toBe(200);
+    expect(Number((await db.query(`SELECT count(*) AS n FROM goals WHERE household_id = $1`, [owner.hid]))[0].n)).toBe(Number(goalsBefore[0].n));
+    expect(Number((await db.query(`SELECT count(*) AS n FROM rules WHERE household_id = $1`, [owner.hid]))[0].n)).toBe(Number(rulesBefore[0].n));
+  });
+
+  it("labels fixtures, test sinks, and missing adapters separately", async () => {
+    const api = await app();
+    const owner = await register(api, "providers@example.com");
+    const listed = await json(await api.request("/api/providers", { headers: auth(owner.token) }));
+    const byId = Object.fromEntries(listed.body.providers.map((provider: { id: string }) => [provider.id, provider]));
+    expect(byId["sandbox-bank"].status).toBe("fixture");
+    expect(byId.aggregation.status).toBe("missing");
+    expect(byId.aggregation.needs).toMatch(/No aggregation client/);
+    expect(byId.sms.status).toBe("test_sink");
+    expect(byId.push.status).toBe("test_sink");
+    expect(byId.smtp.status).toBe("local_outbox");
+    expect(byId.coaching.status).toBe("missing");
+    expect(listed.body.note).toMatch(/test sink/);
   });
 });

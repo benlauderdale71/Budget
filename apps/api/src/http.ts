@@ -1,4 +1,4 @@
-import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize } from "@budgetcents/domain";
+import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
@@ -1835,8 +1835,10 @@ export function createApp(db: Database) {
 
   app.get("/api/providers", async (c) => {
     await actor(c);
-    const smtp = process.env.SMTP_URL ? "configured" : "local_outbox";
-    return c.json({ providers: PROVIDERS.map((provider) => provider.id === "smtp" ? { ...provider, status: smtp } : provider) });
+    return c.json({
+      providers: PROVIDERS,
+      note: "A fixture or a test sink is not a live provider. Missing means no adapter is implemented. A stored request is not a completed service.",
+    });
   });
 
   app.get("/api/lessons", async (c) => {
@@ -2032,73 +2034,139 @@ export function createApp(db: Database) {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ accountId: z.string(), statementDate: z.string(), statementBalanceMinor: money, clearedIds: z.array(z.string()), lock: z.boolean().default(false) }).parse(await c.req.json());
+    const body = z.object({
+      accountId: z.string(),
+      statementDate: z.string(),
+      statementBalanceMinor: money,
+      clearedIds: z.array(z.string()),
+      lock: z.boolean().default(false),
+      mode: z.enum(["preview", "commit"]).default("preview"),
+      versions: z.array(z.object({ id: z.string(), version: z.number().int().positive() })).default([]),
+    }).parse(await c.req.json());
     const account = await mustAccount(me.id, member.householdId, body.accountId);
     const loaded = await loadSpace(db, me, member.householdId, String(account.space_id), body.statementDate);
-    const onAccount = new Map(loaded.input.transactions.filter((txn) => txn.accountId === account.id || txn.counterAccountId === account.id).map((txn) => [txn.id, txn]));
-    const unknown = body.clearedIds.filter((txnId) => !onAccount.has(txnId));
-    if (unknown.length) throw new ApiError(404, "One of those transactions is not on this account.");
-    const cleared = new Set(body.clearedIds);
-    let signed = 0;
-    for (const txn of onAccount.values()) {
-      if (txn.date > body.statementDate) continue;
-      if (!cleared.has(txn.id) && !txn.reconciled) continue;
-      if (txn.accountId === account.id) signed += txn.amountMinor;
-      else if (txn.counterAccountId === account.id) signed -= txn.amountMinor;
-    }
-    const liability = ["credit", "loan", "student_loan", "mortgage", "other_liability"].includes(String(account.kind));
-    const display = liability ? -signed : signed;
-    const difference = body.statementBalanceMinor - display;
-    await db.tx(async () => {
-      for (const txnId of body.clearedIds) {
-        if (body.lock && difference === 0) {
-          await db.query(`UPDATE transactions SET cleared = 1, reconciled = 1, locked = 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0`, [nowIso(), txnId, member.householdId]);
-        } else {
-          await db.query(`UPDATE transactions SET cleared = 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0`, [nowIso(), txnId, member.householdId]);
-        }
-      }
-      if (body.lock && difference === 0) await audit(db, member.householdId, me.id, "reconcile.lock", `Locked ${account.name} at the statement balance`, "account", String(account.id));
-    });
-    return c.json({
-      clearedBalanceMinor: display,
+    const onAccount = loaded.input.transactions.filter((txn) => txn.accountId === account.id || txn.counterAccountId === account.id);
+    const plan = planReconciliation({
+      accountId: String(account.id),
+      accountKind: String(account.kind),
+      statementDate: body.statementDate,
       statementBalanceMinor: body.statementBalanceMinor,
-      differenceMinor: difference,
-      locked: body.lock && difference === 0,
-      formula: "Cleared balance uses the transactions you marked, through the statement date. A difference of zero can be locked. Otherwise add an adjustment you can see in the register.",
+      clearedIds: body.clearedIds,
+      transactions: onAccount.map((txn) => ({
+        id: txn.id,
+        date: txn.date,
+        accountId: txn.accountId,
+        counterAccountId: txn.counterAccountId ?? null,
+        amountMinor: txn.amountMinor,
+        reconciled: txn.reconciled === true,
+      })),
     });
+    if (plan.unknownIds.length) throw new ApiError(404, "One of those transactions is not on this account.");
+    const formula = "Cleared balance uses the transactions you marked, through the statement date, plus rows already reconciled. Comparing does not change the register. A difference of zero can be locked. Otherwise add an adjustment you can see in the register.";
+    if (body.mode === "preview" || !body.lock) {
+      return c.json({ ...plan, locked: false, wrote: false, formula });
+    }
+    if (!plan.canLock) throw new ApiError(409, "The difference is not zero. Nothing was locked.");
+    const versionById = new Map(body.versions.map((row) => [row.id, row.version]));
+    const byId = new Map(onAccount.map((txn) => [txn.id, txn]));
+    await db.tx(async () => {
+      await lockHousehold(db, member.householdId);
+      for (const txnId of body.clearedIds) {
+        const expected = versionById.get(txnId);
+        const txn = byId.get(txnId);
+        if (expected == null || !txn) throw new ApiError(409, "Reload the register before locking. Nothing was locked.");
+        if ((txn.version ?? 1) !== expected) throw new ApiError(409, "That register changed. Nothing was locked.");
+        const updated = await db.query(
+          `UPDATE transactions SET cleared = 1, reconciled = 1, locked = 1, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0 AND version = $4 RETURNING id`,
+          [nowIso(), txnId, member.householdId, expected],
+        );
+        if (!updated.length) throw new ApiError(409, "That register changed. Nothing was locked.");
+      }
+      await audit(db, member.householdId, me.id, "reconcile.lock", `Locked ${account.name} at the statement balance`, "account", String(account.id));
+    });
+    return c.json({ ...plan, locked: true, wrote: true, formula });
   });
 
   app.post("/api/households/:hid/reconcile/unlock", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ accountId: z.string(), transactionIds: z.array(z.string()).min(1) }).parse(await c.req.json());
+    const body = z.object({
+      accountId: z.string(),
+      transactionIds: z.array(z.string()).min(1),
+      reason: z.string().trim().min(3).max(500),
+      versions: z.array(z.object({ id: z.string(), version: z.number().int().positive() })),
+    }).parse(await c.req.json());
     const account = await mustAccount(me.id, member.householdId, body.accountId);
     await db.tx(async () => {
+      await lockHousehold(db, member.householdId);
       for (const txnId of body.transactionIds) {
-        const updated = await db.query(
-          `UPDATE transactions SET reconciled = 0, locked = 0, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0 AND (account_id = $4 OR counter_account_id = $4) RETURNING id`,
-          [nowIso(), txnId, member.householdId, account.id],
+        const expected = body.versions.find((row) => row.id === txnId);
+        const rows = await db.query(
+          `SELECT id, version FROM transactions WHERE id = $1 AND household_id = $2 AND deleted = 0 AND (account_id = $3 OR counter_account_id = $3)`,
+          [txnId, member.householdId, account.id],
         );
-        if (!updated.length) throw new ApiError(404, "Not found");
+        if (!rows.length) throw new ApiError(404, "Not found");
+        if (!expected || num(rows[0].version) !== expected.version) throw new ApiError(409, "That register changed. Nothing was unlocked.");
+        const updated = await db.query(
+          `UPDATE transactions SET reconciled = 0, locked = 0, updated_at = $1 WHERE id = $2 AND household_id = $3 AND deleted = 0 AND version = $4 RETURNING id`,
+          [nowIso(), txnId, member.householdId, expected.version],
+        );
+        if (!updated.length) throw new ApiError(409, "That register changed. Nothing was unlocked.");
       }
-      await audit(db, member.householdId, me.id, "reconcile.unlock", `Unlocked transactions on ${account.name}`, "account", String(account.id));
+      await audit(db, member.householdId, me.id, "reconcile.unlock", `Unlocked transactions on ${account.name}. Reason: ${body.reason}`, "account", String(account.id));
     });
-    return c.json({ ok: true, note: "Those transactions can be edited again. Clearing them did not change their amounts." });
+    return c.json({ ok: true, wrote: true, note: "Those transactions can be edited again. Unlocking did not change their amounts." });
   });
 
   app.post("/api/households/:hid/reconcile/adjustment", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertWrite(member);
-    const body = z.object({ accountId: z.string(), date: z.string(), amountMinor: money, payee: z.string().default("Reconciliation adjustment") }).parse(await c.req.json());
-    await mustAccount(me.id, member.householdId, body.accountId);
+    const body = z.object({
+      accountId: z.string(),
+      date: z.string(),
+      amountMinor: money,
+      payee: z.string().default("Reconciliation adjustment"),
+      preview: z.boolean().default(false),
+      opId: z.string().min(8).max(80).optional(),
+      reason: z.string().trim().min(3).max(500).optional(),
+    }).parse(await c.req.json());
+    const account = await mustAccount(me.id, member.householdId, body.accountId);
     if (body.amountMinor === 0) throw new ApiError(400, "An adjustment of zero does not change the balance.");
+    if (body.preview || !body.opId) {
+      if (!body.preview) throw new ApiError(400, "Preview this adjustment before posting it. Nothing was posted.");
+      return c.json({
+        preview: true,
+        wrote: false,
+        date: body.date,
+        accountId: body.accountId,
+        amountMinor: body.amountMinor,
+        payee: body.payee,
+        type: "reconciliation",
+        note: "Nothing was posted. Confirm to add this register entry once.",
+      });
+    }
+    if (!body.reason) throw new ApiError(400, "Give a reason for this adjustment. Nothing was posted.");
+    const before = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1 AND deleted = 0 AND client_op_id = $2`, [member.householdId, body.opId]);
     const created = await insertTransaction(me, member.householdId, {
-      date: body.date, accountId: body.accountId, amountMinor: body.amountMinor, type: "reconciliation", payee: body.payee,
-      splits: [], bankStatus: "posted", reviewStatus: "reviewed", notes: "Entered so the cleared balance can match the statement.", categoryLocked: true, opId: `recon-${id()}`,
+      date: body.date,
+      accountId: body.accountId,
+      amountMinor: body.amountMinor,
+      type: "reconciliation",
+      payee: body.payee,
+      splits: [],
+      bankStatus: "posted",
+      reviewStatus: "reviewed",
+      notes: `Entered so the cleared balance can match the statement. ${body.reason}`,
+      categoryLocked: true,
+      opId: body.opId,
     });
-    return c.json({ ...created, note: "This adjustment is a real register entry. It is not hidden inside the reconciliation." }, 201);
+    if (created.duplicate || num(before[0]?.n) > 0) {
+      return c.json({ ...created, duplicate: true, wrote: false, note: "This adjustment was already posted. It was not added again." });
+    }
+    await audit(db, member.householdId, me.id, "reconcile.adjustment", `Added an adjustment on ${account.name}. Reason: ${body.reason}`, "transaction", created.id ?? "");
+    return c.json({ ...created, wrote: true, note: "This adjustment is a real register entry. It is not hidden inside the reconciliation." }, 201);
   });
 
   app.get("/api/households/:hid/roadmap", async (c) => {

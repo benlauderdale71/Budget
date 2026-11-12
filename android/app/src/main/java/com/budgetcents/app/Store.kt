@@ -73,8 +73,14 @@ class Store(context: Context) {
 
     fun widgetKind(id: Int): String = prefs.getString("widget-kind-$id", "category") ?: "category"
 
+    fun widgetRecord(id: Int): String = prefs.getString("widget-record-$id", "") ?: ""
+
     fun setWidgetKind(id: Int, kind: String) {
         prefs.edit().putString("widget-kind-$id", kind).apply()
+    }
+
+    fun setWidgetSelection(id: Int, kind: String, recordId: String) {
+        prefs.edit().putString("widget-kind-$id", kind).putString("widget-record-$id", recordId).apply()
     }
 
     var widgetFacts: String

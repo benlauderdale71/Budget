@@ -32,7 +32,9 @@
                 <data android:scheme="budgetcents" android:host="wealth" />
                 <data android:scheme="budgetcents" android:host="more" />
                 <data android:scheme="budgetcents" android:host="accounts" />
+                <data android:scheme="budgetcents" android:host="account" />
                 <data android:scheme="budgetcents" android:host="categories" />
+                <data android:scheme="budgetcents" android:host="category" />
                 <data android:scheme="budgetcents" android:host="paycheck" />
                 <data android:scheme="budgetcents" android:host="investments" />
                 <data android:scheme="budgetcents" android:host="retirement" />
@@ -56,7 +58,22 @@
                 <data android:scheme="budgetcents" android:host="transaction" />
                 <data android:scheme="budgetcents" android:host="bill" />
                 <data android:scheme="budgetcents" android:host="goal" />
+                <data android:scheme="budgetcents" android:host="account" />
+                <data android:scheme="budgetcents" android:host="accounts" />
+                <data android:scheme="budgetcents" android:host="category" />
+                <data android:scheme="budgetcents" android:host="categories" />
                 <data android:scheme="budgetcents" android:host="reconcile" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".widget.WidgetHostActivity"
+            android:exported="true"
+            android:label="Place a widget">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
