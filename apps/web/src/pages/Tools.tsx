@@ -19,6 +19,7 @@ const moreLinks = [
   ["/alerts", "Alerts", "Bills, balances, and goals you choose to watch"],
   ["/reports", "Reports", "Spending, savings rate, exports"],
   ["/investments", "Investments", "Holdings and manual prices"],
+  ["/stocks-crypto/", "Stocks & Crypto", "Market Pulse research, analysis, watchlists, and paper trading"],
   ["/retirement", "Retirement", "A seeded model, not a promise"],
   ["/assistant", "Assistant", "Answers from ledger facts"],
   ["/household", "Sharing", "People, roles, and spaces"],
@@ -38,7 +39,7 @@ export function More() {
   return (
     <Page title="More" lede="The same household is behind every tool.">
       <div className="more-grid">
-        {moreLinks.map(([to, title, body]) => <Link key={to} to={to} className="card"><h2>{title}</h2><p className="muted">{body}</p></Link>)}
+        {moreLinks.map(([to, title, body]) => <Link key={to} to={to} reloadDocument={to === "/stocks-crypto/"} className="card"><h2>{title}</h2><p className="muted">{body}</p></Link>)}
       </div>
     </Page>
   );
@@ -897,3 +898,4 @@ export function HelpCenter() {
     </Page>
   );
 }
+

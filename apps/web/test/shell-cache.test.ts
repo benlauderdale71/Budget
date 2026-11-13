@@ -12,6 +12,10 @@ test("navigation fallback is separate from assets and API responses", () => {
   assert.equal(shellRequest({ method: "GET", path: "/api/me", mode: "cors" }), "bypass");
   assert.equal(shellRequest({ method: "POST", path: "/api/households/1/transactions", mode: "cors" }), "bypass");
   assert.equal(shellRequest({ method: "GET", path: "/api/households/1/attachments/1", mode: "cors" }), "bypass");
+  for (const path of ["/stocks-crypto", "/stocks-crypto/", "/stocks-crypto/analysis", "/stocks-crypto/api/learning/metrics", "/stocks-crypto/assets/app.js"]) {
+    assert.equal(shellRequest({ method: "GET", path, mode: "navigate" }), "bypass");
+  }
+  assert.equal(shellRequest({ method: "GET", path: "/stocks-cryptocurrency", mode: "navigate" }), "navigate");
 });
 
 test("the service worker does not return the page for a missing file", () => {
@@ -24,6 +28,7 @@ test("the service worker does not return the page for a missing file", () => {
   const pageFallback = source.indexOf('caches.match("/index.html")');
   const assetMiss = source.indexOf("This file is not available offline.");
   assert.ok(navigateAt >= 0 && pageFallback > navigateAt && assetMiss > pageFallback);
+  assert.ok(source.indexOf('url.pathname.startsWith("/stocks-crypto/")') < navigateAt);
   assert.match(source, /skip-waiting/);
   assert.match(source, /caches\.delete/);
 });

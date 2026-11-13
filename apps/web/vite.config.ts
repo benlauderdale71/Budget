@@ -21,8 +21,8 @@ function serviceWorkerPlugin(): Plugin {
         "/icon-maskable-512.png",
         ...assets.map((name) => `/assets/${name}`),
       ];
-      const id = createHash("sha256").update(files.join("\n")).digest("hex").slice(0, 12);
       const template = await readFile(path.resolve("public/sw.js"), "utf8");
+      const id = createHash("sha256").update(files.join("\n")).update(template).digest("hex").slice(0, 12);
       const source = template
         .replace("__CACHE_ID__", id)
         .replace("const PRECACHE = [];", `const PRECACHE = ${JSON.stringify(files)};`);
@@ -44,3 +44,4 @@ export default defineConfig({
     proxy: { "/api": "http://127.0.0.1:8787" },
   },
 });
+
