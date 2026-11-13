@@ -70,6 +70,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   async function refresh(preferHouseholdId?: string) {
     const data = await api<{ user: User; households: HouseholdRow[] }>("/api/me");
+    await api("/api/auth/market-session", { method: "POST" }, { queue: false }).catch(() => undefined);
     setUser(data.user);
     setHouseholds(data.households);
     setQueueOwner(data.user.id);
@@ -277,3 +278,4 @@ export function scoped(householdId: string, suffix: string, spaceId?: string) {
   if (!spaceId) return path;
   return `${path}${suffix.includes("?") ? "&" : "?"}spaceId=${encodeURIComponent(spaceId)}`;
 }
+

@@ -11,11 +11,12 @@ import { shouldServeAppShell } from "./static-fallback.js";
 import { flushAccountMail, smtpConfigured } from "./providers/smtp.js";
 import { fcmConfigured } from "./providers/fcm.js";
 import { runRemoteAlerts } from "./alerts.js";
-import { isStocksCryptoPath, proxyStocksCrypto } from "./stocks-crypto-proxy.js";
+import { mountMarketPulse } from "./market-session.js";
 
 const db = await openDatabase();
 if (process.env.SEED_DEMO !== "false") await ensureDemo(db);
 const app = createApp(db);
+mountMarketPulse(app, db);
 const port = Number(process.env.PORT ?? 8787);
 const webRoot = resolveWebRoot({
   moduleDir: dirname(fileURLToPath(import.meta.url)),
@@ -23,7 +24,6 @@ const webRoot = resolveWebRoot({
 });
 
 app.use("*", async (c, next) => {
-  if (isStocksCryptoPath(c.req.path)) return proxyStocksCrypto(c.req.raw);
   if (c.req.path.startsWith("/api")) return next();
   const url = new URL(c.req.url);
   const resolved = resolveStaticFile(webRoot, url.pathname);
