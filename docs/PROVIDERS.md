@@ -1,8 +1,8 @@
 # Providers and personal-use setup
 
-SimpleFIN, Finnhub, SMTP, and Android Firebase Cloud Messaging clients are implemented. Configuration is separate from delivery verification. `GET /api/providers` reports configuration; it does not certify bank coverage or delivery. Calculations remain in BudgetCents. No bank password is collected by BudgetCents.
+SimpleFIN, Finnhub, Resend HTTPS, SMTP, and Android Firebase Cloud Messaging clients are implemented. Configuration is separate from delivery verification. `GET /api/providers` reports configuration; it does not certify bank coverage or delivery. Calculations remain in BudgetCents. No bank password is collected by BudgetCents.
 
-For a primarily personal U.S. installation, start with SimpleFIN for supported bank history, Finnhub for eligible personal stock/ETF quotes, Resend SMTP for mail, and FCM for Android push. Supabase can supply PostgreSQL hosting; it does not supply bank aggregation or market prices.
+For a primarily personal U.S. installation, start with SimpleFIN for supported bank history, Finnhub for eligible personal stock/ETF quotes, Resend HTTPS for mail, and FCM for Android push. Supabase can supply PostgreSQL hosting; it does not supply bank aggregation or market prices.
 
 | Service | Published entry price checked November 12, 2026 | Limits |
 |---|---|---|
@@ -36,9 +36,11 @@ The monthly retirement comparison models traditional and other funds, gross with
 
 ## Email
 
-Set `SMTP_URL`, a plain sender address in `SMTP_FROM`, the public HTTPS `BUDGETCENTS_PUBLIC_URL`, and `BUDGETCENTS_MAIL_ENABLED=true`. Use `smtps://` for implicit TLS or `smtp://` with required STARTTLS. URL-encode credentials. Certificate validation is required; plaintext loopback is allowed only in tests.
+For Resend, verify the sending domain, create a sending-only API key restricted to that domain, and set server-only `RESEND_API_KEY`, a plain sender address in `RESEND_FROM` (for example `noreply@budgethqpro.com`), the public HTTPS `BUDGETCENTS_PUBLIC_URL`, and `BUDGETCENTS_MAIL_ENABLED=true`. The app sends through `https://api.resend.com/emails` with a stable idempotency key per message. Requests time out after 20 seconds and do not follow redirects. Keep the API key out of source control and browser builds. [Railway restricts SMTP to Pro and above](https://docs.railway.com/networking/outbound-networking); the HTTPS connection works on its lower-cost plans.
 
-New verification/reset/invitation messages queue when configured. A worker claims each row before SMTP. Old development-outbox rows never become a delivery backlog. Expired rows are not sent. Failed or ambiguous attempts are not automatically resent; request a fresh link after fixing configuration. SMTP acceptance is recorded separately from inbox delivery. Delivery/bounce webhooks are not implemented.
+Alternatively leave `RESEND_API_KEY` empty and set `SMTP_URL` and a plain sender address in `SMTP_FROM`, with the same public URL and enable switch. Use `smtps://` for implicit TLS or `smtp://` with required STARTTLS. URL-encode credentials. Certificate validation is required; plaintext loopback is allowed only in tests. A Resend key selects HTTPS explicitly; a failed or incomplete Resend setup never silently falls back to SMTP.
+
+New verification/reset/invitation messages queue when configured. A worker claims each row before sending. Old development-outbox rows never become a delivery backlog. Expired rows are not sent. Failed or ambiguous attempts are not automatically resent; request a fresh link after fixing configuration. Provider acceptance is recorded separately from inbox delivery. Delivery/bounce webhooks are not implemented.
 
 Alert mail additionally requires verified account email, enrollment consent in Connections and email consent in that household's alert settings. Messages are generic links to authenticated Alerts, without account names, payees or amounts. The explicit real-test control targets only the current verified account address. Keep delivery off on development machines unless intentionally testing real mail.
 

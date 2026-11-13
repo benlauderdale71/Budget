@@ -92,7 +92,7 @@ Receipts are written under `BUDGETCENTS_UPLOADS`. Back that directory up with th
 
 ## Mail
 
-New reset, verification and invitation messages queue for SMTP only with `BUDGETCENTS_MAIL_ENABLED=true`, `SMTP_URL`, and `SMTP_FROM`. Configure the public HTTPS `BUDGETCENTS_PUBLIC_URL` before enabling delivery. Otherwise they remain local. Old local copies are never automatically sent. SMTP acceptance is not inbox-delivery evidence. In development, `GET /api/dev/outbox?email=` reads the local mailbox; the route is absent in production. See [provider setup](PROVIDERS.md) for TLS, workers, consent and Firebase configuration.
+New reset, verification and invitation messages queue with `BUDGETCENTS_MAIL_ENABLED=true` plus either `RESEND_API_KEY` and `RESEND_FROM` (recommended on Railway), or `SMTP_URL` and `SMTP_FROM`. Resend uses HTTPS and does not require Railway's Pro-only outbound SMTP support. Configure the public HTTPS `BUDGETCENTS_PUBLIC_URL` before enabling delivery. Otherwise messages remain local. Old local copies are never automatically sent. Provider acceptance is not inbox-delivery evidence. In development, `GET /api/dev/outbox?email=` reads the local mailbox; the route is absent in production. See [provider setup](PROVIDERS.md) for domain verification, keys, TLS, workers, consent and Firebase configuration.
 
 Node does not load `.env` automatically. Export the values in the host environment, or run `node --env-file=.env --import tsx apps/api/src/server.ts` from the repository root. Supabase can host PostgreSQL, but keep the BudgetCents tables inaccessible to its public Data API. The existing custom authentication is not replaced by setting a database URL.
 

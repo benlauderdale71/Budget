@@ -1,7 +1,8 @@
 import { createServer, type Server } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import { openMemoryDatabase, type Database } from "../src/db.js";
-import { flushAccountMail, queueAccountMail, sendSmtp } from "../src/providers/smtp.js";
+import { sendSmtp } from "../src/providers/smtp.js";
+import { flushAccountMail, queueAccountMail } from "../src/providers/mail.js";
 
 let db: Database; let server: Server;
 afterEach(async () => { vi.unstubAllEnvs(); await db?.close(); if (server) await new Promise<void>((resolve) => server.close(() => resolve())); });

@@ -22,7 +22,7 @@ import { id, nowIso } from "./crypto.js";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
 import { ApiError, forecastEventsFromSchedules, loadSpace, lockHousehold, requireMember, type Actor, type Loaded } from "./finance.js";
-import { smtpConfigured } from "./providers/smtp.js";
+import { mailConfigured } from "./providers/mail.js";
 import { fcmConfigured } from "./providers/fcm.js";
 import { sendOwnMessage } from "./providers/live-messages.js";
 
@@ -30,18 +30,18 @@ const REDACTED = "That record is no longer available to you.";
 
 async function withRemoteStatus(db: Database, alert: PublicAlert, userId: string) {
   const rows = await db.query(`SELECT channel, status FROM remote_messages WHERE user_id = $1 AND alert_id = $2`, [userId, alert.id]);
-  if (smtpConfigured()) alert.channels.email = "not_requested";
+  if (mailConfigured()) alert.channels.email = "not_requested";
   if (fcmConfigured()) alert.channels.push = "not_requested";
   for (const row of rows) alert.channels[String(row.channel)] = String(row.status);
   return alert;
 }
 
 async function queueRemoteAlerts(db: Database, actor: Actor, loaded: Loaded, preferences: AlertPreferences, now: Date) {
-  if ((!smtpConfigured() && !fcmConfigured()) || isQuietHours(now, preferences)) return;
+  if ((!mailConfigured() && !fcmConfigured()) || isQuietHours(now, preferences)) return;
   const access = await accessIndex(db, loaded);
   const alerts = await db.query(`SELECT * FROM alerts WHERE user_id = $1 AND household_id = $2 AND status = 'unread' AND delivery_status = 'delivered'`, [actor.id, loaded.member.householdId]);
   for (const channel of ["email", "push"] as const) {
-    if (!preferences.channels[channel].consent || (channel === "email" ? !smtpConfigured() : !fcmConfigured())) continue;
+    if (!preferences.channels[channel].consent || (channel === "email" ? !mailConfigured() : !fcmConfigured())) continue;
     const enrollment = (await db.query(`SELECT consented_at, opted_out_at FROM message_enrollments WHERE user_id = $1 AND channel = $2`, [actor.id, channel]))[0];
     if (!enrollment?.consented_at || enrollment.opted_out_at) continue;
     for (const row of alerts) {
@@ -53,7 +53,7 @@ async function queueRemoteAlerts(db: Database, actor: Actor, loaded: Loaded, pre
 
 /** Evaluate for current members, then recheck access and consent immediately before each send. */
 export async function runRemoteAlerts(db: Database) {
-  if (!smtpConfigured() && !fcmConfigured()) return;
+  if (!mailConfigured() && !fcmConfigured()) return;
   const rows = await db.query(`SELECT u.*, p.household_id, p.settings_json FROM alert_preferences p JOIN users u ON u.id = p.user_id JOIN memberships m ON m.user_id = p.user_id AND m.household_id = p.household_id WHERE u.deleted_at IS NULL`);
   for (const row of rows) {
     const prefs = parseAlertPreferences(JSON.parse(String(row.settings_json)), String(row.time_zone));
@@ -71,7 +71,7 @@ export async function runRemoteAlerts(db: Database) {
       const message = (await db.query(`SELECT * FROM remote_messages WHERE id = $1 AND status = 'queued' FOR UPDATE`, [item.id]))[0];
       if (!message) return null;
       const channel = String(message.channel) as "email" | "push";
-      if (channel === "email" ? !smtpConfigured() : !fcmConfigured()) return null;
+      if (channel === "email" ? !mailConfigured() : !fcmConfigured()) return null;
       try {
         const member = await requireMember(db, String(message.user_id), String(message.household_id));
         const settings = await ensurePreferences(db, String(message.user_id), member.householdId, member.timeZone);
@@ -239,7 +239,7 @@ function settingsPayload(version: number, settings: AlertPreferences) {
     version,
     settings,
     channels: channelCatalog(settings).map((channel) => {
-      const configured = channel.id === "email" ? smtpConfigured() : channel.id === "push" ? fcmConfigured() : false;
+      const configured = channel.id === "email" ? mailConfigured() : channel.id === "push" ? fcmConfigured() : false;
       return configured ? { ...channel, available: true, enabled: channel.consent, reason: "Provider configured. Also save message consent in Connections. New in-app alerts can send a generic notification; acceptance is not proof of delivery." } : channel;
     }),
     unsupported: [
