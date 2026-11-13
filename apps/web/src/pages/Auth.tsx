@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import { peekReturnPath, rememberReturnPath } from "../return-path.js";
+import { clearReturnPath, marketReturnPath, peekReturnPath, rememberReturnPath } from "../return-path.js";
 import { useSession } from "../session.js";
 import { Field, Notice } from "../ui.js";
 import { DevMailLink, useRuntimeFlags } from "../runtime-flags.js";
@@ -16,7 +16,14 @@ export function Auth() {
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [mfa, setMfa] = useState(false);
+  const marketDestination = marketReturnPath(destination);
+  useEffect(() => {
+    if (!session.ready || !session.user || !marketDestination) return;
+    clearReturnPath();
+    window.location.replace(marketDestination);
+  }, [session.ready, session.user, marketDestination]);
   if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
+  if (session.user && marketDestination) return <p className="state">Opening Market Pulse…</p>;
   if (session.user && destination) return <Navigate to={destination} replace />;
   if (session.user && session.householdId) return <Navigate to={session.user.onboardingStep && session.user.onboardingStep !== "done" ? "/setup" : "/"} replace />;
   if (session.user && !session.householdId) {
@@ -145,3 +152,4 @@ export function Auth() {
     </div>
   );
 }
+

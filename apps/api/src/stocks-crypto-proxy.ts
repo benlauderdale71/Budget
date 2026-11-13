@@ -1,3 +1,5 @@
+import { createMarketAssertion, marketSameOrigin } from "./market-identity.js";
+
 const PREFIX = "/stocks-crypto";
 const UPSTREAM = "https://market-pulse-test-test.up.railway.app";
 const REQUEST_HEADERS = ["accept", "accept-language", "content-type", "range", "if-range", "if-none-match", "if-modified-since"];
@@ -8,15 +10,14 @@ export function isStocksCryptoPath(pathname: string): boolean {
 }
 
 /** Keep Market Pulse's API, authentication and data separate from the ledger. */
-export async function proxyStocksCrypto(request: Request, upstreamFetch: typeof fetch = fetch): Promise<Response> {
+export async function proxyStocksCrypto(request: Request, userId: string, upstreamFetch: typeof fetch = fetch): Promise<Response> {
   const incoming = new URL(request.url);
   if (!isStocksCryptoPath(incoming.pathname)) return new Response("Not found", { status: 404 });
   if (incoming.pathname === PREFIX) {
     return new Response(null, { status: 308, headers: { location: `${PREFIX}/${incoming.search}`, "cache-control": "no-store" } });
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-    const origin = request.headers.get("origin");
-    if ((origin && origin !== incoming.origin) || request.headers.get("sec-fetch-site") === "cross-site") {
+    if (!marketSameOrigin(request)) {
       return new Response("Cross-origin requests are not allowed.", { status: 403, headers: { "cache-control": "no-store" } });
     }
   }
@@ -29,9 +30,10 @@ export async function proxyStocksCrypto(request: Request, upstreamFetch: typeof 
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  // Never forward household session cookies or a Budget API bearer token.
-  const authorization = request.headers.get("authorization");
-  if (authorization && /^Basic [A-Za-z0-9+/]+=*$/i.test(authorization)) headers.set("authorization", authorization);
+  // The upstream sees only a short-lived signed principal, never a password,
+  // Budget cookie, bearer token, or caller-supplied identity header.
+  try { headers.set("x-budgethq-assertion", createMarketAssertion(userId, request.method, `${target.pathname}${target.search}`)); }
+  catch { return new Response("Market Pulse sign-in is temporarily unavailable.", { status: 503, headers: { "cache-control": "no-store" } }); }
   const init: RequestInit & { duplex?: "half" } = {
     method: request.method,
     headers,
@@ -44,9 +46,17 @@ export async function proxyStocksCrypto(request: Request, upstreamFetch: typeof 
   }
   try {
     const upstream = await upstreamFetch(target, init);
+    if (upstream.status === 401) {
+      await upstream.body?.cancel();
+      return new Response(JSON.stringify({ error: "Market Pulse could not verify the shared sign-in. Please try again shortly." }), {
+        status: 503,
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
     const responseHeaders = new Headers(upstream.headers);
     const connectionHeaders = (responseHeaders.get("connection") ?? "").split(",").map((name) => name.trim()).filter(Boolean);
     for (const name of [...STRIP_RESPONSE_HEADERS, ...connectionHeaders]) responseHeaders.delete(name);
+    responseHeaders.delete("www-authenticate");
     const location = responseHeaders.get("location");
     if (location) {
       const resolved = new URL(location, target);
