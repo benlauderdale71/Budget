@@ -1,0 +1,24 @@
+{
+  "name": "budgetcents",
+  "private": true,
+  "version": "1.0.0",
+  "description": "BudgetCents — personal and household finance for web and Android",
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,green \"npm run dev -w @budgetcents/api\" \"npm run dev -w @budgetcents/web\"",
+    "test": "npm run test -w @budgetcents/domain && npm run test -w @budgetcents/api && npm run test -w @budgetcents/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @budgetcents/domain && npm run build -w @budgetcents/web && npm run typecheck -w @budgetcents/api",
+    "start": "npm run start -w @budgetcents/api"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

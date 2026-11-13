@@ -1,0 +1,22 @@
+{
+  "name": "@budgetcents/domain",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BudgetCents shared financial calculations. Integer minor units only.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./dashboard-layout": "./src/dashboard-layout.ts",
+    "./access": "./src/access.ts",
+    "./lots": "./src/lots.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

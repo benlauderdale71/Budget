@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BudgetCents</string>
+    <string name="widget_name">BudgetCents summary</string>
+    <string name="widget_description">Safe to spend from the last sync. Amounts stay hidden when privacy mode is on.</string>
+    <string name="widget_empty">Open BudgetCents to sync.</string>
+    <string name="widget_configurable">BudgetCents widget</string>
+    <string name="widget_configurable_description">Choose a category, flexible spending, an upcoming bill, a goal, or quick add. Amounts stay hidden while the app is locked.</string>
+    <string name="shortcut_plan">Plan</string>
+    <string name="shortcut_activity">Activity</string>
+    <string name="shortcut_bills">Bills</string>
+    <string name="shortcut_goals">Goals</string>
+</resources>

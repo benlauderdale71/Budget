@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.BudgetCents" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#0C6B63</item>
+        <item name="android:navigationBarColor">#F4FBF8</item>
+    </style>
+</resources>

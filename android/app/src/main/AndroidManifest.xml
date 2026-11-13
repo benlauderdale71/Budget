@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <application
+        android:name=".BudgetApplication"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BudgetCents">
+        <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
+        <meta-data android:name="firebase_analytics_collection_enabled" android:value="false" />
+        <service android:name=".RemotePushService" android:exported="false">
+            <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter>
+        </service>
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="budgetcents" android:host="home" />
+                <data android:scheme="budgetcents" android:host="plan" />
+                <data android:scheme="budgetcents" android:host="activity" />
+                <data android:scheme="budgetcents" android:host="wealth" />
+                <data android:scheme="budgetcents" android:host="more" />
+                <data android:scheme="budgetcents" android:host="accounts" />
+                <data android:scheme="budgetcents" android:host="account" />
+                <data android:scheme="budgetcents" android:host="categories" />
+                <data android:scheme="budgetcents" android:host="category" />
+                <data android:scheme="budgetcents" android:host="paycheck" />
+                <data android:scheme="budgetcents" android:host="investments" />
+                <data android:scheme="budgetcents" android:host="retirement" />
+                <data android:scheme="budgetcents" android:host="rules" />
+                <data android:scheme="budgetcents" android:host="household" />
+                <data android:scheme="budgetcents" android:host="connections" />
+                <data android:scheme="budgetcents" android:host="learn" />
+                <data android:scheme="budgetcents" android:host="assistant" />
+                <data android:scheme="budgetcents" android:host="import" />
+                <data android:scheme="budgetcents" android:host="bills" />
+                <data android:scheme="budgetcents" android:host="goals" />
+                <data android:scheme="budgetcents" android:host="debts" />
+                <data android:scheme="budgetcents" android:host="forecast" />
+                <data android:scheme="budgetcents" android:host="reports" />
+                <data android:scheme="budgetcents" android:host="security" />
+                <data android:scheme="budgetcents" android:host="setup" />
+                <data android:scheme="budgetcents" android:host="verify" />
+                <data android:scheme="budgetcents" android:host="reset" />
+                <data android:scheme="budgetcents" android:host="invite" />
+                <data android:scheme="budgetcents" android:host="alerts" />
+                <data android:scheme="budgetcents" android:host="transaction" />
+                <data android:scheme="budgetcents" android:host="bill" />
+                <data android:scheme="budgetcents" android:host="goal" />
+                <data android:scheme="budgetcents" android:host="account" />
+                <data android:scheme="budgetcents" android:host="accounts" />
+                <data android:scheme="budgetcents" android:host="category" />
+                <data android:scheme="budgetcents" android:host="categories" />
+                <data android:scheme="budgetcents" android:host="reconcile" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".widget.WidgetHostActivity"
+            android:exported="true"
+            android:label="Place a widget">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".widget.WidgetConfigureActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".widget.SummaryWidget"
+            android:exported="true"
+            android:label="@string/widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/summary_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.ConfigurableWidget"
+            android:exported="true"
+            android:label="@string/widget_configurable">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/configurable_widget_info" />
+        </receiver>
+    </application>
+</manifest>
