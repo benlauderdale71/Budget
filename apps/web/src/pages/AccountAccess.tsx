@@ -1,3 +1,4 @@
+import { DevMailLink } from "../runtime-flags.js";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -41,7 +42,7 @@ export function VerifyEmail() {
         {note ? <Notice>{note}</Notice> : null}
         <button className="btn" type="submit">Verify email</button>
       </form>
-      <p>{peekReturnPath() ? <Link to={peekReturnPath()!}>Return to the invitation</Link> : session.user ? <Link to="/setup">Continue setup</Link> : <Link to="/login">Sign in</Link>} · <Link to="/dev/mail">Development mail</Link></p>
+      <p>{peekReturnPath() ? <Link to={peekReturnPath()!}>Return to the invitation</Link> : session.user ? <Link to="/setup">Continue setup</Link> : <Link to="/login">Sign in</Link>}<DevMailLink separator /></p>
     </main>
   );
 }
@@ -85,7 +86,7 @@ export function ResetPassword() {
         {note ? <Notice>{note}</Notice> : null}
         <button className="btn" type="submit">Update password</button>
       </form>
-      <p><Link to="/login">Sign in</Link> · <Link to="/dev/mail">Development mail</Link></p>
+      <p><Link to="/login">Sign in</Link><DevMailLink separator /></p>
     </main>
   );
 }

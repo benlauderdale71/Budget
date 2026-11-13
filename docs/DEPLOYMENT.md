@@ -49,6 +49,22 @@ it returns in Cloudflare. Both the apex and `www` route to the same app. Use a
 valid origin certificate and HTTPS; never use Cloudflare's Flexible TLS mode.
 Keep API responses, receipts, backups, and exports out of shared CDN caches.
 
+Both custom domains use Cloudflare's proxy, Full (strict) origin TLS, an HTTP to
+HTTPS redirect, and TLS 1.2 or newer. `/api/health` exposes boolean capabilities
+for sample login, development mail, SMTP configuration, and federated sign-in;
+the browser hides unavailable optional login controls. These flags do not
+contain credentials or demonstrate mail delivery. Production keeps
+`BUDGETCENTS_MAIL_ENABLED=false` and `BUDGETCENTS_PUSH_ENABLED=false` until their
+providers are configured. Automatic envelope polling remains off by default.
+
+The initial live API smoke test used only a disposable fictional household.
+Registration and a $100 opening balance succeeded. A $4.25 expense left cash
+and net worth at $95.75, Ready to Assign at $100, spending at $4.25, and the
+budget identity difference at zero. Replaying the operation returned the same
+transaction. A receipt uploaded to the mounted directory and Tesseract 5.3.0
+read a $6.48 draft without changing that ledger. Demo login and development
+outbox endpoints returned 404, and an unauthenticated profile returned 401.
+
 The production database starts empty. Development households and local files
 are not copied. Register a new household on the public site. Email verification,
 password-reset delivery, and emailed invitations require the SMTP settings

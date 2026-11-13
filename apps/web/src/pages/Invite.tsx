@@ -1,3 +1,4 @@
+import { DevMailLink } from "../runtime-flags.js";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { capabilityLines, roleLabel } from "@budgetcents/domain/access";
@@ -96,7 +97,7 @@ export function Invite() {
             </div>
           ) : null}
           {session.user && preview.matches && preview.emailVerified === false ? (
-            <p>Verify {session.user.email} before accepting. The invitation stays pending. Open <Link to="/dev/mail">Development mail</Link> or <Link to="/verify">enter the verification token</Link>.</p>
+            <p>Verify {session.user.email} before accepting. The invitation stays pending. Open the verification link from your email, or <Link to="/verify">enter the verification token</Link>.</p>
           ) : null}
           {preview.status === "pending" && session.user && preview.matches && preview.emailVerified ? (
             <button className="btn" type="button" disabled={busy} onClick={() => void accept()}>{busy ? "Accepting…" : preview.alreadyMember ? "Open household" : "Accept invitation"}</button>
@@ -110,7 +111,7 @@ export function Invite() {
           {preview.status === "unavailable" ? null : <p className="muted">Balances, transactions, and other members are not shown on this page.</p>}
         </section>
       ) : null}
-      <p className="muted"><Link to="/login">Sign in</Link> · <Link to="/dev/mail">Development mail</Link></p>
+      <p className="muted"><Link to="/login">Sign in</Link><DevMailLink separator /></p>
     </main>
   );
 }

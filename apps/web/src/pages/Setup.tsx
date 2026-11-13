@@ -1,3 +1,4 @@
+import { DevMailLink } from "../runtime-flags.js";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
@@ -222,7 +223,7 @@ export function Setup() {
         <section className="card">
           <h2>Email verification</h2>
           {setup.emailVerified ? <p role="status">Email verified.</p> : <p>Open the verification link, or paste its token. A development server keeps that message in the local outbox. SMTP delivery is not active.</p>}
-          <p><Link to="/dev/mail">Development mail</Link></p>
+          <p><DevMailLink /></p>
           <button type="button" className="btn-secondary" disabled={busy || setup.emailVerified} onClick={() => {
             setError("");
             api<{ message: string }>("/api/auth/verify-email/resend", { method: "POST" })

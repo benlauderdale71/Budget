@@ -4,9 +4,11 @@ import { api } from "../api.js";
 import { peekReturnPath, rememberReturnPath } from "../return-path.js";
 import { useSession } from "../session.js";
 import { Field, Notice } from "../ui.js";
+import { DevMailLink, useRuntimeFlags } from "../runtime-flags.js";
 
 export function Auth() {
   const session = useSession();
+  const flags = useRuntimeFlags();
   const [params] = useSearchParams();
   rememberReturnPath(params.get("next"));
   const destination = peekReturnPath();
@@ -22,7 +24,7 @@ export function Auth() {
       <main className="content legal">
         <h1>No household yet</h1>
         <p>You are signed in as {session.user.email}. Open the invitation you were sent, or sign out and create a household with a new account. Accepting an invitation is a separate step.</p>
-        <p><Link to="/dev/mail">Development mail</Link></p>
+        <p><DevMailLink /></p>
         <button className="btn" type="button" onClick={() => void session.signOut()}>Use a different account</button>
       </main>
     );
@@ -91,14 +93,15 @@ export function Auth() {
             <Field label="Currency"><input name="currency" defaultValue="USD" maxLength={3} /></Field>
           </> : null}
           <Field label="Email"><input name="email" type="email" required autoComplete="username" /></Field>
-          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "login" ? 8 : 10} autoComplete={mode === "login" ? "current-password" : "new-password"} aria-describedby={mode === "register" || mode === "join" ? "password-help" : undefined} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. In development, that message is in <Link to="/dev/mail">Development mail</Link>.</p>}
+          {mode !== "reset" ? <Field label="Password"><input name="password" type="password" required minLength={mode === "login" ? 8 : 10} autoComplete={mode === "login" ? "current-password" : "new-password"} aria-describedby={mode === "register" || mode === "join" ? "password-help" : undefined} /></Field> : <p className="muted">The same reply is shown whether or not that email has an account. Open the link from the message. {flags.devMail ? <>In development, that message is in <DevMailLink />.</> : null}</p>}
+          {flags.loaded && !flags.mailDelivery && !flags.devMail && mode !== "login" ? <Notice>Email delivery is not configured. You can create a household and continue setup, but email verification, invitations, and password-reset delivery are not available yet.</Notice> : null}
           {mode === "register" || mode === "join" ? <p id="password-help" className="muted">At least 10 characters. A password manager can fill or paste this.</p> : null}
           {mfa ? <Field label="Authentication code"><input name="code" inputMode="numeric" autoComplete="one-time-code" /></Field> : null}
           {error ? <Notice kind="bad">{error}</Notice> : null}
           {note ? <Notice>{note}</Notice> : null}
           <button className="btn" type="submit">{mode === "register" ? "Create household" : mode === "join" ? "Create account" : mode === "reset" ? "Continue" : "Sign in"}</button>
         </form>
-        <button className="btn-secondary" type="button" style={{ marginTop: 12 }} onClick={async () => {
+        {flags.federatedLogin ? <button className="btn-secondary" type="button" style={{ marginTop: 12 }} onClick={async () => {
           setError("");
           try {
             const start = await api<{ authorizationUrl: string }>(`/api/auth/oidc/start?next=${encodeURIComponent(destination || "/")}`);
@@ -106,7 +109,7 @@ export function Auth() {
           } catch (caught) {
             setError(caught instanceof Error ? caught.message : "Federated sign-in is not configured.");
           }
-        }}>Sign in with an identity provider</button>
+        }}>Sign in with an identity provider</button> : null}
         {params.get("oidc") === "link" || params.get("oidc") === "mfa" ? <form style={{ marginTop: 12 }} onSubmit={async (event) => {
           event.preventDefault();
           const pending = sessionStorage.getItem("budgetcents.oidcPending") ?? "";
@@ -125,7 +128,7 @@ export function Auth() {
           {params.get("oidc") === "mfa" ? <Field label="Authentication code"><input name="code" inputMode="numeric" required /></Field> : <Field label="Password"><input name="password" type="password" required /></Field>}
           <button className="btn" type="submit">{params.get("oidc") === "mfa" ? "Finish sign-in" : "Link account"}</button>
         </form> : null}
-        <form style={{ marginTop: 18 }} onSubmit={async (event) => {
+        {flags.demoLogin ? <form style={{ marginTop: 18 }} onSubmit={async (event) => {
           event.preventDefault();
           setError("");
           try {
@@ -136,8 +139,8 @@ export function Auth() {
         }}>
           <button className="btn-secondary" type="submit">Open the sample household</button>
           <p className="muted">Alex Rivera’s numbers are sample data, not a live bank connection.</p>
-        </form>
-        <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link> · <Link to="/dev/mail">Development mail</Link></p>
+        </form> : null}
+        <p className="muted"><Link to="/privacy">Privacy</Link> · <Link to="/delete-account">Delete account</Link><DevMailLink separator /></p>
       </main>
     </div>
   );
