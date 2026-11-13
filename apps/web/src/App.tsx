@@ -31,7 +31,7 @@ const primary = [
 
 const groups: { title: string; links: [string, string][] }[] = [
   { title: "Planning", links: [["/forecast", "Forecast"], ["/receipts", "Receipts"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"], ["/alerts", "Alerts"]] },
-  { title: "Insight", links: [["/reports", "Reports"], ["/investments", "Investments"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
+  { title: "Insight", links: [["/reports", "Reports"], ["/investments", "Investments"], ["/stocks-crypto/", "Stocks & Crypto"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
   { title: "Household", links: [["/setup", "Setup"], ["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
 ];
 
@@ -80,7 +80,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           {groups.map((group) => (
             <div key={group.title}>
               <div className="nav-group">{group.title}</div>
-              {group.links.map(([to, label]) => <NavLink key={to} to={to} className="nav-link">{label}</NavLink>)}
+              {group.links.map(([to, label]) => <NavLink key={to} to={to} reloadDocument={to === "/stocks-crypto/"} className="nav-link">{label}</NavLink>)}
             </div>
           ))}
         </nav>
@@ -174,3 +174,4 @@ export function App() {
     </Routes>
   );
 }
+

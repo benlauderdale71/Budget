@@ -11,6 +11,7 @@ import { shouldServeAppShell } from "./static-fallback.js";
 import { flushAccountMail, smtpConfigured } from "./providers/smtp.js";
 import { fcmConfigured } from "./providers/fcm.js";
 import { runRemoteAlerts } from "./alerts.js";
+import { isStocksCryptoPath, proxyStocksCrypto } from "./stocks-crypto-proxy.js";
 
 const db = await openDatabase();
 if (process.env.SEED_DEMO !== "false") await ensureDemo(db);
@@ -22,6 +23,7 @@ const webRoot = resolveWebRoot({
 });
 
 app.use("*", async (c, next) => {
+  if (isStocksCryptoPath(c.req.path)) return proxyStocksCrypto(c.req.raw);
   if (c.req.path.startsWith("/api")) return next();
   const url = new URL(c.req.url);
   const resolved = resolveStaticFile(webRoot, url.pathname);
@@ -87,3 +89,4 @@ serve({ fetch: app.fetch, port, hostname: process.env.HOST }, () => {
     console.error("BUDGETCENTS_FILL_POLL_MS must be at least 1000. Automatic fills were not started.");
   }
 });
+
