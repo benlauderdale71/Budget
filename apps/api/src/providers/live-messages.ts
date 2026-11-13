@@ -4,7 +4,7 @@ import { defaultAlertPreferences, isQuietHours, parseAlertPreferences } from "@b
 import type { Database } from "../db.js";
 import { id, nowIso } from "../crypto.js";
 import { ApiError, type Actor } from "../finance.js";
-import { sendSmtp, smtpConfigured } from "./smtp.js";
+import { sendMail, mailConfigured } from "./mail.js";
 import { sendFcm, fcmConfigured } from "./fcm.js";
 
 export async function sendOwnMessage(db: Database, userId: string, channel: "email" | "push", eventId: string) {
@@ -15,7 +15,7 @@ export async function sendOwnMessage(db: Database, userId: string, channel: "ema
     if (!user.email_verified_at) throw new ApiError(409, "Verify your account email before sending alert mail.");
     const url = process.env.BUDGETCENTS_PUBLIC_URL ?? "";
     if (!/^https:\/\//.test(url) && process.env.NODE_ENV !== "test") throw new ApiError(503, "Alert email needs the public HTTPS app address.");
-    return sendSmtp({ id: eventId, to: String(user.email), subject: "BudgetCents notification", text: `You have a BudgetCents notification. Sign in to review it.\n${url.replace(/\/$/, "")}/alerts\nManage notification consent in Connections.` });
+    return sendMail({ id: eventId, to: String(user.email), subject: "BudgetCents notification", text: `You have a BudgetCents notification. Sign in to review it.\n${url.replace(/\/$/, "")}/alerts\nManage notification consent in Connections.` });
   }
   const devices = await db.query(`SELECT id, push_token FROM devices WHERE user_id = $1 AND push_token IS NOT NULL AND revoked_at IS NULL`, [userId]);
   const tokens = [...new Set(devices.map((d) => String(d.push_token)))];
@@ -35,7 +35,7 @@ export function mountLiveMessages(app: Hono, db: Database, actor: (c: Context) =
   app.post("/api/notifications/send-test", async (c) => {
     const me = await actor(c);
     const body = z.object({ channel: z.enum(["email", "push"]), opId: z.string().min(1).max(100) }).parse(await c.req.json());
-    if (body.channel === "email" ? !smtpConfigured() : !fcmConfigured()) throw new ApiError(503, "This delivery provider is not connected.");
+    if (body.channel === "email" ? !mailConfigured() : !fcmConfigured()) throw new ApiError(503, "This delivery provider is not connected.");
     const claimed = await db.tx(async () => {
       await db.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [me.id]);
       const previous = (await db.query(`SELECT * FROM remote_messages WHERE user_id = $1 AND op_id = $2`, [me.id, body.opId]))[0];

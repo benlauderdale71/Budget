@@ -13,7 +13,7 @@ import { mountLoans } from "./loans.js";
 import { mountIncomePlan } from "./income-plan.js";
 import { mountBankRoutes } from "./providers/bank-routes.js";
 import { mountMarketRoutes } from "./providers/market.js";
-import { queueAccountMail, smtpConfigured } from "./providers/smtp.js";
+import { queueAccountMail, mailConfigured } from "./providers/mail.js";
 import { mountLiveMessages } from "./providers/live-messages.js";
 import { mountOnboarding } from "./onboarding.js";
 import { planRestore } from "./restore.js";
@@ -175,7 +175,7 @@ export function createApp(db: Database) {
     return actor(c);
   }
 
-  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus(), devMail: devMailEnabled(), demoLogin: demoLoginAllowed(), mailDelivery: smtpConfigured(), federatedLogin: !!(process.env.OIDC_ISSUER && process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET), ocr: readerStatus() }));
+  app.get("/api/health", (c) => c.json({ ok: true, service: "budgetcents", version: "1.0.0", fills: fillSchedulerStatus(), devMail: devMailEnabled(), demoLogin: demoLoginAllowed(), mailDelivery: mailConfigured(), federatedLogin: !!(process.env.OIDC_ISSUER && process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET), ocr: readerStatus() }));
 
   app.get("/api/dev/outbox", async (c) => {
     if (!devMailEnabled()) throw new ApiError(404, "Not found");

@@ -13,6 +13,7 @@ import { mountMessageRoutes } from "./message-routes.js";
 import { completeOidcCallback, completeOidcLink, completeOidcMfa } from "./oidc-flow.js";
 import { activityFromWebhook, connectSandbox, importSandboxActivities, reconnectSandbox, sandboxConnection, syncSandbox } from "./sandbox-import.js";
 import { visibleAudit } from "./sharing.js";
+import { mailConfigured } from "./providers/mail.js";
 
 const HELP = [
   { id: "ready", title: "Ready to Assign", body: "Ready to Assign is cash already in on-budget accounts that does not yet have a job. Expected income is not included." },
@@ -334,7 +335,7 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
 
   app.post("/api/notifications/email-test", async (c) => {
     await deps.actor(c);
-    if (!process.env.SMTP_URL) return c.json({ error: "Email delivery is not connected. A development outbox is not email delivery.", status: "not_configured" }, 404);
+    if (!mailConfigured()) return c.json({ error: "Email delivery is not connected. A development outbox is not email delivery.", status: "not_configured" }, 404);
     return c.json({ error: "Email delivery is configured, but this build does not send a message without an explicit send operation.", status: "not_sent" }, 409);
   });
 

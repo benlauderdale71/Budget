@@ -8,7 +8,7 @@ import { openDatabase } from "./db.js";
 import { ensureDemo } from "./seed.js";
 import { contentType, resolveStaticFile, resolveWebRoot } from "./paths.js";
 import { shouldServeAppShell } from "./static-fallback.js";
-import { flushAccountMail, smtpConfigured } from "./providers/smtp.js";
+import { flushAccountMail, mailConfigured } from "./providers/mail.js";
 import { fcmConfigured } from "./providers/fcm.js";
 import { runRemoteAlerts } from "./alerts.js";
 import { mountMarketPulse } from "./market-session.js";
@@ -59,12 +59,12 @@ serve({ fetch: app.fetch, port, hostname: process.env.HOST }, () => {
   console.log(`BudgetCents API listening on http://127.0.0.1:${port}`);
   console.log(`Serving the web build from ${webRoot}`);
   if (demoLoginAllowed()) console.log("Sample household login is enabled for this environment.");
-  if (smtpConfigured()) {
+  if (mailConfigured()) {
     const pollMail = () => flushAccountMail(db).catch(() => console.error("Account email queue could not be processed. Check mail configuration."));
     void pollMail();
     setInterval(pollMail, 30000).unref();
   }
-  if (smtpConfigured() || fcmConfigured()) {
+  if (mailConfigured() || fcmConfigured()) {
     let alertPollRunning = false;
     const pollAlerts = async () => {
       if (alertPollRunning) return;

@@ -12,7 +12,7 @@ import { id, nowIso, randomToken, sha256 } from "./crypto.js";
 import { type Database, num } from "./db.js";
 import { ApiError, type Actor, audit, requireMember } from "./finance.js";
 import { releaseReviewer } from "./collaboration.js";
-import { queueAccountMail } from "./providers/smtp.js";
+import { queueAccountMail } from "./providers/mail.js";
 
 const WEEK_MS = 7 * 86_400_000;
 
