@@ -15,6 +15,52 @@ npm start
 
 Environment variables are listed in `.env.example`. Placeholders only. Do not commit `.env`.
 
+## budgethqpro.com production hosting
+
+The web interface and API share one origin at `https://budgethqpro.com`.
+Cloudflare manages DNS and Railway runs the Node service and PostgreSQL.
+The production environment is the dedicated Railway project `BudgetHQPro`;
+other projects are not used for this deployment.
+
+`Dockerfile` builds both workspaces with Node 22 and installs Tesseract, the
+English language pack, and Poppler in the runtime image. The entrypoint prepares
+the mounted upload directory and runs the application as the unprivileged
+`node` user. Railway's service settings select this Dockerfile and `/api/health`
+as the healthcheck, with a 180-second timeout and five retries on failure.
+The image refuses to start without `DATABASE_URL`. No deprecated Railway
+Config-as-Code file is required.
+
+Configure the web service with:
+
+- `DATABASE_URL=${{Postgres.DATABASE_URL}}` using Railway's private-network reference.
+- A persistent volume mounted at `/data`; receipts use `/data/uploads`.
+- `NODE_ENV=production`, `HOST=0.0.0.0`, and `PORT=8080`.
+- `BUDGETCENTS_PUBLIC_URL=https://budgethqpro.com`.
+- `DEMO_LOGIN=false`, `SEED_DEMO=false`, and `ALLOW_DEV_MAILSINK=false`.
+- A server-only `BUDGETCENTS_PROVIDER_KEY` generated as 32 random bytes in hex.
+
+The deployment is pinned to a tested source commit. Pushing unrelated changes
+to the development branch does not automatically replace the live app. Change
+the pinned source only after checking a new release. PR #1 remains the source
+review; deploying a commit does not merge that pull request.
+
+Create custom domains on the Railway web service before adding the DNS records
+it returns in Cloudflare. Both the apex and `www` route to the same app. Use a
+valid origin certificate and HTTPS; never use Cloudflare's Flexible TLS mode.
+Keep API responses, receipts, backups, and exports out of shared CDN caches.
+
+The production database starts empty. Development households and local files
+are not copied. Register a new household on the public site. Email verification,
+password-reset delivery, and emailed invitations require the SMTP settings
+below; the development outbox remains inaccessible in production. SimpleFIN
+also requires the person's own setup token and consent, and does not establish
+AmFirst coverage. No market, mail, or push credential is supplied by this image.
+
+Back up the PostgreSQL and receipt volumes together before updates. The
+provider encryption key must be retained with those backups. A persistent
+volume is not itself a backup or a tested restore. Do not restore a previous
+database over a live household merely to roll back the application image.
+
 ## HTTPS
 
 Put the process behind a reverse proxy that terminates TLS. Redirect HTTP to HTTPS. The Android manifest allows cleartext so a developer can point an emulator at `http://10.0.2.2:8787`. A phone build aimed at real people should use an `https://` server URL. The app stores that URL on the device.
