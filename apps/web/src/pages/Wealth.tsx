@@ -350,6 +350,7 @@ export function Reports() {
       <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/exports/transactions.csv", session.spaceId), "budgetcents-transactions.csv")}>CSV</button>
       <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/exports/report.pdf", session.spaceId), "budgetcents-report.pdf")}>PDF</button>
     </div>}>
+      <Link className="btn-secondary" to="/spending">Open detailed spending report</Link>
       <div className="chips">
         {["bucket", "payee", "tag"].map((item) => <button key={item} className="chip" aria-pressed={by === item} onClick={() => setBy(item)}>{item}</button>)}
       </div>

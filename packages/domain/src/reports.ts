@@ -16,30 +16,28 @@ function inRange(txn: Transaction, from: string, to: string): boolean {
 const SPEND_TYPES = new Set(["expense", "fee", "interest"]);
 const NON_SPEND = new Set(["transfer", "cc_payment", "loan_proceeds", "opening", "reconciliation", "buy", "sell"]);
 
+/** One spending contribution per split; principal and internal movements never count twice. */
+export function spendingContributions(txn: Transaction): { bucketId: string | null; amountMinor: number; memo?: string; index: number }[] {
+  if (NON_SPEND.has(txn.type)) return [];
+  const refund = txn.type === "refund" || txn.type === "reimbursement";
+  if (!refund && !SPEND_TYPES.has(txn.type) && txn.type !== "loan_payment") return [];
+  return (txn.splits.length ? txn.splits : [{ bucketId: null, amountMinor: Math.abs(txn.amountMinor), role: "expense" }])
+    .flatMap((split, index) => ["principal", "transfer", "income"].includes(split.role) ? [] : [{
+      bucketId: split.bucketId, amountMinor: (refund || split.role === "refund" ? -1 : 1) * Math.abs(split.amountMinor),
+      memo: "memo" in split ? split.memo : undefined, index,
+    }]);
+}
+
 export function spendingRows(input: EngineInput, from: string, to: string, keyOf: (txn: Transaction, bucketId: string | null) => string): ReportRow[] {
   const map = new Map<string, ReportRow>();
   for (const txn of input.transactions) {
     if (!inRange(txn, from, to)) continue;
-    if (NON_SPEND.has(txn.type)) continue;
     const account = input.accounts.find((a) => a.id === txn.accountId);
     if (!account) continue;
-    if (txn.type === "refund" || txn.type === "reimbursement") {
-      for (const split of txn.splits.length ? txn.splits : [{ bucketId: null, amountMinor: Math.abs(txn.amountMinor), role: "refund" as const }]) {
-        const key = keyOf(txn, split.bucketId);
-        const row = map.get(key) ?? { key, label: key, amountMinor: 0, transactionIds: [] };
-        row.amountMinor -= split.amountMinor;
-        row.transactionIds.push(txn.id);
-        map.set(key, row);
-      }
-      continue;
-    }
-    if (!SPEND_TYPES.has(txn.type) && txn.type !== "loan_payment") continue;
-    const splits = txn.splits.length ? txn.splits : [{ bucketId: null, amountMinor: Math.abs(txn.amountMinor), role: "expense" as const }];
-    for (const split of splits) {
-      if (split.role === "principal" || split.role === "transfer" || split.role === "income") continue;
+    for (const split of spendingContributions(txn)) {
       const key = keyOf(txn, split.bucketId);
       const row = map.get(key) ?? { key, label: key, amountMinor: 0, transactionIds: [] };
-      row.amountMinor += split.role === "refund" ? -split.amountMinor : split.amountMinor;
+      row.amountMinor += split.amountMinor;
       if (!row.transactionIds.includes(txn.id)) row.transactionIds.push(txn.id);
       map.set(key, row);
     }

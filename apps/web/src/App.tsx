@@ -12,6 +12,7 @@ import { Activity } from "./pages/Activity.js";
 import { Accounts } from "./pages/Accounts.js";
 import { Bills, Debts, Forecast, Goals } from "./pages/Planning.js";
 import { BillImport } from "./pages/BillImport.js";
+import { SpendingReport } from "./pages/SpendingReport.js";
 import { CalendarPage, Paychecks } from "./pages/Paychecks.js";
 import { Receipts } from "./pages/Receipts.js";
 import { Investments, Reports, Retirement, Wealth } from "./pages/Wealth.js";
@@ -26,6 +27,7 @@ const primary = [
   ["/", "Home"],
   ["/plan", "Plan"],
   ["/activity", "Activity"],
+  ["/spending", "Spending report"],
   ["/accounts", "Accounts"],
   ["/wealth", "Wealth"],
 ] as const;
@@ -156,6 +158,7 @@ export function App() {
         <Route path="/goals" element={<Goals />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/reports" element={<Reports />} />
+        <Route path="/spending" element={<SpendingReport />} />
         <Route path="/investments" element={<Investments />} />
         <Route path="/retirement" element={<Retirement />} />
         <Route path="/assistant" element={<Assistant />} />

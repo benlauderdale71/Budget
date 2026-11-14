@@ -4,6 +4,7 @@ import type { BillImportRow } from "@budgetcents/domain/bill-import";
 import { parseAmount } from "@budgetcents/domain/importers";
 import { isIsoDate } from "@budgetcents/domain/dates";
 import { api } from "../api.js";
+import { billMatchesFilter, selectBills } from "../bill-selection.js";
 import { minorToInput, todayISO } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useLoad } from "../ui.js";
@@ -37,7 +38,7 @@ function BillImportForm() {
   function change(key:string,patch:Partial<ReviewRow>) { setRows(items=>items.map(row=>row.key===key?{...row,...patch}:row));setReviewed(false);setError(""); }
   const selected=rows.filter(row=>row.selected&&schedulable(row));
   const invalid=selected.filter(row=>problem(row));
-  const shown=rows.filter(row=>filter==="all"||filter==="selected"&&row.selected||filter===row.kind);
+  const shown=rows.filter(row=>billMatchesFilter(row,filter));
   const pages=Math.max(1,Math.ceil(shown.length/15));
   useEffect(()=>setPage(current=>Math.min(current,pages-1)),[pages]);
   const visible=shown.slice(page*15,(page+1)*15);
@@ -73,6 +74,8 @@ function BillImportForm() {
       </div>
       {hidden?<Notice>Amounts and document details are hidden. Use “Show amounts” to review this import.</Notice>:<>
         <div className="row" style={{marginBlock:16}}><Field label="Show items"><select value={filter} onChange={event=>{setFilter(event.target.value);setPage(0);}}><option value="all">All items</option><option value="selected">Selected items</option><option value="bill">Bills</option><option value="subscription">Subscriptions</option><option value="income">Income</option><option value="estimate">Spending estimates</option><option value="ignore">Excluded totals</option></select></Field><button className="btn-secondary" disabled={unavailable} onClick={()=>{setRows(items=>[...items,{key:`manual:${crypto.randomUUID()}`,location:"Added during review",name:"",kind:"bill",cadence:"monthly",paymentMethod:"",paidReference:"",notes:"",sourceCells:[],warnings:[],suggested:false,selected:true,amount:"",balance:"",accountId:"",bucketId:""}]);setFilter("all");setPage(Math.floor(rows.length/15));setReviewed(false);}}>Add missing item</button></div>
+        <div className="row"><button className="btn-secondary" disabled={unavailable||!shown.some(row=>schedulable(row)&&!row.duplicate&&!row.selected)} onClick={()=>{setRows(items=>selectBills(items,filter,true));setReviewed(false);setError("");}}>Select all</button><button className="btn-quiet" disabled={unavailable||!shown.some(row=>row.selected)} onClick={()=>{setRows(items=>selectBills(items,filter,false));setReviewed(false);setError("");}}>Clear selection</button><span role="status">{selected.length} selected across all pages</span></div>
+        <p className="muted">Select all applies to every page of the current filter. Totals, spending estimates and existing matches are skipped. Correct any missing amounts or due dates before confirming.</p>
         {visible.map(row=><article className="card bill-import-item" key={row.key}>
           <div className="row"><h3>{row.name||"New item"}</h3><label><input type="checkbox" checked={row.selected} disabled={unavailable||!schedulable(row)} onChange={event=>change(row.key,{selected:event.target.checked})}/> Add this schedule</label></div>
           <p className="muted">{row.location}{row.duplicate?" · A matching schedule already exists; confirmation checks again.":""}</p>
