@@ -13,7 +13,7 @@ export interface StoredImport {
   groups: ImportGroup[];
   fingerprint?: string;
   result?: StoredImportResult;
-  commit?: { accountId: string; rowNumbers: number[]; categoryMap: Record<string, string>; createMissingCategories: boolean };
+  commit?: { accountId: string; rowNumbers: number[]; categoryMap: Record<string, string>; createMissingCategories: boolean; transferChoices?: Record<string, string> };
 }
 
 export interface DecoratedGroup extends ImportGroup {
@@ -39,14 +39,19 @@ export function readStoredImport(raw: string): StoredImport {
   };
 }
 
-export function importFingerprint(accountId: string, rowNumbers: number[], categoryMap: Record<string, string>, createMissing: boolean): string {
+export function importFingerprint(accountId: string, rowNumbers: number[], categoryMap: Record<string, string>, createMissing: boolean, transferChoices: Record<string, string> = {}): string {
   const rows = [...rowNumbers].sort((a, b) => a - b).join(",");
   const map = Object.entries(categoryMap)
     .filter(([, value]) => value.trim())
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key.trim().toLowerCase()}=${value.trim()}`)
     .join("|");
-  return `${accountId}#${rows}#${createMissing ? 1 : 0}#${map}`;
+  const choices = Object.entries(transferChoices).sort(([a], [b]) => a.localeCompare(b));
+  return `${accountId}#${rows}#${createMissing ? 1 : 0}#${map}${choices.length ? `#${JSON.stringify(choices)}` : ""}`;
+}
+
+export function importProviderId(group: ImportGroup, accountId: string): string | undefined {
+  return group.fitId && group.csvSource ? `csv:${accountId}:${group.fitId}` : group.fitId;
 }
 
 export function decorateGroups(groups: ImportGroup[], existing: { date: string; amountMinor: number; payee: string; fitId?: string }[]): DecoratedGroup[] {

@@ -41,6 +41,67 @@ const csv = [
 ].join("\n");
 
 describe("guided import", () => {
+  it("retains every bank column, scopes CSV ids to an account, and protects private source details", async () => {
+    const api = await app();
+    const home = await household(api, "bank-import@example.com");
+    const path = `/api/households/${home.hid}`;
+    const post = async (url: string, body: unknown) => json(await api.request(path + url, { method: "POST", headers: auth(home.token), body: JSON.stringify(body) }));
+    const account = await post("/accounts", { spaceId: home.spaceId, name: "Bank", kind: "checking", onBudget: true, openingBalanceMinor: 10000, openingDate: "2026-11-01", visibility: "private" });
+    const otherAccount = await post("/accounts", { spaceId: home.spaceId, name: "Second bank", kind: "checking", onBudget: true, openingBalanceMinor: 0, openingDate: "2026-11-01", visibility: "private" });
+    const columns = ["Transaction ID", "Posting Date", "Effective Date", "Transaction Type", "Posting Status", "Amount", "Check Number", "Reference Number", "Description", "Transaction Category", "Type", "Balance", "Memo", "Extended Description"];
+    const values = ["001,002", "11/14/2026", "", "Check", "Posted", "-12.34000", "0007", "000009", "Sample shop", "Shopping", "", "987.66000", "keep this", "Sample extended description"];
+    const text = [columns, values].map((row) => row.map((cell) => `"${cell}"`).join(",")).join("\n");
+    const before = await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [home.hid]);
+    const preview = await post("/import/preview", { spaceId: home.spaceId, accountId: account.body.id, format: "csv", text });
+    expect(preview.status).toBe(200);
+    expect(preview.body.rows[0].errors).toEqual([]);
+    expect(preview.body.columnCoverage).toHaveLength(14);
+    expect(await db.query(`SELECT count(*) AS n FROM transactions WHERE household_id = $1`, [home.hid])).toEqual(before);
+    const commit = await post(`/import/${preview.body.batchId}/commit`, { accountId: account.body.id, rowNumbers: [2] });
+    expect(commit.status).toBe(200);
+    expect(commit.body.created).toBe(1);
+    const txnId = commit.body.transactionIds[0];
+    const source = await json(await api.request(`${path}/transactions/${txnId}/import-source`, { headers: auth(home.token) }));
+    expect(source.body.rows[0].cells).toEqual(columns.map((column, i) => ({ column, value: values[i] })));
+    const ledger = await db.query(`SELECT amount_minor, bank_status, check_number, original_description FROM transactions WHERE id = $1`, [txnId]);
+    expect(ledger[0]).toMatchObject({ amount_minor: -1234, bank_status: "posted", check_number: "0007", original_description: values[13] });
+    const repreview = await post("/import/preview", { spaceId: home.spaceId, accountId: account.body.id, format: "csv", text });
+    expect(repreview.body.rows[0].duplicate).toBe(true);
+    const again = await post(`/import/${repreview.body.batchId}/commit`, { accountId: account.body.id, rowNumbers: [2] });
+    expect(again.body.created).toBe(0);
+    const different = await post("/import/preview", { spaceId: home.spaceId, accountId: otherAccount.body.id, format: "csv", text });
+    expect(different.body.rows[0].duplicate).toBe(false);
+    expect((await post(`/import/${different.body.batchId}/commit`, { accountId: otherAccount.body.id, rowNumbers: [2] })).body.created).toBe(1);
+    // Give another person membership without access to the private source account.
+    const outsider = await household(api, "bank-viewer@example.com");
+    const users = await db.query(`SELECT id FROM users WHERE email = $1`, ["bank-viewer@example.com"]);
+    await db.query(`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES ($1,$2,'editor',$3)`, [home.hid, users[0].id, new Date().toISOString()]);
+    expect((await json(await api.request(`${path}/transactions/${txnId}/import-source`, { headers: auth(outsider.token) }))).status).toBe(404);
+    const hiddenPreview = await json(await api.request(`${path}/import/preview`, { method: "POST", headers: auth(outsider.token), body: JSON.stringify({ spaceId: home.spaceId, format: "csv", text }) }));
+    // Neither private bank record is revealed by a duplicate or similarity hint.
+    expect(hiddenPreview.body.rows[0].duplicate).toBe(false);
+    expect(hiddenPreview.body.rows[0].possibleMatch).toBe(false);
+  });
+
+  it("requires an explicit transfer decision and does not count transfers as spending", async () => {
+    const api = await app();
+    const home = await household(api, "bank-transfers@example.com");
+    const path = `/api/households/${home.hid}`;
+    const post = async (url: string, body: unknown) => json(await api.request(path + url, { method: "POST", headers: auth(home.token), body: JSON.stringify(body) }));
+    const a = await post("/accounts", { spaceId: home.spaceId, name: "Checking", kind: "checking", onBudget: true, openingBalanceMinor: 10000, openingDate: "2026-11-01" });
+    const b = await post("/accounts", { spaceId: home.spaceId, name: "Savings", kind: "savings", onBudget: true, openingBalanceMinor: 0, openingDate: "2026-11-01" });
+    const preview = await post("/import/preview", { spaceId: home.spaceId, accountId: a.body.id, format: "csv", text: "Transaction ID,Posting Date,Amount,Transaction Category,Description\nmove-1,11/14/2026,-10.00000,Transfers,Savings transfer" });
+    const commitPath = `/import/${preview.body.batchId}/commit`;
+    expect((await post(commitPath, { accountId: a.body.id, rowNumbers: [2] })).status).toBe(400);
+    expect((await post(commitPath, { accountId: a.body.id, rowNumbers: [2], transferChoices: { "row:2": a.body.id } })).status).toBe(400);
+    const done = await post(commitPath, { accountId: a.body.id, rowNumbers: [2], transferChoices: { "row:2": b.body.id } });
+    expect(done.status).toBe(200);
+    expect((await db.query(`SELECT type, counter_account_id FROM transactions WHERE id = $1`, [done.body.transactionIds[0]]))[0]).toMatchObject({ type: "transfer", counter_account_id: b.body.id });
+    const dashboard = await json(await api.request(`${path}/dashboard?asOf=2026-11-20`, { headers: auth(home.token) }));
+    expect(dashboard.body.budget.cashPoolMinor).toBe(10000);
+    expect(dashboard.body.budget.spendingMinor).toBe(0);
+  });
+
   it("previews without posting, confirms one split expense, and a retry does not duplicate it", async () => {
     const api = await app();
     const home = await household(api, "import@example.com");

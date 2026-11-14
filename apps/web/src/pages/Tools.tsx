@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CsvSourceDetails, type SourceCell } from "../CsvSourceDetails.js";
 import { Link } from "react-router-dom";
 import { BankConnection } from "./BankConnection.js";
 import { LiveMessageTests } from "./LiveMessageTests.js";
@@ -228,14 +229,16 @@ type ImportGroup = {
   warnings?: string[];
   duplicate: boolean;
   possibleMatch: boolean;
+  requiresTransferReview?: boolean;
 };
 type ImportPreview = {
   batchId: string;
-  rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; notes?: string; tags?: string[]; errors: string[]; duplicate: boolean; possibleMatch: boolean; splits?: ImportSplit[] }[];
+  rows: { rowNumber: number; date?: string; payee?: string; amountMinor?: number; notes?: string; tags?: string[]; errors: string[]; duplicate: boolean; possibleMatch: boolean; splits?: ImportSplit[]; sourceCells?: SourceCell[]; bankCategory?: string; bankStatus?: string; transactionType?: string }[];
   groups: ImportGroup[];
   categories: { name: string; kind: string; count: number; conflict: boolean; ambiguous: boolean; match: { id: string; name: string } | null }[];
   balances: { account: string; date: string; balanceMinor: number }[];
   columns: Record<string, string> | null;
+  columnCoverage: { column: string; nonempty: number; fields: string[] }[];
   explanations: string[];
   present: string[];
   note: string;
@@ -262,6 +265,10 @@ export function ImportPage() {
   const [selected, setSelected] = useState<number[]>([]);
   const [categoryMap, setCategoryMap] = useState<Record<string, string>>({});
   const [createMissing, setCreateMissing] = useState(false);
+  const [importAccountId, setImportAccountId] = useState("");
+  const [transferChoices, setTransferChoices] = useState<Record<string, string>>({});
+  const [previewPage, setPreviewPage] = useState(0);
+  const [onlyAttention, setOnlyAttention] = useState(false);
   const [committed, setCommitted] = useState<{ batchId: string; body: Record<string, unknown>; note: string } | null>(null);
   const form = useFormError();
   const step = preview && committed?.batchId === preview.batchId ? "Confirm" : preview ? "Preview" : "Source";
@@ -273,6 +280,8 @@ export function ImportPage() {
     setCommitted((current) => current ?? { batchId: batch.id, body: batch.commit!, note: batch.note });
   }, [recent.data]);
   const buckets = accounts.data?.buckets.filter((bucket) => !bucket.archived) ?? [];
+  const groupsByRow = new Map(preview?.groups.flatMap((group) => group.rowNumbers.map((number) => [number, group] as const)) ?? []);
+  const filteredRows = preview?.rows.filter((row) => !onlyAttention || row.errors.length || row.duplicate || row.possibleMatch || groupsByRow.get(row.rowNumber)?.requiresTransferReview) ?? [];
   function toggleRow(rowNumber: number) {
     if (!preview) return;
     const group = preview.groups.find((item) => item.rowNumbers.includes(rowNumber));
@@ -315,12 +324,15 @@ export function ImportPage() {
           ["dateColumn", "date"], ["amountColumn", "amount"], ["outflowColumn", "debit"], ["inflowColumn", "credit"],
           ["payeeColumn", "payee"], ["categoryColumn", "category"], ["notesColumn", "notes"], ["tagsColumn", "tags"],
           ["splitsColumn", "splits"], ["splitGroupColumn", "splitGroup"], ["balanceColumn", "balance"], ["currencyColumn", "currency"],
+          ["descriptionColumn", "description"], ["transactionIdColumn", "transactionId"], ["checkNumberColumn", "checkNumber"],
+          ["effectiveDateColumn", "effectiveDate"], ["transactionTypeColumn", "transactionType"], ["postingStatusColumn", "postingStatus"], ["referenceNumberColumn", "referenceNumber"], ["bankCategoryColumn", "bankCategory"],
         ] as const) {
           const value = columnValue(data, field);
           if (value) mapping[key] = value;
         }
         const next = await api<ImportPreview>(scoped(session.householdId, "/import/preview"), { method: "POST", body: JSON.stringify({
           spaceId: accounts.data?.spaceId,
+          accountId: importAccountId,
           profile: data.get("profile") || undefined,
           format: data.get("format"),
           text,
@@ -331,7 +343,7 @@ export function ImportPage() {
         }) });
         const chosen: number[] = [];
         for (const group of next.groups) {
-          if (!group.duplicate && !group.possibleMatch && group.errors.length === 0) chosen.push(...group.rowNumbers);
+          if (!group.duplicate && !group.possibleMatch && !group.requiresTransferReview && group.errors.length === 0) chosen.push(...group.rowNumbers);
         }
         const mapped: Record<string, string> = {};
         for (const category of next.categories) {
@@ -341,19 +353,21 @@ export function ImportPage() {
         setSelected(chosen);
         setCategoryMap(mapped);
         setCreateMissing(false);
+        setTransferChoices({}); setPreviewPage(0); setOnlyAttention(false);
       })}>
         <h2>Source</h2>
+        <Field label="Import into account"><select aria-label="Import into account" required value={importAccountId} onChange={(event) => { setImportAccountId(event.target.value); setPreview(null); }}><option value="">Choose the bank account for this file</option>{accounts.data?.accounts.filter((account) => !account.archived).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
         <fieldset>
         <legend>How to read the file</legend>
         <div className="grid two">
           <Field label="Format"><select name="format" aria-label="Format"><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option></select></Field>
-          <Field label="Source"><select name="profile" aria-label="Source"><option value="">Generic columns</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
+          <Field label="Source"><select name="profile" aria-label="Source"><option value="">Automatic columns</option><option value="amfirst">America’s First Federal Credit Union</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
           <Field label="Date order"><select name="dateOrder" aria-label="Date order"><option value="mdy">Month/day/year</option><option value="dmy">Day/month/year</option></select></Field>
           <Field label="Decimal mark"><select name="decimal" aria-label="Decimal mark"><option value="period">1,234.56</option><option value="comma">1.234,56</option></select></Field>
-          <Field label="Sign"><select name="inflowSign" aria-label="Sign"><option value="positive_in">Positive amounts are income</option><option value="positive_out">Positive amounts are expenses</option></select></Field>
+          <Field label="Sign"><select name="inflowSign" aria-label="Sign"><option value="positive_in">Positive amounts enter the account</option><option value="positive_out">Positive amounts leave the account</option></select></Field>
         </div>
         </fieldset>
-        <h2>Map columns</h2>
+        <details><summary>Adjust column mapping (optional)</summary>
         <fieldset>
         <legend>Columns in the file</legend>
         <p className="muted">Leave a box blank to use the source profile or a matching header. A blank field is not invented.</p>
@@ -370,27 +384,32 @@ export function ImportPage() {
           <Field label="Split group column"><input name="splitGroupColumn" aria-label="Split group column" placeholder="Split Group" /></Field>
           <Field label="Balance column"><input name="balanceColumn" aria-label="Balance column" placeholder="Balance" /></Field>
           <Field label="Currency column"><input name="currencyColumn" aria-label="Currency column" placeholder="Currency" /></Field>
+          {[["description", "Original description", "Extended Description"], ["transactionId", "Bank transaction ID", "Transaction ID"], ["checkNumber", "Check number", "Check Number"], ["effectiveDate", "Effective date", "Effective Date"], ["transactionType", "Bank transaction type", "Transaction Type"], ["postingStatus", "Posting status", "Posting Status"], ["referenceNumber", "Reference number", "Reference Number"], ["bankCategory", "Bank category (reference)", "Transaction Category"]].map(([key, label, placeholder]) => <Field key={key} label={`${label} column`}><input name={`${key}Column`} aria-label={`${label} column`} placeholder={placeholder} /></Field>)}
         </div>
         </fieldset>
+        </details>
         <Field label="File"><input name="file" type="file" required accept=".csv,.ofx,.qfx,.qif,text/csv,text/plain" aria-label="Import file" /></Field>
         <button className="btn" type="submit" disabled={!accounts.data || !access.canWrite}>Preview</button>
       </form>
       {preview ? <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
-        const data = new FormData(event.currentTarget);
         if (!selected.length) throw new Error("Select at least one row. Nothing was imported.");
         const body = {
-          accountId: String(data.get("accountId")),
+          accountId: importAccountId,
           rowNumbers: selected,
           categoryMap: Object.fromEntries(Object.entries(categoryMap).filter(([, value]) => value)),
           createMissingCategories: createMissing,
+          transferChoices,
         };
         if (preview) await commit(preview.batchId, body);
       })}>
         <h2 ref={previewRef} tabIndex={-1}>Preview</h2>
         <p>{preview.note}</p>
+        <p>{preview.rows.length} rows read · {selected.length} selected · {preview.rows.filter((row) => row.errors.length).length} with errors · {preview.rows.filter((row) => row.duplicate).length} already imported.</p>
         <p>In this file: {preview.present.length ? preview.present.join(", ") : "no optional fields"}.</p>
         <ul>{preview.explanations.map((item) => <li key={item}>{item}</li>)}</ul>
         {preview.columns ? <p className="muted">Columns in use: {Object.entries(preview.columns).filter(([, value]) => value).map(([key, value]) => `${key} = ${value}`).join(", ")}.</p> : null}
+        <details><summary>How all {preview.columnCoverage.length} columns are kept</summary><ul>{preview.columnCoverage.map((column, i) => <li key={i}>{column.column}: {column.nonempty} filled rows. {column.fields.length ? `Used for ${column.fields.join(", ")}; original also saved.` : "Saved unchanged as a reference column."}</li>)}</ul></details>
+        <p>Bank running balances are reference values. Check the account’s opening date and balance before importing older history. Bank categories are visible in Original CSV columns; they do not create budget categories.</p>
         {preview.balances.map((balance) => <p key={`${balance.account}-${balance.date}`}>Balance in the file for {balance.account} on {balance.date}: <Money minor={balance.balanceMinor} />. This is not posted.</p>)}
         {preview.categories.length ? <div>
           <h2>Categories</h2>
@@ -404,9 +423,12 @@ export function ImportPage() {
           </Field>)}
           <label className="field"><span><input type="checkbox" checked={createMissing} aria-label="Create categories that are not in the plan" onChange={(event) => setCreateMissing(event.target.checked)} /> Create categories that are not in the plan</span></label>
         </div> : null}
-        <Field label="Account"><select name="accountId" aria-label="Account" required>{accounts.data?.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        {preview.rows.slice(0, 60).map((row) => {
-          const group = preview.groups.find((item) => item.rowNumbers.includes(row.rowNumber));
+        <p>Account: {accounts.data?.accounts.find((account) => account.id === importAccountId)?.name}</p>
+        <label><input type="checkbox" checked={onlyAttention} onChange={(event) => { setOnlyAttention(event.target.checked); setPreviewPage(0); }} /> Show only rows needing attention</label>
+        <div className="row"><button type="button" className="btn-secondary" onClick={() => setSelected([])}>Clear selection</button><button type="button" className="btn-secondary" onClick={() => setSelected(preview.groups.filter((group) => !group.errors.length && !group.duplicate && !group.possibleMatch && (!group.requiresTransferReview || transferChoices[group.groupKey])).flatMap((group) => group.rowNumbers))}>Select all ready rows</button></div>
+        <p role="status">Showing {filteredRows.length ? previewPage * 50 + 1 : 0}–{Math.min((previewPage + 1) * 50, filteredRows.length)} of {filteredRows.length} rows.</p>
+        {filteredRows.slice(previewPage * 50, (previewPage + 1) * 50).map((row) => {
+          const group = groupsByRow.get(row.rowNumber);
           const status = row.duplicate ? "Already imported" : row.possibleMatch ? "Same date, payee, and amount already in the register" : row.errors.join(" ");
           const detail = [
             row.splits?.map((split) => split.category).join(", "),
@@ -414,10 +436,15 @@ export function ImportPage() {
             row.tags?.join(", "),
             group?.warnings?.join(" "),
           ].filter(Boolean).join(" · ");
-          return <label key={row.rowNumber} className="link-row"><span><input type="checkbox" aria-label={`Import ${row.date ?? "undated"} ${row.payee || "row"}, row ${row.rowNumber}`} checked={selected.includes(row.rowNumber)} disabled={row.duplicate || row.errors.length > 0 || !access.canWrite} onChange={() => toggleRow(row.rowNumber)} /> {row.date} {row.payee} {status} {detail}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>;
+          return <div key={row.rowNumber} style={{ borderBottom: "1px solid var(--border)", paddingBlock: 12, overflowWrap: "anywhere" }}>
+            <label className="link-row"><span><input type="checkbox" aria-label={`Import ${row.date ?? "undated"} ${row.payee || "row"}, row ${row.rowNumber}`} checked={selected.includes(row.rowNumber)} disabled={row.duplicate || row.errors.length > 0 || !access.canWrite || (!!group?.requiresTransferReview && !transferChoices[group.groupKey])} onChange={() => toggleRow(row.rowNumber)} /> Row {row.rowNumber}: {row.date} {row.payee} {status} {detail}</span>{row.amountMinor != null ? <Money minor={row.amountMinor} /> : null}</label>
+            <p className="muted">{[row.transactionType, row.bankStatus, row.bankCategory ? `Bank category: ${row.bankCategory}` : ""].filter(Boolean).join(" · ")}</p>
+            {group?.requiresTransferReview ? <Field label={`Transfer decision for row ${row.rowNumber}`}><select aria-label={`Transfer decision for row ${row.rowNumber}`} value={transferChoices[group.groupKey] ?? ""} onChange={(event) => { const value = event.target.value; setTransferChoices((current) => ({ ...current, [group.groupKey]: value })); if (!value) setSelected((current) => current.filter((number) => !group.rowNumbers.includes(number))); }}><option value="">Leave out until reviewed</option><option value="ordinary">Confirmed: ordinary income or spending</option>{accounts.data?.accounts.filter((account) => account.id !== importAccountId && !account.archived).map((account) => <option key={account.id} value={account.id}>Other account: {account.name}</option>)}</select><span className="muted">If the other side is already recorded, leave this out and match the existing transfer first.</span></Field> : null}
+            {row.sourceCells ? <CsvSourceDetails cells={row.sourceCells} /> : null}
+          </div>;
         })}
-        {preview.rows.length > 60 ? <p>{preview.rows.length - 60} more rows stay selected when they have no error.</p> : null}
-        <button className="btn" type="submit" disabled={!access.canWrite}>Import selected</button>
+        <div className="row"><button type="button" className="btn-secondary" disabled={previewPage === 0} onClick={() => setPreviewPage((page) => page - 1)}>Previous rows</button><button type="button" className="btn-secondary" disabled={(previewPage + 1) * 50 >= filteredRows.length} onClick={() => setPreviewPage((page) => page + 1)}>Next rows</button></div>
+        <button className="btn" type="submit" disabled={!access.canWrite || !selected.length || committed?.batchId === preview.batchId}>Import {selected.length} selected rows</button>
       </form> : null}
       {committed ? <article className="card" style={{ marginTop: 16 }} aria-label="Import result">
         <h2 ref={confirmRef} tabIndex={-1}>Confirm</h2>

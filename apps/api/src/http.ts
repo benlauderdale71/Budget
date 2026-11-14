@@ -47,7 +47,7 @@ import {
   financialRoadmap,
   neededForTarget,
 } from "./finance.js";
-import { decorateGroups, decorateRows, importFingerprint, readStoredImport, summarizeCategories, type StoredImport } from "./import-batch.js";
+import { decorateGroups, decorateRows, importFingerprint, importProviderId, readStoredImport, summarizeCategories, type StoredImport } from "./import-batch.js";
 import { readerStatus } from "./ocr.js";
 import { textPdf } from "./pdf.js";
 import { mountReceipts } from "./receipts.js";
@@ -1471,6 +1471,7 @@ export function createApp(db: Database) {
     const body = z.object({
       spaceId: z.string(),
       profile: z.string().optional(),
+      accountId: z.string().optional(),
       format: z.enum(["csv", "ofx", "qif"]),
       text: z.string().max(2_000_000),
       mapping: z.record(z.string(), z.string().max(80)).optional(),
@@ -1482,22 +1483,34 @@ export function createApp(db: Database) {
     const profile = profileId ? IMPORT_PROFILES.find((item) => item.id === profileId) : undefined;
     if (profileId && !profile) throw new ApiError(400, "Choose a supported source.");
     await assertSpace(me.id, member.householdId, body.spaceId);
+    if (body.accountId) {
+      const account = await mustAccount(me.id, member.householdId, body.accountId);
+      if (String(account.space_id) !== body.spaceId) throw new ApiError(400, "Choose an account in this space.");
+    }
     const map: ColumnMap = { ...(profile?.map ?? {}), ...cleanImportColumns(body.mapping) };
-    let rows = body.format === "csv"
+    let rows;
+    try { rows = body.format === "csv"
       ? mapCsv(body.text, map, { dateOrder: body.dateOrder, decimal: body.decimal, inflowSign: body.inflowSign })
       : rowsFromBank(body.format === "ofx" ? parseOfx(body.text) : parseQif(body.text));
+    } catch (error) { throw new ApiError(400, error instanceof Error ? error.message : "The file could not be read."); }
     if (rows.length > 5000) throw new ApiError(400, "This file has more than 5,000 rows. Split it and import each part. Nothing was imported.");
     const groups = groupImportRows(rows);
-    const existing = await db.query(`SELECT date, amount_minor, payee, provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId]);
-    const decorated = decorateGroups(groups, existing.map((txn) => ({ date: String(txn.date), amountMinor: num(txn.amount_minor), payee: String(txn.payee), fitId: str(txn.provider_transaction_id) })));
+    const existing = await db.query(`SELECT t.date, t.amount_minor, t.payee, t.provider_transaction_id, a.visibility, a.owner_user_id FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.household_id = $1 AND t.deleted = 0 AND a.space_id = $2 AND ($3::text IS NULL OR t.account_id = $3)`, [member.householdId, body.spaceId, body.accountId ?? null]);
+    const comparison = existing.filter((txn) => canSeeAccount(me.id, { visibility: String(txn.visibility), owner_user_id: str(txn.owner_user_id) ?? null })).map((txn) => {
+      const fitId = str(txn.provider_transaction_id);
+      const prefix = body.accountId ? `csv:${body.accountId}:` : "";
+      return { date: String(txn.date), amountMinor: num(txn.amount_minor), payee: String(txn.payee), fitId: prefix && fitId?.startsWith(prefix) ? fitId.slice(prefix.length) : fitId };
+    });
+    const decorated = decorateGroups(groups, comparison);
     const buckets = await db.query(`SELECT id, name, kind, archived FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, body.spaceId]);
     const explanations = importFieldReport(rows, [
       ...(profile?.missing ?? []),
       ...(body.format === "ofx" ? ["OFX has no categories, tags, or splits. Those were not invented. A transfer that does not name both accounts is left out."] : []),
       ...(body.format === "qif" ? ["QIF categories, memos, check numbers, and split lines are kept when the file contains them. Budget assignments are not in a QIF."] : []),
-      ...(!profile && body.format === "csv" ? ["Columns whose headers match Date, Payee, Amount, Category, Notes, Tags, Splits, Split Group, or Balance are read. Anything else stays blank until you map it."] : []),
+      ...(!profile && body.format === "csv" ? ["Recognized headers are mapped automatically. Every original CSV cell is preserved, including blank and unmapped columns."] : []),
     ]).absent;
     const report = importFieldReport(rows, []);
+    const columns = body.format === "csv" ? resolvedColumnMap(body.text, map) : null;
     const stored: StoredImport = { version: 2, rows, groups };
     const batchId = id();
     await db.query(`INSERT INTO import_batches (id, household_id, space_id, source, status, preview_json, created_at) VALUES ($1,$2,$3,$4,'preview',$5,$6)`, [batchId, member.householdId, body.spaceId, profileId ?? body.format, JSON.stringify(stored), nowIso()]);
@@ -1507,7 +1520,8 @@ export function createApp(db: Database) {
       groups: decorated,
       categories: summarizeCategories(groups, buckets.map((bucket) => ({ id: String(bucket.id), name: String(bucket.name), kind: String(bucket.kind), archived: num(bucket.archived) === 1 }))),
       balances: report.balances,
-      columns: body.format === "csv" ? resolvedColumnMap(body.text, map) : null,
+      columns,
+      columnCoverage: rows[0]?.sourceCells?.map((cell, index) => ({ column: cell.column, nonempty: rows.filter((row) => row.sourceCells?.[index]?.value.trim()).length, fields: Object.entries(columns ?? {}).filter(([, value]) => value?.toLowerCase() === cell.column.toLowerCase()).map(([key]) => key) })) ?? [],
       missing: explanations,
       explanations,
       present: report.present,
@@ -1515,6 +1529,21 @@ export function createApp(db: Database) {
       note: `${report.note} Nothing was posted. A balance in the file is shown for comparison and does not change the account.`,
       profiles: IMPORT_PROFILES.map((item) => ({ id: item.id, label: item.label, missing: item.missing })),
     });
+  });
+
+  app.get("/api/households/:hid/transactions/:id/import-source", async (c) => {
+    const me = await actor(c);
+    const member = await requireMember(db, me.id, c.req.param("hid"));
+    const txn = await mustTxn(me.id, member.householdId, c.req.param("id"));
+    await assertSpace(me.id, member.householdId, String(txn.space_id));
+    if (!txn.import_batch_id) throw new ApiError(404, "No original CSV is available for this transaction.");
+    const batches = await db.query(`SELECT preview_json FROM import_batches WHERE id = $1 AND household_id = $2`, [txn.import_batch_id, member.householdId]);
+    if (!batches.length) throw new ApiError(404, "No original CSV is available for this transaction.");
+    const stored = readStoredImport(String(batches[0].preview_json));
+    const group = stored.groups.find((item) => String(txn.client_op_id) === `import:${txn.import_batch_id}:${item.groupKey}` || (!!item.fitId && importProviderId(item, String(txn.account_id)) === txn.provider_transaction_id));
+    const rows = stored.rows.filter((row) => group?.rowNumbers.includes(row.rowNumber) && row.sourceCells);
+    if (!rows.length) throw new ApiError(404, "This older import did not retain the original CSV columns. Preview the original file to inspect them.");
+    return c.json({ rows: rows.map((row) => ({ rowNumber: row.rowNumber, cells: row.sourceCells })) });
   });
 
   app.get("/api/households/:hid/import/recent", async (c) => {
@@ -1560,11 +1589,13 @@ export function createApp(db: Database) {
       rowNumbers: z.array(z.number().int()).max(5000),
       categoryMap: z.record(z.string(), z.string().max(80)).optional(),
       createMissingCategories: z.boolean().optional(),
+      transferChoices: z.record(z.string(), z.string().max(100)).optional(),
     }).parse(await c.req.json());
     if (Object.keys(body.categoryMap ?? {}).length > 200) throw new ApiError(400, "Map fewer categories at once. Nothing was imported.");
     const account = await mustAccount(me.id, member.householdId, body.accountId);
-    const fingerprint = importFingerprint(body.accountId, body.rowNumbers, body.categoryMap ?? {}, body.createMissingCategories === true);
+    const fingerprint = importFingerprint(body.accountId, body.rowNumbers, body.categoryMap ?? {}, body.createMissingCategories === true, body.transferChoices);
     const outcome = await db.tx(async () => {
+      await lockHousehold(db, member.householdId);
       const batches = await db.query(`SELECT * FROM import_batches WHERE id = $1 AND household_id = $2 FOR UPDATE`, [c.req.param("batchId"), member.householdId]);
       if (!batches.length) throw new ApiError(404, "Not found");
       await assertSpace(me.id, member.householdId, String(batches[0].space_id));
@@ -1594,24 +1625,26 @@ export function createApp(db: Database) {
         if (!(group.rowNumbers ?? []).every((rowNumber) => selected.has(rowNumber))) throw new ApiError(400, "Select every line of a split, or leave the whole split out. Nothing was imported.");
         if ((group.errors ?? []).length) throw new ApiError(400, `${group.errors[0]} Nothing was imported.`);
         if (!group.date || group.amountMinor == null) throw new ApiError(400, "A selected row is missing a date or amount. Nothing was imported.");
+        if (group.requiresTransferReview && !body.transferChoices?.[group.groupKey]) throw new ApiError(400, "Choose the other account for each transfer or confirm ordinary income/spending. Nothing was imported.");
       }
       const existing = await db.query(`SELECT provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0 AND provider_transaction_id IS NOT NULL`, [member.householdId]);
       const seenFit = new Set(existing.map((row) => String(row.provider_transaction_id)));
       const importing = [];
       let skipped = 0;
       for (const group of chosen) {
-        if (group.fitId && seenFit.has(group.fitId)) {
+        const providerId = importProviderId(group, body.accountId);
+        if (providerId && seenFit.has(providerId)) {
           skipped += 1;
           continue;
         }
         if (group.currency && group.currency.toUpperCase() !== String(account.currency).toUpperCase()) {
           throw new ApiError(400, `A row is in ${group.currency.toUpperCase()} and the account is ${account.currency}. BudgetCents does not convert currencies during import. Nothing was imported.`);
         }
-        if (group.fitId) seenFit.add(group.fitId);
+        if (providerId) seenFit.add(providerId);
         importing.push(group);
       }
       const buckets = await db.query(`SELECT id, name, kind, archived FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, batches[0].space_id]);
-      const uses = importing.flatMap((group) => group.opening ? [] : (group.splits ?? []).map((split) => ({ name: split.category, kind: split.role === "income" ? "income" as const : "expense" as const })));
+      const uses = importing.flatMap((group) => group.opening || (body.transferChoices?.[group.groupKey] && body.transferChoices[group.groupKey] !== "ordinary") ? [] : (group.splits ?? []).map((split) => ({ name: split.category, kind: split.role === "income" ? "income" as const : "expense" as const })));
       const plan = planCategoryAssignments(uses, buckets.map((bucket) => ({ id: String(bucket.id), name: String(bucket.name), kind: String(bucket.kind), archived: num(bucket.archived) === 1 })), body.categoryMap ?? {}, body.createMissingCategories === true);
       if (plan.errors.length) throw new ApiError(400, `${plan.errors[0]} Nothing was imported.`);
       if (plan.assignments.some((assignment) => assignment.create)) {
@@ -1644,7 +1677,11 @@ export function createApp(db: Database) {
       const transactionIds: string[] = [];
       let created = 0;
       for (const group of importing) {
-        const splits = group.opening ? [] : (group.splits ?? []).map((split) => {
+        const choice = body.transferChoices?.[group.groupKey];
+        const counterAccountId = choice && choice !== "ordinary" ? choice : undefined;
+        const counter = counterAccountId ? await mustAccount(me.id, member.householdId, counterAccountId) : undefined;
+        if (counter && (counterAccountId === body.accountId || String(counter.currency) !== String(account.currency) || num(counter.archived) === 1)) throw new ApiError(400, "Choose a different, active transfer account in the same currency. Nothing was imported.");
+        const splits = group.opening || counter ? [] : (group.splits ?? []).map((split) => {
           const bucketId = bucketFor.get(split.category.trim().toLowerCase().replace(/\s+/g, " "));
           if (!bucketId) throw new ApiError(400, `${split.category} is not in this plan. Nothing was imported.`);
           return { bucketId, amountMinor: split.amountMinor, role: split.role, memo: split.memo };
@@ -1653,19 +1690,20 @@ export function createApp(db: Database) {
           spaceId: String(batches[0].space_id),
           date: group.date!,
           accountId: body.accountId,
+          counterAccountId,
           amountMinor: group.amountMinor!,
-          type: group.opening ? "opening" : group.amountMinor! >= 0 ? "income" : "expense",
+          type: counter ? (String(counter.kind) === "credit_card" && group.amountMinor! < 0 ? "cc_payment" : "transfer") : group.opening ? "opening" : group.amountMinor! >= 0 ? "income" : "expense",
           payee: group.payee || "Imported",
           originalDescription: group.originalDescription,
           splits,
           notes: group.notes,
           tags: group.tags ?? [],
           checkNumber: group.checkNumber,
-          bankStatus: "posted",
+          bankStatus: group.bankStatus ?? "posted",
           reviewStatus: "needs_review",
           categoryLocked: splits.length > 0,
           importBatchId: String(batches[0].id),
-          providerTransactionId: group.fitId,
+          providerTransactionId: importProviderId(group, body.accountId),
           opId: `import:${batches[0].id}:${group.groupKey}`,
         });
         if ("updated" in saved && saved.updated) throw new ApiError(409, "That provider id is already imported. Nothing new was added.");
@@ -1687,6 +1725,7 @@ export function createApp(db: Database) {
           rowNumbers: body.rowNumbers,
           categoryMap: body.categoryMap ?? {},
           createMissingCategories: body.createMissingCategories === true,
+          transferChoices: body.transferChoices,
         },
       };
       await db.query(`UPDATE import_batches SET status = 'committed', committed_at = $1, preview_json = $2 WHERE id = $3 AND household_id = $4`, [nowIso(), JSON.stringify(next), batches[0].id, member.householdId]);
@@ -2816,7 +2855,7 @@ export function createApp(db: Database) {
 function cleanImportColumns(mapping: Record<string, string> | undefined): ColumnMap {
   const out: ColumnMap = {};
   if (!mapping) return out;
-  const keys = ["date", "amount", "debit", "credit", "payee", "description", "category", "account", "notes", "checkNumber", "tags", "splits", "splitGroup", "balance", "currency"] as const;
+  const keys = ["date", "amount", "debit", "credit", "payee", "description", "category", "account", "notes", "checkNumber", "tags", "splits", "splitGroup", "balance", "currency", "transactionId", "effectiveDate", "transactionType", "postingStatus", "referenceNumber", "bankCategory"] as const;
   for (const key of keys) {
     const value = mapping[key];
     if (value?.trim()) out[key] = value.trim();

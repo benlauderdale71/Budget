@@ -11,6 +11,14 @@ export interface ImportSplitDraft {
 
 export interface ImportRow {
   rowNumber: number;
+  /** Original cells, including blank and unrecognized columns, in file order. */
+  sourceCells?: { column: string; value: string }[];
+  effectiveDate?: string;
+  bankCategory?: string;
+  bankStatus?: "pending" | "posted";
+  transactionType?: string;
+  referenceNumber?: string;
+  requiresTransferReview?: boolean;
   date?: string;
   amountMinor?: number;
   payee?: string;
@@ -46,6 +54,10 @@ export interface ImportGroup {
   currency?: string;
   account?: string;
   fitId?: string;
+  bankStatus?: "pending" | "posted";
+  bankCategory?: string;
+  requiresTransferReview?: boolean;
+  csvSource?: boolean;
   opening: boolean;
   splits: ImportSplitDraft[];
   observedBalanceMinor?: number;
@@ -55,6 +67,12 @@ export interface ImportGroup {
 }
 
 export interface ColumnMap {
+  transactionId?: string;
+  effectiveDate?: string;
+  transactionType?: string;
+  postingStatus?: string;
+  referenceNumber?: string;
+  bankCategory?: string;
   date?: string;
   amount?: string;
   debit?: string;
@@ -80,6 +98,11 @@ export interface ImportParseOptions {
 }
 
 export const IMPORT_PROFILES: { id: string; label: string; map: ColumnMap; missing: string[] }[] = [
+  {
+    id: "amfirst", label: "America’s First Federal Credit Union",
+    map: { date: "Posting Date", effectiveDate: "Effective Date", amount: "Amount", payee: "Description", description: "Extended Description", bankCategory: "Transaction Category", notes: "Memo", balance: "Balance", checkNumber: "Check Number", transactionId: "Transaction ID", transactionType: "Transaction Type", postingStatus: "Posting Status", referenceNumber: "Reference Number" },
+    missing: ["Bank categories are kept as reference details. They do not automatically create budget categories. Transfers and credit-card payments need an account decision before import."],
+  },
   {
     id: "mint",
     label: "Mint CSV",
@@ -168,6 +191,7 @@ export function parseCsv(text: string): string[][] {
     row.push(cell);
     rows.push(row);
   }
+  if (quoted) throw new Error("The CSV has an unfinished quoted field. Export it again before importing.");
   return rows.filter((r) => r.some((c) => c.trim() !== ""));
 }
 
@@ -190,6 +214,8 @@ export function parseAmount(raw: string, decimal: "period" | "comma" = "period")
   else cleaned = cleaned.replace(/,/g, "");
   if (!/^\d+(\.\d+)?$/.test(cleaned)) return undefined;
   const [whole, frac = ""] = cleaned.split(".");
+  // Bank exports often pad cents to five decimal places. Never round money away.
+  if (/[1-9]/.test(frac.slice(2))) return undefined;
   const padded = frac.padEnd(3, "0");
   let minor = BigInt(whole) * 100n + BigInt(padded.slice(0, 2) || "0");
   if (padded[2] >= "5") minor += 1n;
@@ -249,9 +275,15 @@ export function withHeaderDefaults(header: string[], map: ColumnMap): ColumnMap 
     const found = names.find((name) => has(name));
     if (found) next[key] = found as never;
   };
-  fill("date", ["Date", "Posted Date", "Transaction Date"]);
+  fill("date", ["Date", "Posting Date", "Posted Date", "Transaction Date"]);
   fill("payee", ["Payee", "Merchant", "Name", "Description"]);
-  fill("description", ["Original Description"]);
+  fill("description", ["Original Description", "Extended Description"]);
+  fill("transactionId", ["Transaction ID"]);
+  fill("effectiveDate", ["Effective Date"]);
+  fill("transactionType", ["Transaction Type"]);
+  fill("postingStatus", ["Posting Status"]);
+  fill("referenceNumber", ["Reference Number"]);
+  fill("bankCategory", ["Transaction Category"]);
   fill("category", ["Category", "Envelope", "Budget Item"]);
   fill("notes", ["Notes", "Memo"]);
   fill("tags", ["Tags", "Labels"]);
@@ -312,6 +344,8 @@ export function mapCsv(text: string, map: ColumnMap, options: ImportParseOptions
     };
     const errors: string[] = [];
     const warnings: string[] = [];
+    if (cells.length !== header.length) errors.push("The row has a different number of cells than the header. Nothing on this row can be imported.");
+    if (new Set(header.map((name) => name.toLowerCase())).size !== header.length) errors.push("The CSV has repeated column names. Give each column a unique name.");
     const parsedDate = normalizeDate(get(resolved.date), dateOrder);
     if (parsedDate.error) errors.push(parsedDate.error);
     const debitHeader = index(resolved.debit) >= 0;
@@ -336,6 +370,17 @@ export function mapCsv(text: string, map: ColumnMap, options: ImportParseOptions
     }
     if (sign === "positive_out" && amount != null) amount = -amount;
     if (amount === 0) errors.push("Amount is zero.");
+    const transactionType = tidy(get(resolved.transactionType));
+    if (amount != null && ((/^(debit|check)$/i.test(transactionType) && amount > 0) || (/^credit$/i.test(transactionType) && amount < 0))) errors.push("The amount sign disagrees with Transaction Type. Check the sign setting before importing.");
+    const postingStatus = tidy(get(resolved.postingStatus)).toLowerCase();
+    const bankStatus = postingStatus === "pending" ? "pending" : "posted";
+    if (postingStatus && !["pending", "posted", "cleared"].includes(postingStatus)) errors.push("Posting status is not recognized. This row was not treated as posted.");
+    const effectiveRaw = get(resolved.effectiveDate).trim();
+    const effective = effectiveRaw ? normalizeDate(effectiveRaw, dateOrder) : undefined;
+    if (effective?.error) errors.push(`Effective date: ${effective.error}`);
+    const bankCategory = tidy(get(resolved.bankCategory));
+    const requiresTransferReview = /^(transfers?|credit card payments?)$/i.test(bankCategory) || /^(transfer|xfer)$/i.test(transactionType);
+    if (requiresTransferReview) warnings.push("Choose the other account for this transfer or explicitly confirm it is ordinary income or spending. It is not selected automatically.");
     const payee = tidy(get(resolved.payee) || get(resolved.description));
     const description = tidy(get(resolved.description));
     const category = tidy(get(resolved.category));
@@ -373,6 +418,14 @@ export function mapCsv(text: string, map: ColumnMap, options: ImportParseOptions
     if (notes.length > 4000) errors.push("Notes are longer than 4,000 characters.");
     const row: ImportRow = {
       rowNumber: offset + 2,
+      sourceCells: cells.map((value, i) => ({ column: header[i] ?? `Extra column ${i + 1}`, value })),
+      fitId: get(resolved.transactionId).trim() || undefined,
+      effectiveDate: effective?.date,
+      referenceNumber: get(resolved.referenceNumber).trim() || undefined,
+      transactionType: transactionType || undefined,
+      bankCategory: bankCategory || undefined,
+      bankStatus,
+      requiresTransferReview,
       date: parsedDate.date,
       amountMinor: amount,
       payee: payee || undefined,
@@ -452,6 +505,10 @@ function buildGroup(groupKey: string, rows: ImportRow[]): ImportGroup {
     currency: currencies[0],
     account: rows.map((row) => row.account).find((value) => !!value),
     fitId: fitIds[0],
+    bankStatus: rows.some((row) => row.bankStatus === "pending") ? "pending" : "posted",
+    bankCategory: rows.map((row) => row.bankCategory).find(Boolean),
+    requiresTransferReview: rows.some((row) => row.requiresTransferReview),
+    csvSource: rows.some((row) => !!row.sourceCells),
     opening,
     splits,
     observedBalanceMinor: balanceRow?.observedBalanceMinor,
@@ -472,8 +529,10 @@ export function importFieldReport(rows: ImportRow[], profileMissing: string[]): 
   const present: string[] = [];
   const absent = [...profileMissing];
   const has = (pred: (row: ImportRow) => boolean) => rows.some(pred);
+  if (has((row) => !!row.bankCategory)) { present.push("bank categories (reference details)"); absent.push("Bank categories are preserved as reference details; assign your own budget categories after import. Transfers need an explicit account decision."); }
+  if (has((row) => !!row.sourceCells)) present.push("all original CSV columns");
   if (has((row) => !!row.category || (row.splits?.length ?? 0) > 0)) present.push("categories");
-  else absent.push("No category was in the file. Nothing is assigned to a category.");
+  else absent.push(has((row) => !!row.bankCategory) ? "No budget category was mapped. The bank’s original category remains in the saved bank details." : "No category was in the file. Nothing is assigned to a category.");
   if (has((row) => (row.tags?.length ?? 0) > 0)) present.push("tags");
   else absent.push("No tags were in the file.");
   if (has((row) => !!row.notes)) present.push("notes");
@@ -487,13 +546,14 @@ export function importFieldReport(rows: ImportRow[], profileMissing: string[]): 
     if (row.observedBalanceMinor == null || !row.date) continue;
     const account = row.account || "";
     const current = byAccount.get(account);
-    if (!current || row.date >= current.date) byAccount.set(account, { account: account || "This file", date: row.date, balanceMinor: row.observedBalanceMinor });
+    // Bank exports list the newest row first; do not substitute an earlier balance on the same day.
+    if (!current || row.date > current.date) byAccount.set(account, { account: account || "This file", date: row.date, balanceMinor: row.observedBalanceMinor });
   }
   return {
     present,
     absent,
     balances: [...byAccount.values()],
-    note: "This is not a lossless copy of the other app. Settings, targets, and fields that were not in the file are left blank.",
+    note: has((row) => !!row.bankCategory) ? "Every original CSV column is retained. Bank labels and running balances are reference details; budget assignments are not inferred." : "This is not a lossless copy of the other app. Settings, targets, and fields that were not in the file are left blank.",
   };
 }
 
