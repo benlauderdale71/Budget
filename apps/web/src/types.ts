@@ -147,6 +147,7 @@ export interface Txn {
   matchedArchivedId?: string | null;
   refundOfId?: string;
   providerTransactionId?: string;
+  importBatchId?: string;
   attachmentCount?: number;
 }
 

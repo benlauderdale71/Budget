@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { CsvSourceDetails, type SourceCell } from "../CsvSourceDetails.js";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { allows } from "@budgetcents/domain/access";
@@ -21,6 +22,7 @@ export function Activity() {
   const [offset, setOffset] = useState(0);
   const [matchId, setMatchId] = useState("");
   const [commentFor, setCommentFor] = useState<Txn | null>(null);
+  const [sourceFor, setSourceFor] = useState<Txn | null>(null);
   const [peopleFor, setPeopleFor] = useState<Txn | null>(null);
   const [note, setNote] = useState("");
   const [noteBad, setNoteBad] = useState(false);
@@ -152,6 +154,7 @@ export function Activity() {
                     })}>Match with selected</button> : null}
                     {txn.matchedArchivedId ? <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Unmatch ${txn.payee} on ${txn.date}`} onClick={() => act("The hidden record is back in the register, and a receipt that moved comes back with it.", () => api(scoped(session.householdId, `/transactions/${txn.id}/unmatch`), { method: "POST" }).then(() => undefined))}>Unmatch</button> : null}
                     <button className="btn-quiet" type="button" aria-label={`Comment on ${txn.payee} on ${txn.date}`} onClick={() => setCommentFor(txn)}>Comment</button>
+                    {txn.importBatchId ? <button className="btn-quiet" type="button" onClick={() => setSourceFor(txn)}>Bank file details</button> : null}
                     {access.canWrite ? <button className="btn-quiet" type="button" aria-label={`Manage people for ${txn.payee} on ${txn.date}`} onClick={() => setPeopleFor(txn)}>Manage people</button> : null}
                     {access.canReview && (access.canWrite || !txn.reviewerUserId || txn.reviewerUserId === session.user?.id) ? <button className="btn-quiet" type="button" aria-label={`${txn.reviewStatus === "reviewed" ? "Reopen review for" : "Mark reviewed:"} ${txn.payee} on ${txn.date}`} onClick={() => act("Review updated. The amount, category, and balance did not change.", () => api(scoped(session.householdId, `/transactions/${txn.id}/review`), { method: "POST", body: JSON.stringify({ reviewStatus: txn.reviewStatus === "reviewed" ? "needs_review" : "reviewed", version: txn.version ?? 1 }) }).then(() => undefined))}>{txn.reviewStatus === "reviewed" ? "Reopen review" : "Mark reviewed"}</button> : null}
                   </td>
@@ -166,10 +169,20 @@ export function Activity() {
         {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
       {peopleFor ? <PeopleForm txn={peopleFor} onClose={() => setPeopleFor(null)} /> : null}
+      {sourceFor ? <ImportSource txn={sourceFor} onClose={() => setSourceFor(null)} /> : null}
       {commentFor ? <CommentForm txn={commentFor} onClose={() => setCommentFor(null)} onSaved={(message) => { setNoteBad(false); setNote(message); setCommentFor(null); }} /> : null}
       {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
     </Page>
   );
+}
+
+function ImportSource({ txn, onClose }: { txn: Txn; onClose: () => void }) {
+  const session = useSession();
+  const source = useLoad(() => api<{ rows: { rowNumber: number; cells: SourceCell[] }[] }>(scoped(session.householdId, `/transactions/${txn.id}/import-source`)), [session.householdId, txn.id, session.tick]);
+  return <Modal title="Bank file details" onClose={onClose}>
+    <p>Original bank values are kept separately from any edits you make. A running balance does not change the account balance.</p>
+    {source.loading ? <Loading /> : source.error ? <Notice kind="bad">{source.error}</Notice> : source.data?.rows.map((row) => <div key={row.rowNumber}><h3>File row {row.rowNumber}</h3><CsvSourceDetails cells={row.cells} /></div>)}
+  </Modal>;
 }
 
 function PeopleForm({ txn, onClose }: { txn: Txn; onClose: () => void }) {
