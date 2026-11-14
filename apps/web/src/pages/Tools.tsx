@@ -10,6 +10,7 @@ import type { Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
 const moreLinks = [
+  ["/spending", "Spending report", "Detailed categories, merchants, trends, and every purchase"],
   ["/forecast", "Forecast", "Cash projection and paycheck coverage"],
   ["/receipts", "Receipts", "Read a receipt, then confirm it"],
   ["/paychecks", "Paychecks", "Expected income that is not cash yet"],

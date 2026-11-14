@@ -1,5 +1,6 @@
 import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
 import { Hono } from "hono";
+import { detailedSpending, spendingRangeError } from "@budgetcents/domain";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
 import { mountTestIssuer } from "./oidc-test-provider.js";
@@ -1358,6 +1359,27 @@ export function createApp(db: Database) {
     const from = c.req.query("from") ?? loaded.budget.periodStart;
     const to = c.req.query("to") ?? loaded.input.asOf;
     const kind = c.req.param("kind");
+    if (kind === "spending-detail") {
+      const invalid = spendingRangeError(from, to);
+      if (invalid) throw new ApiError(400, invalid);
+      const accountId = c.req.query("accountId") || undefined;
+      const bucketId = c.req.query("bucketId") || undefined;
+      if (accountId && (!loaded.visibleAccountIds.has(accountId) || !loaded.input.accounts.some(a=>a.id===accountId))) throw new ApiError(404, "Account not available");
+      if (bucketId && bucketId !== "uncategorized" && !loaded.input.buckets.some(b=>b.id===bucketId)) throw new ApiError(404, "Category not available");
+      const report = detailedSpending(loaded.input, { from, to, accountId, bucketId, group:c.req.query("group"), merchant:c.req.query("merchant"), tag:c.req.query("tag"), q:c.req.query("q") });
+      if (c.req.query("format") === "csv") {
+        const places = new Intl.NumberFormat("en", { style:"currency", currency:report.currency }).resolvedOptions().maximumFractionDigits ?? 2;
+        const csv = toCsv(report.lines.map(line=>({
+          Date:line.date, Merchant:line.merchant, Group:line.group, Category:line.category, Account:line.account,
+          Spending:(Math.max(0,line.amountMinor)/10**places).toFixed(places), Refund:(Math.max(0,-line.amountMinor)/10**places).toFixed(places),
+          "Net spending":(line.amountMinor/10**places).toFixed(places), Currency:report.currency, Type:line.type, Tags:line.tags.join(" | "),
+          Notes:line.notes, "Split memo":line.memo, "Review status":line.reviewStatus, Cleared:line.cleared?"Yes":"No", Reconciled:line.reconciled?"Yes":"No", "Transaction ID":line.transactionId,
+        })));
+        return new Response(csv, { headers:{"content-type":"text/csv; charset=utf-8","content-disposition":`attachment; filename=spending-${from}-to-${to}.csv`,"cache-control":"no-store"} });
+      }
+      c.header("Cache-Control", "no-store");
+      return c.json(report);
+    }
     if (kind === "spending") {
       const group = c.req.query("by") ?? "bucket";
       const rows = spendingRows(loaded.input, from, to, (txn, bucketId) => {
