@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { billImportDate, billImportSignature, parseBillGrids, parseSingleBill } from "../src/bill-import.js";
+import { billImportDate, billImportSignature, billReviewIssues, parseBillGrids, parseSingleBill } from "../src/bill-import.js";
+
+describe("bill preview readiness",()=>{
+  it("lists all missing fields without substituting guessed dates or zero amounts",()=>{
+    const row={name:"Income placeholder",amount:"",nextDate:undefined,balance:""};
+    const before=structuredClone(row);
+    expect(billReviewIssues(row).map(issue=>issue.field)).toEqual(["amount","nextDate"]);
+    expect(row).toEqual(before);
+    expect(billReviewIssues({...row,amount:"0.00",nextDate:"2026-12-01"})).toEqual([]);
+    expect(billReviewIssues({...row,amount:"12.34",nextDate:"2026-02-30"}).map(issue=>issue.field)).toEqual(["nextDate"]);
+  });
+  it("validates optional balances and distinguishes missing values from legitimate zero bills",()=>{
+    const row={name:"Bill",amount:"0",nextDate:"2026-12-01",balance:"  "};
+    expect(billReviewIssues(row)).toEqual([]);
+    expect(billReviewIssues({...row,balance:"not read"}).map(issue=>issue.field)).toEqual(["balance"]);
+    expect(billReviewIssues({...row,balance:"10000000000.00"}).map(issue=>issue.field)).toEqual(["balance"]);
+    expect(billReviewIssues({...row,name:" ",amount:"-1",nextDate:"43th"}).map(issue=>issue.field)).toEqual(["name","amount","nextDate"]);
+  });
+  it("identifies incomplete OCR income and bill rows alongside valid rows",()=>{
+    const rows=parseBillGrids([{name:"Picture",ocr:true,rows:[
+      ["Date","Bill","Amount","Income","Amount Monthly"],
+      ["1st","Rent","1000","Pay placeholder",""],
+      ["43th","Card","90","Salary","2000"],
+      ["15th","Internet","45","",""],
+    ]}],"2026-12");
+    const checked=rows.map(row=>({...row,amount:row.amountMinor==null?"":(row.amountMinor/100).toFixed(2),balance:""}));
+    expect(checked.filter(row=>!billReviewIssues(row).length).map(row=>row.name)).toEqual(["Rent","Internet"]);
+    expect(checked.filter(row=>billReviewIssues(row).length).map(row=>row.name)).toEqual(["Pay placeholder","Card","Salary"]);
+  });
+});
 
 describe("bill document interpretation",()=>{
   it("separates side-by-side bills, income, totals and estimates while keeping original cells",()=>{

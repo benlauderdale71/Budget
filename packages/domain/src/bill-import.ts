@@ -1,4 +1,19 @@
 import { normalizeDate, parseAmount } from "./importers.js";
+import { isIsoDate } from "./dates.js";
+
+export interface BillReviewFields { name: string; amount: string; nextDate?: string; balance: string }
+export interface BillReviewIssue { field: keyof BillReviewFields; message: string }
+/** Report every missing field; an unreadable value must never become a zero or a guessed date. */
+export function billReviewIssues(row: BillReviewFields): BillReviewIssue[] {
+  const issues: BillReviewIssue[] = [];
+  if (!row.name.trim() || row.name.trim().length > 120) issues.push({field:"name",message:"Enter a name of up to 120 characters."});
+  const amount = parseAmount(row.amount);
+  if (amount == null || amount < 0 || amount > 999999999999) issues.push({field:"amount",message:"Enter a valid amount, zero or more."});
+  if (!row.nextDate || !isIsoDate(row.nextDate)) issues.push({field:"nextDate",message:"Choose a valid first due date."});
+  const balance = row.balance.trim() ? parseAmount(row.balance) : undefined;
+  if (row.balance.trim() && (balance == null || Math.abs(balance) > 999999999999)) issues.push({field:"balance",message:"Check the balance owed, or leave it blank."});
+  return issues;
+}
 
 export type BillImportKind = "bill" | "subscription" | "income" | "estimate" | "ignore";
 export interface BillImportCell { column: string; value: string; formula?: string }
