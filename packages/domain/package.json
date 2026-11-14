@@ -8,7 +8,10 @@
     ".": "./src/index.ts",
     "./dashboard-layout": "./src/dashboard-layout.ts",
     "./access": "./src/access.ts",
-    "./lots": "./src/lots.ts"
+    "./lots": "./src/lots.ts",
+    "./bill-import": "./src/bill-import.ts",
+    "./importers": "./src/importers.ts",
+    "./dates": "./src/dates.ts"
   },
   "scripts": {
     "test": "vitest run",

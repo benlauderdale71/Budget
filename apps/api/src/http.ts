@@ -11,6 +11,7 @@ import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, r
 import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
 import { mountLoans } from "./loans.js";
 import { mountIncomePlan } from "./income-plan.js";
+import { mountBillImport } from "./bill-import.js";
 import { mountBankRoutes } from "./providers/bank-routes.js";
 import { mountMarketRoutes } from "./providers/market.js";
 import { queueAccountMail, mailConfigured } from "./providers/mail.js";
@@ -2755,6 +2756,7 @@ export function createApp(db: Database) {
       }),
   });
   mountIncome(app, db, incomeHooks());
+  mountBillImport(app, db, { actor, assertSpace, mustAccount, createBill: (me, hid, raw) => createBill(db, me, hid, raw, incomeHooks()) });
   mountLoans(app, db, {
     actor,
     assertSpace,

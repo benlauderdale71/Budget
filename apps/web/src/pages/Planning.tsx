@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import { BillImportDetails } from "./BillImport.js";
 import { api } from "../api.js";
 import { minorToInput, parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -127,11 +128,12 @@ export function Bills() {
   const shownCadence = editing ? (editing.scheduleMode ?? editing.cadence) : cadence;
   return (
     <Page title="Bills and subscriptions" lede="A bill schedule is an estimate until it is paid. Skipping one date does not delete the series. Irregular pay belongs on Paychecks and does not add cash.">
+      <p><Link className="btn-secondary" to="/bills/import">Upload bills from a file</Link></p>
       {focus && !state.data.schedules.some((item) => item.id === focus) ? <Notice kind="bad">That bill is not available in this view.</Notice> : null}
       <ul className="list card">
         {state.data.schedules.map((item) => (
           <li key={item.id} id={`schedule-${item.id}`}>
-            <span>{item.name} · {item.scheduleMode ?? item.cadence} · next {item.nextDate}{item.paused ? " · Paused" : ""}</span>
+            <div><span>{item.name} · {item.scheduleMode ?? item.cadence} · next {item.nextDate}{item.paused ? " · Paused" : ""}</span><BillImportDetails scheduleId={item.id}/></div>
             <span className="row">
               <Money minor={item.direction === "inflow" ? item.amountMinor : -item.amountMinor} />
               <button className="btn-quiet" type="button" aria-label={`Edit ${item.name}`} onClick={() => { setEditing(item); setCadence(item.scheduleMode ?? item.cadence); }}>Edit</button>

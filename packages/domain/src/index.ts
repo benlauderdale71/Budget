@@ -9,6 +9,7 @@ export * from "./retirement.js";
 export * from "./reports.js";
 export * from "./rules.js";
 export * from "./importers.js";
+export * from "./bill-import.js";
 export * from "./assistant.js";
 export * from "./sync.js";
 export * from "./match.js";
