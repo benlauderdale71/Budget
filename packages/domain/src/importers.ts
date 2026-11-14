@@ -246,7 +246,7 @@ function validIso(iso: string): boolean {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
-function normalizeDate(raw: string, order: "mdy" | "dmy"): { date?: string; error?: string } {
+export function normalizeDate(raw: string, order: "mdy" | "dmy"): { date?: string; error?: string } {
   const value = raw.trim();
   if (!value) return { error: "Date is missing or not YYYY-MM-DD or M/D/YYYY." };
   let iso = "";

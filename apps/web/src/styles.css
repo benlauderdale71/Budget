@@ -264,3 +264,14 @@ td.num, th.num { text-align: right; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+/* Bill document review uses cards so source cells remain readable on a phone. */
+.bill-import-item { margin-block: 16px; min-width: 0; }
+.bill-import-item h3 { overflow-wrap: anywhere; }
+.bill-import-item .row > label { display: inline-flex; align-items: center; gap: 8px; }
+.bill-import-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 12px 20px; }
+.bill-import-fields .field, .bill-import-fields input, .bill-import-fields select, .bill-import-fields textarea { min-width: 0; width: 100%; }
+.bill-import-details { margin-top: 8px; max-width: 600px; }
+.bill-source-cells { margin: 12px 0; }
+.bill-source-cells > div { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr); gap: 12px; padding-block: 6px; border-bottom: 1px solid var(--line, #ccd3d6); }
+.bill-source-cells dt { font-weight: 600; overflow-wrap: anywhere; }
+.bill-source-cells dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }

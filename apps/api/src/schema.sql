@@ -891,6 +891,24 @@ CREATE TABLE IF NOT EXISTS income_occurrences (
 CREATE UNIQUE INDEX IF NOT EXISTS income_occurrence_op_idx ON income_occurrences (household_id, client_op_id) WHERE client_op_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS income_occurrence_settle_idx ON income_occurrences (household_id, settle_op_id) WHERE settle_op_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS bill_import_drafts (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  space_id text NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  account_id text REFERENCES accounts(id) ON DELETE CASCADE,
+  preview_json text NOT NULL,
+  result_json text,
+  fingerprint text,
+  created_at text NOT NULL,
+  expires_at text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bill_import_drafts_owner ON bill_import_drafts(user_id,created_at);
+CREATE TABLE IF NOT EXISTS schedule_import_details (
+  schedule_id text PRIMARY KEY REFERENCES schedules(id) ON DELETE CASCADE,
+  details_json text NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schedule_details (
   schedule_id text PRIMARY KEY REFERENCES schedules(id) ON DELETE CASCADE,
   anchor_day integer,

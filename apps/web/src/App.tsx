@@ -11,6 +11,7 @@ import { Plan } from "./pages/Plan.js";
 import { Activity } from "./pages/Activity.js";
 import { Accounts } from "./pages/Accounts.js";
 import { Bills, Debts, Forecast, Goals } from "./pages/Planning.js";
+import { BillImport } from "./pages/BillImport.js";
 import { CalendarPage, Paychecks } from "./pages/Paychecks.js";
 import { Receipts } from "./pages/Receipts.js";
 import { Investments, Reports, Retirement, Wealth } from "./pages/Wealth.js";
@@ -150,6 +151,7 @@ export function App() {
         <Route path="/paychecks" element={<Paychecks />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/bills" element={<Bills />} />
+        <Route path="/bills/import" element={<BillImport />} />
         <Route path="/debts" element={<Debts />} />
         <Route path="/goals" element={<Goals />} />
         <Route path="/alerts" element={<Alerts />} />

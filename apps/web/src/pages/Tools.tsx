@@ -307,6 +307,7 @@ export function ImportPage() {
   }
   return (
     <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. Categories, notes, tags, and splits are kept when the file has them. Fields that are missing stay blank.">
+      <p>Uploading a list of bills or due dates? <Link to="/bills/import">Import bills from an image, PDF, CSV or Excel file</Link>.</p>
       <ol className="wizard-steps" aria-label="Import steps">
         <li aria-current={step === "Source" ? "step" : undefined}>1. Source and columns</li>
         <li aria-current={step === "Preview" ? "step" : undefined}>2. Preview</li>
