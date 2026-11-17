@@ -112,7 +112,7 @@ function scheduleFromBody(body: SourceBody): RepeatingSchedule {
 
 function normalizedSchedule(schedule: RepeatingSchedule): RepeatingSchedule {
   const cadence = coerceCadence(schedule.cadence);
-  if (!cadence) throw new ApiError(400, "That schedule is not one BudgetCents can keep.");
+  if (!cadence) throw new ApiError(400, "That schedule is not one Budget HQ PRO can keep.");
   const next = { ...schedule, cadence };
   if (next.cadence === "twice_monthly" && !next.twiceDays) next.twiceDays = [1, 15];
   assertRepeatingSchedule(next);

@@ -88,7 +88,7 @@ function requireMoney(value: number, label: string): void {
 }
 
 export function assertRepeatingSchedule(schedule: RepeatingSchedule): void {
-  if (!CADENCES.has(schedule.cadence)) throw new BudgetError("That schedule is not one BudgetCents can keep.");
+  if (!CADENCES.has(schedule.cadence)) throw new BudgetError("That schedule is not one Budget HQ PRO can keep.");
   requireDate(schedule.startDate, "Start date");
   if (schedule.endDate) {
     requireDate(schedule.endDate, "End date");

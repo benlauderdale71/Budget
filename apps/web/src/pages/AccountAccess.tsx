@@ -33,7 +33,7 @@ export function VerifyEmail() {
 
   return (
     <main className="content legal">
-      <p className="kicker">BudgetCents</p>
+      <p className="kicker">Budget HQ PRO</p>
       <h1>Verify email</h1>
       <p className="lede">An unverified account can keep setting up. Invitations stay closed until this link is used. Saving a setup step does not verify the email.</p>
       <form onSubmit={submit}>
@@ -75,7 +75,7 @@ export function ResetPassword() {
 
   return (
     <main className="content legal">
-      <p className="kicker">BudgetCents</p>
+      <p className="kicker">Budget HQ PRO</p>
       <h1>Choose a new password</h1>
       <p className="lede">This link works once. Other signed-in sessions are signed out. An authenticator you already turned on stays on.</p>
       <form onSubmit={submit}>
@@ -113,7 +113,7 @@ export function DevMail() {
 
   return (
     <main className="content legal">
-      <p className="kicker">BudgetCents</p>
+      <p className="kicker">Budget HQ PRO</p>
       <h1>Development mail</h1>
       <p className="lede">This page reads the local outbox for one address. It is off when the server is in production. It does not show that an SMTP service delivered anything.</p>
       <form onSubmit={submit}>

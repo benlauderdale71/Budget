@@ -70,13 +70,13 @@ export function Invite() {
     }
   }
 
-  if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
+  if (!session.ready) return <p className="state">Opening Budget HQ PRO…</p>;
   const next = `/login?next=${encodeURIComponent(destination)}`;
   const lines = preview?.capabilities?.length ? preview.capabilities : preview?.role ? capabilityLines(preview.role) : [];
 
   return (
     <main className="content legal">
-      <p className="kicker">BudgetCents</p>
+      <p className="kicker">Budget HQ PRO</p>
       <h1>Invitation</h1>
       {!preview && !error ? <p className="state">Reading the invitation…</p> : null}
       {error ? <div ref={alertRef} tabIndex={-1}><Notice kind="bad">{error}</Notice></div> : null}

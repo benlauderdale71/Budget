@@ -15,13 +15,13 @@ class SummaryWidget : AppWidgetProvider() {
         val store = Store(context)
         val body = when {
             store.token.isNullOrBlank() || store.summary.isBlank() -> context.getString(R.string.widget_empty)
-            store.biometric -> "Unlock BudgetCents"
+            store.biometric -> "Unlock Budget HQ PRO"
             store.privacy -> "Amounts hidden"
             else -> store.summary
         }
         ids.forEach { id ->
             val views = RemoteViews(context.packageName, R.layout.widget_summary)
-            views.setTextViewText(R.id.widget_title, "BudgetCents")
+            views.setTextViewText(R.id.widget_title, "Budget HQ PRO")
             views.setTextViewText(R.id.widget_body, body)
             val pending = PendingIntent.getActivity(
                 context, 0, Intent(context, MainActivity::class.java),

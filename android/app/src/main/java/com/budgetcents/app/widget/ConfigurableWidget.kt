@@ -66,13 +66,13 @@ fun updateConfigurable(context: Context, manager: AppWidgetManager, id: Int) {
     val recordId = store.widgetRecord(id)
     val facts = store.widgetFacts
     val parsed = if (facts.isBlank()) JSONObject() else runCatching { JSONObject(facts) }.getOrDefault(JSONObject())
-    val title = WIDGET_KINDS.firstOrNull { it.first == kind }?.second ?: "BudgetCents"
+    val title = WIDGET_KINDS.firstOrNull { it.first == kind }?.second ?: "Budget HQ PRO"
     val fresh = parsed.optBoolean("fresh", true)
     val household = parsed.optString("householdId")
     val body = when {
-        store.token.isNullOrBlank() -> "Sign in to BudgetCents"
-        store.biometric || (store.privacy && kind != "quick") -> if (kind == "quick") "Add a transaction" else "Unlock BudgetCents"
-        household.isNotBlank() && household != store.householdId -> "Open BudgetCents to refresh this household"
+        store.token.isNullOrBlank() -> "Sign in to Budget HQ PRO"
+        store.biometric || (store.privacy && kind != "quick") -> if (kind == "quick") "Add a transaction" else "Unlock Budget HQ PRO"
+        household.isNotBlank() && household != store.householdId -> "Open Budget HQ PRO to refresh this household"
         else -> {
             val text = when (kind) {
                 "flex" -> parsed.optString("flex", "Flexible spending")
@@ -184,7 +184,7 @@ class WidgetHostActivity : ComponentActivity() {
         val bound = result.resultCode == RESULT_OK && id != AppWidgetManager.INVALID_APPWIDGET_ID && manager.bindAppWidgetIdIfAllowed(id, provider)
         if (!bound) {
             if (id != AppWidgetManager.INVALID_APPWIDGET_ID) host.deleteAppWidgetId(id)
-            bindMessage = "This device did not allow BudgetCents to bind a $kind widget. The home-screen launcher has to place it."
+            bindMessage = "This device did not allow Budget HQ PRO to bind a $kind widget. The home-screen launcher has to place it."
             pendingId = AppWidgetManager.INVALID_APPWIDGET_ID
             return@registerForActivityResult
         }
@@ -257,7 +257,7 @@ class WidgetHostActivity : ComponentActivity() {
             .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
             .putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, provider)
         val launched = runCatching { bindPermission.launch(request) }.isSuccess
-        bindMessage = if (launched) "Android asked for permission to place the $kind widget." else "This device did not allow BudgetCents to bind a $kind widget. The home-screen launcher has to place it."
+        bindMessage = if (launched) "Android asked for permission to place the $kind widget." else "This device did not allow Budget HQ PRO to bind a $kind widget. The home-screen launcher has to place it."
         if (!launched) {
             host.deleteAppWidgetId(id)
             pendingId = AppWidgetManager.INVALID_APPWIDGET_ID

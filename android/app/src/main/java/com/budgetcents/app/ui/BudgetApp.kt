@@ -192,7 +192,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                         status = "Showing saved figures from this device. They are not the current ledger."
                     }
                 }
-                error = caught.message ?: "Could not reach BudgetCents."
+                error = caught.message ?: "Could not reach Budget HQ PRO."
             }
         }
     }
@@ -261,7 +261,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         }
         if (locked) {
             Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("BudgetCents", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+                Text("Budget HQ PRO", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
                 Text("Unlock this device to see the household.")
                 if (linkNote.isNotBlank()) Text(linkNote)
                 Button(onClick = { activity.unlock({ locked = false; reload() }, { error = it }) }) { Text("Unlock") }
@@ -294,7 +294,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                     if (status.isNotBlank()) Text(status)
                     val pending = store.pendingForCurrentUser()
                     if (pending.isNotEmpty()) {
-                        Text("${pending.size} saved on this phone. They send when BudgetCents can be reached, and only for this sign-in.")
+                        Text("${pending.size} saved on this phone. They send when Budget HQ PRO can be reached, and only for this sign-in.")
                         pending.take(3).forEach { item ->
                             val body = runCatching { JSONObject(item.optString("body")) }.getOrNull()
                             Text("${body?.optString("payee") ?: "Transaction"} is still waiting.")
@@ -450,7 +450,7 @@ private fun SignIn(
     var mail by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("BudgetCents", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+        Text("Budget HQ PRO", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         if (notice.isNotBlank()) Text(notice)
         Text("Same household as the web app. The emulator reaches a computer at 10.0.2.2.", color = Ink)
         OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
@@ -942,12 +942,12 @@ private fun notifyAlerts(context: Context, dash: JSONObject, store: Store) {
     val hidden = store.privacy
     val lockScreen = NotificationCompat.Builder(context, "budgetcents")
         .setSmallIcon(R.drawable.ic_mark)
-        .setContentTitle("BudgetCents")
+        .setContentTitle("Budget HQ PRO")
         .setContentText("Open the app to view an alert.")
         .build()
     val notification = NotificationCompat.Builder(context, "budgetcents")
         .setSmallIcon(R.drawable.ic_mark)
-        .setContentTitle(if (hidden) "BudgetCents" else unread.optString("title"))
+        .setContentTitle(if (hidden) "Budget HQ PRO" else unread.optString("title"))
         .setContentText(if (hidden) "Open the app to view an alert." else unread.optString("body"))
         .setVisibility(NotificationCompat.VISIBILITY_SECRET)
         .setPublicVersion(lockScreen)

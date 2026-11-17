@@ -82,14 +82,14 @@ class RemotePushService : FirebaseMessagingService() {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val manager = getSystemService(NotificationManager::class.java)
         if (!manager.areNotificationsEnabled()) return
-        val channel = NotificationChannel("budgetcents_remote", "BudgetCents remote alerts", NotificationManager.IMPORTANCE_DEFAULT)
+        val channel = NotificationChannel("budgetcents_remote", "Budget HQ PRO remote alerts", NotificationManager.IMPORTANCE_DEFAULT)
         channel.lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
         manager.createNotificationChannel(channel)
         if (manager.getNotificationChannel("budgetcents_remote")?.importance == NotificationManager.IMPORTANCE_NONE) return
         val intent = Intent(this, MainActivity::class.java).setAction(Intent.ACTION_VIEW).setData(Uri.parse("budgetcents://alerts"))
         val pending = PendingIntent.getActivity(this, 730, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = NotificationCompat.Builder(this, "budgetcents_remote").setSmallIcon(R.drawable.ic_launcher)
-            .setContentTitle("BudgetCents").setContentText("Open BudgetCents to review your notification.")
+            .setContentTitle("Budget HQ PRO").setContentText("Open Budget HQ PRO to review your notification.")
             .setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build()
         manager.notify(730, notification)
         val event = message.data["eventId"] ?: return

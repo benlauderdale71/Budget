@@ -1,0 +1,46 @@
+/* This shell is outside the market app so it remains available on every route. */
+:root { --budgethq-nav-height: 60px; }
+body:has(#budgethq-return-nav) { padding-top: var(--budgethq-nav-height); }
+#budgethq-return-nav {
+  box-sizing: border-box;
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 100;
+  height: var(--budgethq-nav-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 20px;
+  background: #123b36;
+  color: #fff;
+  border-bottom: 1px solid #42756c;
+  font: 600 15px/1.4 system-ui, sans-serif;
+}
+#budgethq-return-nav a {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid #76b8aa;
+  border-radius: 8px;
+  color: #fff;
+  background: #1a5149;
+  text-decoration: none;
+}
+#budgethq-return-nav a:hover { background: #24685e; }
+#budgethq-return-nav a:focus-visible { outline: 3px solid #ffdf86; outline-offset: 2px; }
+.budgethq-market-status { padding: 24px; font-family: system-ui, sans-serif; }
+@media (min-width: 768px) {
+  #budgethq-return-nav ~ #root aside.bg-sidebar {
+    top: var(--budgethq-nav-height);
+    height: calc(100dvh - var(--budgethq-nav-height));
+  }
+}
+@media (max-width: 540px) {
+  #budgethq-return-nav { padding-inline: 12px; }
+  #budgethq-return-nav .budgethq-market-label { display: none; }
+}
+@media print { #budgethq-return-nav { display: none; } body:has(#budgethq-return-nav) { padding-top: 0; } }

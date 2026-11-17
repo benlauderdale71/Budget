@@ -279,7 +279,7 @@ export function essentialObligations(input: {
   const amountMinor = sources.reduce((sum, source) => sum + source.monthlyMinor, 0);
   const formula = sources.length
     ? "Essential monthly spending adds the monthly equivalent of confirmed bills, subscriptions, and debt payments, plus loan minimums that are not already scheduled. Flexible spending and expected income are not included. No default amount is substituted."
-    : "No confirmed bills or loan minimums are selected, so essential monthly spending is zero. BudgetCents does not substitute a default amount.";
+    : "No confirmed bills or loan minimums are selected, so essential monthly spending is zero. Budget HQ PRO does not substitute a default amount.";
   return { amountMinor, sources, formula };
 }
 

@@ -2574,7 +2574,7 @@ private fun SetupScreen(api: BudgetApi, hid: String, onError: (String) -> Unit, 
             val left = review?.optJSONArray("notFinished") ?: JSONArray()
             if (left.length() == 0) Text("Every optional step is either done or skipped, and the email is verified.")
             for (item in 0 until left.length()) Text(left.optString(item))
-            if (current.optBoolean("finished")) Text("Enter the rest of BudgetCents from the other tabs.")
+            if (current.optBoolean("finished")) Text("Enter the rest of Budget HQ PRO from the other tabs.")
             else Button(onClick = { patch(JSONObject().put("finish", true), "Setup finished.") }) { Text("Finish setup") }
         }
     }
@@ -2621,7 +2621,7 @@ private fun ReceiptScreen(
     var accountId by rememberSaveable { mutableStateOf("") }
     var bucketId by rememberSaveable { mutableStateOf("") }
     var status by rememberSaveable { mutableStateOf("Choose a receipt") }
-    var note by rememberSaveable { mutableStateOf("Reading happens on the BudgetCents server. It does not post a transaction.") }
+    var note by rememberSaveable { mutableStateOf("Reading happens on the Budget HQ PRO server. It does not post a transaction.") }
     var bytes by remember { mutableStateOf<ByteArray?>(null) }
     var matches by remember { mutableStateOf(JSONArray()) }
     var version by remember { mutableStateOf(1) }
@@ -2787,7 +2787,7 @@ private fun ReceiptScreen(
                 }
             } catch (caught: Exception) {
                 withContext(Dispatchers.Main) {
-                    onError("The receipt is still on this phone. Reading it needs the BudgetCents server. ${caught.message ?: "Try again when the connection returns."}")
+                    onError("The receipt is still on this phone. Reading it needs the Budget HQ PRO server. ${caught.message ?: "Try again when the connection returns."}")
                 }
             }
         }

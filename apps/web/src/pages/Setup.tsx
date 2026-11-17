@@ -463,7 +463,7 @@ export function Setup() {
           <p>Ready to Assign {formatMoney(setup.review.allocations.readyToAssignMinor, currency)}. Already given a job {formatMoney(setup.review.allocations.givenAJobMinor, currency)}. {setup.review.allocations.note}</p>
           <h3>Not finished</h3>
           {setup.review.notFinished.length === 0 ? <p>Every optional step is either done or skipped, and the email is verified.</p> : <ul>{setup.review.notFinished.map((item) => <li key={item}>{item}</li>)}</ul>}
-          {setup.finished ? <Link to="/">Enter BudgetCents</Link> : <button type="button" className="btn" disabled={busy} onClick={() => void save({ finish: true }, "Setup finished.")}>Finish setup</button>}
+          {setup.finished ? <Link to="/">Enter Budget HQ PRO</Link> : <button type="button" className="btn" disabled={busy} onClick={() => void save({ finish: true }, "Setup finished.")}>Finish setup</button>}
         </section>
       ) : null}
     </Page>

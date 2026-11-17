@@ -57,7 +57,7 @@ export function oidcIdentityDecision(input: {
   }
   if (input.existingSubjectUserId) return { action: "sign-in", reason: "This identity is already linked." };
   if (input.existingEmailUserId) return { action: "link-required", reason: "An account with this email already exists. Sign in with the password and link the identity. Nothing was signed in." };
-  return { action: "create", reason: "No BudgetCents account uses this confirmed email." };
+  return { action: "create", reason: "No Budget HQ PRO account uses this confirmed email." };
 }
 
 export function verifyRs256IdToken(token: string, jwk: JsonWebKey, expected: { issuer: string; audience: string; nonce: string }): { subject: string; email: string; emailVerified: boolean } {

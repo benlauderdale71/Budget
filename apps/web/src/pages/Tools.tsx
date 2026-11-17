@@ -31,7 +31,7 @@ const moreLinks = [
   ["/cases", "Requests", "Cancellation notes, with no biller contacted"],
   ["/credit", "Credit", "A score you type, not a bureau report"],
   ["/learn", "Learn", "Short original lessons"],
-  ["/help", "Help", "Search guidance written for BudgetCents"],
+  ["/help", "Help", "Search guidance written for Budget HQ PRO"],
   ["/checklists", "Checklists", "Tax and estate lists, not legal documents"],
   ["/setup", "Setup", "Resume or review household setup"],
   ["/settings", "Settings", "Security, export, and deletion"],
@@ -53,7 +53,7 @@ export function Assistant() {
   const form = useFormError();
   const dash = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   return (
-    <Page title="Assistant" lede="Questions are answered from figures BudgetCents already calculated. Text you paste is data, not an instruction to move money.">
+    <Page title="Assistant" lede="Questions are answered from figures Budget HQ PRO already calculated. Text you paste is data, not an instruction to move money.">
       <form onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         setAnswer(await api(scoped(session.householdId, "/assistant"), { method: "POST", body: JSON.stringify({ question: data.get("question"), spaceId: session.spaceId }) }));
@@ -647,7 +647,7 @@ export function Learn() {
   const [answer, setAnswer] = useState("");
   if (!state.data) return <Loading />;
   return (
-    <Page title="Learn" lede="These lessons were written for BudgetCents. Completing one does not enroll you with a coach.">
+    <Page title="Learn" lede="These lessons were written for Budget HQ PRO. Completing one does not enroll you with a coach.">
       {state.data.lessons.map((lesson) => (
         <article key={lesson.id} className="card" style={{ marginBottom: 12 }}>
           <h2>{lesson.title}</h2>
@@ -784,7 +784,7 @@ export function Settings() {
         <h2>Your data</h2>
         <RestoreBackup />
         <div className="row">
-          <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/backup"), "budgetcents-backup.json")}>Download backup</button>
+          <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/backup"), "budget-hq-pro-backup.json")}>Download backup</button>
           <button className="btn-secondary" onClick={async () => {
             if (!window.confirm("Archive assignments and keep transactions?")) return;
             const dash = await api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId));
@@ -891,7 +891,7 @@ export function HelpCenter() {
   const tickets = useLoad(() => api<{ tickets: { id: string; subject: string; status: string }[] }>("/api/support"), []);
   const form = useFormError();
   return (
-    <Page title="Help" lede="Search the guidance written for BudgetCents. A saved request is not a reply from a person, and it is not an appointment.">
+    <Page title="Help" lede="Search the guidance written for Budget HQ PRO. A saved request is not a reply from a person, and it is not an appointment.">
       <form role="search" className="row" onSubmit={(event) => { event.preventDefault(); setQuery(q); }}>
         <Field label="Search help"><input value={q} onChange={(event) => setQ(event.target.value)} /></Field>
         <button className="btn" type="submit">Search</button>

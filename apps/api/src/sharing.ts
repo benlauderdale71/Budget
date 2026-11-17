@@ -49,7 +49,7 @@ function statusOf(row: Record<string, unknown>, now = nowIso()) {
 
 function invitationMessage(origin: string, token: string, householdName: string, role: string, summary: string) {
   return [
-    `A BudgetCents invitation link was created for ${householdName}.`,
+    `A Budget HQ PRO invitation link was created for ${householdName}.`,
     `Role: ${roleLabel(role)}.`,
     summary,
     `${origin}/invite/${token}`,
@@ -68,7 +68,7 @@ async function storeInvitation(db: Database, householdId: string, email: string,
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [inviteId, householdId, email, role, sha256(token), new Date(Date.now() + WEEK_MS).toISOString(), disclosure.summary, created],
   );
-  await queueAccountMail(db, actorId, email, `BudgetCents invitation to ${householdName}`, invitationMessage(origin, token, householdName, role, disclosure.summary), created);
+  await queueAccountMail(db, actorId, email, `Budget HQ PRO invitation to ${householdName}`, invitationMessage(origin, token, householdName, role, disclosure.summary), created);
   return { token, inviteId, summary: disclosure.summary };
 }
 

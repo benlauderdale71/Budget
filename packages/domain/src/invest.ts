@@ -51,7 +51,7 @@ export interface PositionView {
 
 export function positionView(holding: Holding, quote?: Quote): PositionView {
   const missing: string[] = [];
-  if (!quote) missing.push("No price on file. Add a manual price or connect a market-data provider. BudgetCents does not invent live quotes.");
+  if (!quote) missing.push("No price on file. Add a manual price or connect a market-data provider. Budget HQ PRO does not invent live quotes.");
   else if (quote.currency !== holding.currency) missing.push(`The quote is ${quote.currency} and the holding is ${holding.currency}. They are not combined.`);
   if (holding.costBasisMinor == null) missing.push("Cost basis is missing, so gain and loss are not calculated.");
   const market = quote ? marketValueMinor(holding, quote) : null;

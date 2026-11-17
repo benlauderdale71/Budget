@@ -9,10 +9,10 @@ export interface RestorePlan {
 const COLLECTIONS = ["spaces", "buckets", "accounts", "transactions", "splits", "tags", "assignments", "goals", "schedules"] as const;
 
 export function planRestore(file: unknown, targetHouseholdId: string, owners: Record<string, Record<string, string>>): RestorePlan {
-  if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("The backup file is not a BudgetCents backup.");
+  if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error("The backup file is not a Budget HQ PRO backup.");
   const body = file as Record<string, unknown>;
   const version = Number(body.version);
-  if (version !== 1 && version !== 2) throw new Error("This backup version is not supported. Export a new backup from this version of BudgetCents.");
+  if (version !== 1 && version !== 2) throw new Error("This backup version is not supported. Export a new backup from this version of Budget HQ PRO.");
   const inserts: Record<string, Record<string, unknown>[]> = {};
   const skipped: string[] = [];
   const warnings: string[] = [];

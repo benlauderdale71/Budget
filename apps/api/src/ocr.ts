@@ -48,7 +48,7 @@ export function readerStatus(force = false): ReaderStatus {
     pdfText,
     onDevice: false,
     note: available
-      ? "Receipts are read on the BudgetCents server with local Tesseract and Poppler. The image is not sent to an external OCR service. This is not on-device recognition."
+      ? "Receipts are read on the Budget HQ PRO server with local Tesseract and Poppler. The image is not sent to an external OCR service. This is not on-device recognition."
       : "The local receipt reader is not available on this server. You can still type the receipt.",
   };
   return cached;

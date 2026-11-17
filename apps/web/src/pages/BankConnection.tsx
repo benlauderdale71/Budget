@@ -33,7 +33,7 @@ export function BankConnection() {
     })}>
       <Field label="Connection name"><input name="label" defaultValue="My bank" maxLength={80} required /></Field>
       <Field label="SimpleFIN setup token"><input name="token" type="password" autoComplete="off" required /></Field>
-      <label><input name="consent" type="checkbox" required /> Allow BudgetCents to read this connection’s account and transaction data.</label>
+      <label><input name="consent" type="checkbox" required /> Allow Budget HQ PRO to read this connection’s account and transaction data.</label>
       <p><button className="btn" disabled={busy || session.offline}>Connect bank feed</button></p>
     </form>}
     {state.data?.links.map((link) => <div key={link.id} className="card">

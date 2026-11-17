@@ -48,7 +48,7 @@ app.use("*", async (c, next) => {
     try {
       return await send(join(webRoot, "index.html"));
     } catch {
-      return c.text("BudgetCents API is running. Build the web app to serve the interface.", 200);
+      return c.text("Budget HQ PRO API is running. Build the web app to serve the interface.", 200);
     }
   }
 });
@@ -56,7 +56,7 @@ app.use("*", async (c, next) => {
 const fillPollMs = Number(process.env.BUDGETCENTS_FILL_POLL_MS ?? 0);
 
 serve({ fetch: app.fetch, port, hostname: process.env.HOST }, () => {
-  console.log(`BudgetCents API listening on http://127.0.0.1:${port}`);
+  console.log(`Budget HQ PRO API listening on http://127.0.0.1:${port}`);
   console.log(`Serving the web build from ${webRoot}`);
   if (demoLoginAllowed()) console.log("Sample household login is enabled for this environment.");
   if (mailConfigured()) {

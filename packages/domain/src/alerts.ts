@@ -1,6 +1,6 @@
 import { addDays, assertDate, daysBetween } from "./dates.js";
 
-/** Alert kinds BudgetCents can evaluate from ledger records. */
+/** Alert kinds Budget HQ PRO can evaluate from ledger records. */
 export const ALERT_KINDS = [
   "bill_due",
   "trial_ending",
@@ -53,7 +53,7 @@ export const ALERT_CHANNELS = ["inapp", "push", "email", "sms"] as const;
 export type AlertChannel = (typeof ALERT_CHANNELS)[number];
 
 export const CHANNEL_AVAILABILITY: Record<AlertChannel, { available: boolean; reason: string }> = {
-  inapp: { available: true, reason: "Shown in BudgetCents on the web and in the Android app." },
+  inapp: { available: true, reason: "Shown in Budget HQ PRO on the web and in the Android app." },
   push: {
     available: false,
     reason: "No remote push provider is configured. A notification the Android app posts locally is not remote push.",

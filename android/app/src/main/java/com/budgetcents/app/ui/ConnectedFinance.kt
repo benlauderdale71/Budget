@@ -75,7 +75,7 @@ internal fun SimplefinScreen(api: BudgetApi, hid: String, privacy: Boolean, onCh
     if (state.optBoolean("configured")) {
         FinanceField("Connection name", label) { label = it }
         OutlinedTextField(token, { token = it }, label = { Text("SimpleFIN setup token") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        TextButton(onClick = { consent = !consent }) { Text(if (consent) "Bank read consent granted — revoke" else "Allow BudgetCents to read this bank feed") }
+        TextButton(onClick = { consent = !consent }) { Text(if (consent) "Bank read consent granted — revoke" else "Allow Budget HQ PRO to read this bank feed") }
         Button(enabled = !busy && consent && token.isNotBlank(), onClick = { act {
             val result = withContext(Dispatchers.IO) { api.request("POST", "/api/households/$hid/providers/simplefin/connect", JSONObject().put("setupToken", token).put("label", label).put("consent", consent)) }
             token = ""; consent = false; note = result.optString("note"); refresh()
