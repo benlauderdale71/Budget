@@ -1,6 +1,6 @@
 import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
 import { Hono } from "hono";
-import { detailedSpending, spendingRangeError } from "@budgetcents/domain";
+import { annualSpending, detailedSpending, spendingRangeError } from "@budgetcents/domain";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
 import { mountTestIssuer } from "./oidc-test-provider.js";
@@ -1359,14 +1359,35 @@ export function createApp(db: Database) {
     const from = c.req.query("from") ?? loaded.budget.periodStart;
     const to = c.req.query("to") ?? loaded.input.asOf;
     const kind = c.req.param("kind");
-    if (kind === "spending-detail") {
-      const invalid = spendingRangeError(from, to);
-      if (invalid) throw new ApiError(400, invalid);
+    if (kind === "spending-detail" || kind === "spending-year") {
+      if (kind === "spending-detail") {
+        const invalid = spendingRangeError(from, to);
+        if (invalid) throw new ApiError(400, invalid);
+      }
       const accountId = c.req.query("accountId") || undefined;
       const bucketId = c.req.query("bucketId") || undefined;
       if (accountId && (!loaded.visibleAccountIds.has(accountId) || !loaded.input.accounts.some(a=>a.id===accountId))) throw new ApiError(404, "Account not available");
       if (bucketId && bucketId !== "uncategorized" && !loaded.input.buckets.some(b=>b.id===bucketId)) throw new ApiError(404, "Category not available");
-      const report = detailedSpending(loaded.input, { from, to, accountId, bucketId, group:c.req.query("group"), merchant:c.req.query("merchant"), tag:c.req.query("tag"), q:c.req.query("q") });
+      const filters = { accountId, bucketId, group:c.req.query("group"), merchant:c.req.query("merchant"), merchantGroup:c.req.query("merchantGroup"), tag:c.req.query("tag"), q:c.req.query("q") };
+      if (kind === "spending-year") {
+        const year = z.coerce.number().int().min(1900).max(2200).parse(c.req.query("year") ?? loaded.input.asOf.slice(0,4));
+        const grouping = z.enum(["common","exact"]).parse(c.req.query("merchantGrouping") ?? "common");
+        const report = annualSpending(loaded.input, year, filters, grouping === "common");
+        c.header("Cache-Control", "no-store");
+        if (c.req.query("format") === "csv") {
+          const places = new Intl.NumberFormat("en", {style:"currency",currency:report.currency}).resolvedOptions().maximumFractionDigits ?? 2;
+          const amount = (minor:number) => (minor / 10**places).toFixed(places);
+          const sections = [["Overall",[report.summary]],["Category",report.categories],["Category group",report.groups],["Merchant",report.merchants],["Account",report.accounts]] as const;
+          const csv = toCsv(sections.flatMap(([section,rows])=>rows.map(row=>({
+            Section:section,Name:row.label,Year:year,Currency:report.currency,"Year total":amount(row.yearlyMinor),"Monthly average":amount(row.monthlyAverageMinor),"Average months":12,
+            ...Object.fromEntries(row.monthlyMinor.map((value,index)=>[`${year}-${String(index+1).padStart(2,"0")}`,amount(value)])),
+            Spending:amount(row.grossMinor),Refunds:amount(row.refundsMinor),Transactions:row.count,"Original merchant names":section==="Merchant"?row.merchantNames.join(" | "):"",
+          }))));
+          return new Response(csv,{headers:{"content-type":"text/csv; charset=utf-8","content-disposition":`attachment; filename=spending-year-${year}.csv`,"cache-control":"no-store"}});
+        }
+        return c.json(report);
+      }
+      const report = detailedSpending(loaded.input, { from, to, ...filters });
       if (c.req.query("format") === "csv") {
         const places = new Intl.NumberFormat("en", { style:"currency", currency:report.currency }).resolvedOptions().maximumFractionDigits ?? 2;
         const csv = toCsv(report.lines.map(line=>({
