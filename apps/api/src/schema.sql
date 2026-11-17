@@ -403,6 +403,54 @@ CREATE TABLE IF NOT EXISTS quote_previews (
   applied_at text
 );
 
+CREATE TABLE IF NOT EXISTS physical_asset_documents (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  filename text NOT NULL,
+  data_base64 text NOT NULL,
+  fingerprint text NOT NULL,
+  size_bytes bigint NOT NULL,
+  created_at text NOT NULL,
+  UNIQUE (household_id, owner_user_id, fingerprint)
+);
+CREATE TABLE IF NOT EXISTS physical_assets (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  payload_json text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  source_key text,
+  document_id text REFERENCES physical_asset_documents(id) ON DELETE SET NULL,
+  created_at text NOT NULL,
+  updated_at text NOT NULL,
+  UNIQUE (household_id, owner_user_id, source_key)
+);
+CREATE INDEX IF NOT EXISTS physical_assets_household ON physical_assets (household_id);
+CREATE TABLE IF NOT EXISTS physical_asset_files (
+  asset_id text NOT NULL REFERENCES physical_assets(id) ON DELETE CASCADE,
+  document_id text NOT NULL REFERENCES physical_asset_documents(id) ON DELETE CASCADE,
+  PRIMARY KEY (asset_id, document_id)
+);
+CREATE TABLE IF NOT EXISTS physical_asset_estimates (
+  id text PRIMARY KEY,
+  asset_id text NOT NULL REFERENCES physical_assets(id) ON DELETE CASCADE,
+  user_id text REFERENCES users(id) ON DELETE SET NULL,
+  payload_json text NOT NULL,
+  created_at text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS physical_asset_estimates_asset ON physical_asset_estimates (asset_id);
+CREATE TABLE IF NOT EXISTS physical_asset_imports (
+  id text PRIMARY KEY,
+  household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  document_id text NOT NULL REFERENCES physical_asset_documents(id) ON DELETE CASCADE,
+  preview_json text NOT NULL,
+  result_json text,
+  confirm_hash text,
+  created_at text NOT NULL,
+  expires_at text NOT NULL
+);
 CREATE TABLE IF NOT EXISTS valuations (
   id text PRIMARY KEY,
   household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,

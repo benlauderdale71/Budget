@@ -15,7 +15,7 @@ export function Wealth() {
   if (!state.data) return <ErrorNote message={state.error ?? "No net worth"} onRetry={session.bump} />;
   const worth = state.data.netWorth;
   return (
-    <Page title="Wealth" lede={worth.formula}>
+    <Page title="Wealth" lede={worth.formula} actions={<Link className="btn-secondary" to="/physical-assets">Physical assets inventory</Link>}>
       <div className="grid three">
         <article className="card"><p className="kicker">Net</p><p className="figure"><Money minor={worth.netMinor} /></p></article>
         <article className="card"><p className="kicker">Assets</p><p className="figure"><Money minor={worth.assetsMinor} /></p></article>

@@ -1,6 +1,8 @@
-# BudgetCents
+# Budget HQ PRO
 
-BudgetCents is a household finance app for the browser and Android. Categories, zero-based assignments, envelopes, and flex spending are views of one ledger. Transfers, credit-card payments, and savings allocations do not become income or a second expense.
+Budget HQ PRO is a household finance app for the browser and Android. Categories, zero-based assignments, envelopes, and flex spending are views of one ledger. Transfers, credit-card payments, and savings allocations do not become income or a second expense.
+
+The web app also includes a [physical asset inventory](docs/PHYSICAL_ASSETS.md): belongings, categories, locations, file import with review, private documents, and dated estimates with research links and sources.
 
 The product was specified as LedgerOne and renamed to BudgetCents. The original prompt, coverage ledger, and source list are unchanged in [docs/source/LedgerOne_Complete_Build_Prompt.txt](docs/source/LedgerOne_Complete_Build_Prompt.txt).
 

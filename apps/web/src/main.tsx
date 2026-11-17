@@ -18,6 +18,11 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
       if (registration.waiting && navigator.serviceWorker.controller) window.dispatchEvent(new Event("budgetcents-update"));
     };
     announce();
+    // A ready worker may predate React's Shell listener (e.g. an installed app
+    // left open across a rename). Keep the update notice discoverable on return.
+    const check = () => { announce(); void registration.update().catch(() => undefined); };
+    window.addEventListener("focus", check);
+    setInterval(check, 60_000);
     registration.addEventListener("updatefound", () => {
       registration.installing?.addEventListener("statechange", announce);
     });

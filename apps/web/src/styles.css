@@ -357,3 +357,28 @@ td.num, th.num { text-align: right; }
   .annual-row-months dl div { display:block; }
   .annual-breakdown .report-table td { min-width:0; }
 }
+/* Physical inventory */
+.asset-toolbar { display: grid; grid-template-columns: 2fr repeat(5, minmax(110px, 1fr)); gap: 12px; margin-top: 20px; align-items: end; }
+.asset-toolbar .field { margin: 0; min-width: 0; }
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); gap: 16px; }
+.asset-group { margin: 24px 0; }
+.asset-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.asset-card p, .asset-card h3 { margin: 0; overflow-wrap: anywhere; }
+.asset-card > .btn-secondary { margin-top: auto; }
+.asset-card .row { justify-content: space-between; flex-wrap: wrap; }
+.asset-title { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
+.asset-value { font-size: 1.5rem; font-weight: 700; }
+.asset-photo { display: block; width: 100%; max-height: 320px; object-fit: contain; border-radius: 12px; background: var(--surface); margin-block: 12px; }
+.asset-tags, .asset-searches { display: flex; gap: 8px; flex-wrap: wrap; }
+.asset-searches { margin: 12px 0; }
+.asset-export { flex-wrap: wrap; margin-top: 12px; }
+.asset-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
+.asset-fields .field { margin: 0; min-width: 0; }
+.asset-fields input, .asset-fields select, .asset-fields textarea { width: 100%; min-width: 0; }
+.asset-notes, .asset-extracted { white-space: pre-wrap; overflow-wrap: anywhere; }
+.asset-extracted { max-height: 240px; overflow: auto; }
+.asset-history { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.asset-import-list { display: grid; gap: 12px; margin: 16px 0; max-height: 440px; overflow: auto; }
+.asset-import-list .row { flex-wrap: wrap; }
+@media (max-width: 1100px) { .asset-toolbar { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 600px) { .asset-toolbar, .asset-fields { grid-template-columns: 1fr; } .asset-searches a { width: 100%; } }

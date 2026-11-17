@@ -10,14 +10,14 @@ export interface BillDocumentRead { grids: BillImportGrid[]; text: string; forma
 type Word = { x: number; y: number; w: number; h: number; text: string };
 
 let activeReaders = 0;
-export async function readBillDocument(bytes: Buffer, filename: string): Promise<BillDocumentRead> {
+export async function readBillDocument(bytes: Buffer, filename: string, header?: (s:string)=>string|undefined): Promise<BillDocumentRead> {
   if (activeReaders >= 2) throw new Error("The document reader is busy. Please try again shortly.");
   activeReaders++;
-  try { return await readDocument(bytes, filename); }
+  try { return await readDocument(bytes, filename, header); }
   finally { activeReaders--; }
 }
 
-async function readDocument(bytes: Buffer, filename: string): Promise<BillDocumentRead> {
+async function readDocument(bytes: Buffer, filename: string, header?: (s:string)=>string|undefined): Promise<BillDocumentRead> {
   if (!bytes.length || bytes.length > 8_000_000) throw new Error("Choose a file no larger than 8 MB.");
   const ext = filename.toLowerCase().split(".").pop();
   if (ext === "csv") {
@@ -47,11 +47,14 @@ async function readDocument(bytes: Buffer, filename: string): Promise<BillDocume
       const grids: BillImportGrid[] = [], texts: string[] = [];
       for (let page = 1; page <= count; page++) {
         const text = await run(process.env.BUDGETCENTS_PDFTOTEXT || "pdftotext", ["-layout", "-f", String(page), "-l", String(page), path, "-"]);
-        if ((text.match(/[a-z]/gi)?.length ?? 0) >= 20) { texts.push(text); grids.push(wordsToGrid(textWords(text), `PDF page ${page}`, false)); }
+        if ((text.match(/[a-z]/gi)?.length ?? 0) >= 20) {
+          texts.push(text);
+          grids.push(header ? { name:`PDF page ${page}`,rows:text.split(/\r?\n/).map(line=>line.trim().split(/\s{2,}/)) } : wordsToGrid(textWords(text), `PDF page ${page}`, false));
+        }
         else {
           const prefix = join(dir, `scan-${page}`);
           await run(process.env.BUDGETCENTS_PDFTOPPM || "pdftoppm", ["-f", String(page), "-l", String(page), "-singlefile", "-png", "-scale-to", "2600", path, prefix]);
-          const read = await image(await readFile(`${prefix}.png`), dir, `PDF page ${page}`);
+          const read = await image(await readFile(`${prefix}.png`), dir, `PDF page ${page}`, header);
           texts.push(read.text); grids.push(read.grid);
         }
       }
@@ -59,7 +62,7 @@ async function readDocument(bytes: Buffer, filename: string): Promise<BillDocume
     }
     // Sharp validates image signatures and pixel limits, regardless of the supplied name.
     if (!["png", "jpg", "jpeg", "webp"].includes(ext ?? "")) throw new Error("Use PNG, JPG, WebP, PDF, CSV, XLS or XLSX.");
-    const read = await image(bytes, dir, "Image");
+    const read = await image(bytes, dir, "Image", header);
     return { grids: [read.grid], text: read.text, format: "image", pages: 1, warnings: ["Images are read privately on the app server. Check recognition carefully, especially small text and handwritten entries."] };
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -83,7 +86,7 @@ function excel(bytes: Buffer): Promise<BillImportGrid[]> {
   });
 }
 
-async function image(bytes: Buffer, dir: string, name: string): Promise<{grid: BillImportGrid; text: string}> {
+async function image(bytes: Buffer, dir: string, name: string, header?: (s:string)=>string|undefined): Promise<{grid: BillImportGrid; text: string}> {
   const { data, info } = await sharp(bytes, { limitInputPixels: 12_000_000 }).rotate().flatten({ background: "#fff" }).grayscale().raw().toBuffer({ resolveWithObject: true });
   const w = info.width, h = info.height;
   if (w < 40 || h < 40 || w > 8000 || h > 8000) throw new Error("Use an image at least 40 pixels wide and no larger than 12 megapixels.");
@@ -122,7 +125,7 @@ async function image(bytes: Buffer, dir: string, name: string): Promise<{grid: B
   };
   const words=await read(out,"table");
   const hasGrid=xx.length>=4&&xx.length<60&&yy.length>=5&&yy.length<1001;
-  const grid=hasGrid?gridFromBoundaries(words,[0,...xx,w],[top,...yy,h],name):wordsToGrid(words,name,true);
+  const grid=hasGrid?gridFromBoundaries(words,[0,...xx,w],[top,...yy,h],name):wordsToGrid(words,name,true,header);
   if(hasGrid&&gutter&&billHeader(grid.rows[0]?.[0]??"")==="date") {
     const full=Buffer.from(out);
     for(let y=0;y<h;y++) for(let x=0;x<gutter;x++) full[y*w+x]=255;
@@ -156,17 +159,17 @@ function gridFromBoundaries(words: Word[], xs:number[], ys:number[], name:string
 function textWords(text:string): Word[] {
   return text.split(/\r?\n/).flatMap((line,y)=>[...line.matchAll(/\S+/g)].map(match=>({x:match.index!, y:y*10, w:match[0].length,h:8,text:match[0]})));
 }
-function wordsToGrid(words:Word[],name:string,ocr:boolean): BillImportGrid {
+function wordsToGrid(words:Word[],name:string,ocr:boolean,header?: (s:string)=>string|undefined): BillImportGrid {
   const lines:Word[][]=[];
   for(const word of [...words].sort((a,b)=>a.y-b.y || a.x-b.x)) { const last=lines[lines.length-1]; if(last && Math.abs((last[0].y+last[0].h/2)-(word.y+word.h/2))<Math.max(last[0].h,word.h)*.6) last.push(word); else lines.push([word]); }
   let columns:number[]=[];
   for(const line of lines) {
     const sorted=line.sort((a,b)=>a.x-b.x), found:{x:number;field:string}[]=[];
     for(let i=0;i<sorted.length;i++) for(let length=Math.min(3,sorted.length-i);length>=1;length--) {
-      const field=billHeader(sorted.slice(i,i+length).map(word=>word.text).join(" "));
+      const field=(header||billHeader)(sorted.slice(i,i+length).map(word=>word.text).join(" "));
       if(field){found.push({x:sorted[i].x,field});i+=length-1;break;}
     }
-    if(found.some(item=>["name","income","estimate"].includes(item.field)) && found.some(item=>["amount","monthly","annual"].includes(item.field))) { columns=found.map(item=>item.x-1);break; }
+    if(header ? found.some(item=>item.field==="name") && found.length>=2 : found.some(item=>["name","income","estimate"].includes(item.field)) && found.some(item=>["amount","monthly","annual"].includes(item.field))) { columns=found.map(item=>item.x-1);break; }
   }
   if(!columns.length) return {name,rows:lines.map(line=>[line.map(word=>word.text).join(" ")]),ocr};
   columns[0]=-1;
