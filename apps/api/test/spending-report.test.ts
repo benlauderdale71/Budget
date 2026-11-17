@@ -45,6 +45,20 @@ describe("detailed spending API",()=>{
     const filtered=await request(`${url}&bucketId=${food}`,reader.token);expect(filtered.body.summary.netMinor).toBe(5000);expect(filtered.body.previous.netMinor).toBe(3000);
     const csv=await app.request(`${url}&format=csv`,{headers:auth(reader.token)});expect(csv.status).toBe(200);const csvText=await csv.text();
     expect(csvText).toContain("Net spending");expect(csvText).toContain("Grocery and home purchase");expect(csvText).toContain("Joint Checking");expect(csvText).not.toMatch(/Secret Vault|Hidden Payee|654\.32/);expect(csvText.split("\n")).toHaveLength(4);
+    const annualUrl=`${base}/reports/spending-year?year=2026&spaceId=${owner.spaceId}`;
+    const annual=await request(annualUrl,reader.token);expect(annual.status).toBe(200);
+    expect(annual.body.summary).toMatchObject({yearlyMinor:12000,monthlyAverageMinor:1000,count:3});
+    expect(annual.body.summary.monthlyMinor).toEqual([0,0,0,0,0,0,0,0,0,3000,9000,0]);
+    expect(annual.body.merchants[0]).toMatchObject({label:"MARKET",yearlyMinor:12000,monthlyAverageMinor:1000});
+    expect(JSON.stringify(annual.body)).not.toMatch(/Secret Vault|Hidden Payee|65432|secret-tag/);
+    expect((await request(`${annualUrl}&merchantGrouping=exact`,reader.token)).body.merchants[0].label).toBe("Market");
+    expect((await request(`${annualUrl}&bucketId=${food}`,reader.token)).body.summary.yearlyMinor).toBe(8000);
+    expect((await request(`${annualUrl}&merchantGroup=MARKET`,reader.token)).body.summary.yearlyMinor).toBe(12000);
+    const annualCsv=await app.request(`${annualUrl}&format=csv`,{headers:auth(reader.token)});expect(annualCsv.status).toBe(200);
+    const annualText=await annualCsv.text();expect(annualText).toContain('Year total,Monthly average,Average months,2026-01');expect(annualText).toContain('120.00,10.00,12');expect(annualText).toContain('2026-12');expect(annualText).not.toMatch(/Secret Vault|Hidden Payee|654\.32/);
+    expect((await request(`${annualUrl}&accountId=${secret}`,reader.token)).status).toBe(404);expect((await request(`${annualUrl}&bucketId=missing`,reader.token)).status).toBe(404);
+    for(const year of ["2026.5","0","2201","oops"])expect((await request(`${base}/reports/spending-year?year=${year}`,reader.token)).status).toBe(400);
+    expect((await request(`${annualUrl}&merchantGrouping=unknown`,reader.token)).status).toBe(400);
     expect((await request(`${url}&accountId=${secret}`,reader.token)).status).toBe(404);
     expect((await request(`${url}&bucketId=absent`,reader.token)).status).toBe(404);
     for(const range of ["from=2026-02-30&to=2026-03-01","from=2026-11-02&to=2026-11-01","from=2000-01-01&to=2026-01-01"]) expect((await request(`${base}/reports/spending-detail?${range}`,reader.token)).status).toBe(400);
@@ -52,5 +66,7 @@ describe("detailed spending API",()=>{
     await db.query(`DELETE FROM memberships WHERE household_id=$1 AND user_id=$2`,[owner.hid,reader.userId]);
     expect((await request(url,reader.token)).status).toBe(404);
     expect((await app.request(`${url}&format=csv`,{headers:auth(reader.token)})).status).toBe(404);
+    expect((await request(annualUrl,reader.token)).status).toBe(404);
+    expect((await app.request(`${annualUrl}&format=csv`,{headers:auth(reader.token)})).status).toBe(404);
   });
 });

@@ -311,6 +311,28 @@ td.num, th.num { text-align: right; }
 .spending-trend text { font:13px var(--font); fill:var(--muted); }
 .report-period { line-height:1.8; }
 .report-print-only { display:none; }
+.annual-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.annual-metrics article { padding:16px; background:var(--teal-soft); border-radius:12px; }
+.annual-metrics h3 { margin:0; font-size:16px; }
+.annual-grouping { display:flex; align-items:center; gap:10px; margin-block:16px; }
+.annual-grouping input { width:20px; height:20px; flex-shrink:0; }
+.annual-month-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.annual-month-grid article { border:1px solid var(--line); border-radius:10px; padding:12px; }
+.annual-month-grid h4 { margin:0 0 8px; }
+.annual-month-grid small { display:block; color:var(--muted); margin-top:8px; }
+.annual-breakdown { margin-top:28px; border-top:1px solid var(--line); padding-top:12px; }
+.annual-breakdown .report-table tbody th { width:42%; }
+.annual-breakdown .report-table tbody th { text-transform:none; letter-spacing:normal; }
+.annual-breakdown .report-table td { min-width:130px; }
+.annual-row-months { margin-top:12px; font-weight:400; }
+.annual-row-months summary, .annual-extra > summary { cursor:pointer; color:var(--teal); padding:8px 0; }
+.annual-row-months dl { margin:8px 0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 16px; min-width:290px; }
+.annual-row-months dl div { display:flex; justify-content:space-between; gap:12px; }
+.annual-row-months dd { margin:0; }
+.annual-original-names { font-size:13px; color:var(--muted); overflow-wrap:anywhere; max-width:36rem; }
+.annual-extra { margin-block:20px; }
+#spending-period { scroll-margin-top:24px; }
+@media (max-width:700px) { .annual-month-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .report-metrics.annual-metrics { grid-template-columns:1fr; } }
 @media (max-width:1100px) { .report-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:600px) { .report-filters { grid-template-columns:1fr; } .report-metrics { grid-template-columns:1fr; gap:10px; } .report-metrics .card { margin:0; } .report-table { margin-inline:-6px; } }
 @media print {
@@ -330,4 +352,8 @@ td.num, th.num { text-align: right; }
   .spending-report h2, .spending-report h3 { break-after:avoid; }
   .spending-report .report-drill { min-height:0; color:black; text-decoration:none; font-size:inherit; }
   .spending-report .report-print-only { display:block; }
+  .annual-metrics { break-inside:avoid; }
+  .annual-row-months dl { font-size:9px; min-width:0; }
+  .annual-row-months dl div { display:block; }
+  .annual-breakdown .report-table td { min-width:0; }
 }

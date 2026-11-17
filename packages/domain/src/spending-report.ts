@@ -1,8 +1,9 @@
 import { addDays, daysBetween, isIsoDate } from "./dates.js";
 import { spendingContributions } from "./reports.js";
 import type { EngineInput } from "./types.js";
+import { spendingMerchantName } from "./merchant-names.js";
 
-export interface SpendingFilters { from: string; to: string; accountId?: string; bucketId?: string; group?: string; merchant?: string; tag?: string; q?: string }
+export interface SpendingFilters { from: string; to: string; accountId?: string; bucketId?: string; group?: string; merchant?: string; merchantGroup?: string; tag?: string; q?: string }
 export interface SpendingLine {
   key: string; transactionId: string; date: string; accountId: string; account: string;
   bucketId: string; category: string; group: string; merchant: string; amountMinor: number;
@@ -57,7 +58,7 @@ export function detailedSpending(input: EngineInput, filters: SpendingFilters) {
     }
   }
   const matching = all.filter(l=>(!filters.bucketId||l.bucketId===filters.bucketId)&&(!filters.group||l.group===filters.group)
-    &&(!filters.merchant||l.merchant===filters.merchant)&&(!filters.tag||l.tags.includes(filters.tag))
+    &&(!filters.merchant||l.merchant===filters.merchant)&&(!filters.merchantGroup||spendingMerchantName(l.merchant)===filters.merchantGroup)&&(!filters.tag||l.tags.includes(filters.tag))
     &&(!filters.q||[l.merchant,l.notes,l.memo,...l.tags].join(" ").toLocaleLowerCase().includes(filters.q.toLocaleLowerCase())));
   const lines = matching.filter(l=>l.date>=filters.from).sort((a,b)=>b.date.localeCompare(a.date)||a.key.localeCompare(b.key));
   const previous = matching.filter(l=>l.date<filters.from);
@@ -86,3 +87,33 @@ export function detailedSpending(input: EngineInput, filters: SpendingFilters) {
       merchants:[...new Set(all.map(l=>l.merchant))].sort(),tags:[...new Set(all.flatMap(l=>l.tags))].sort()}};
 }
 export type DetailedSpendingReport = ReturnType<typeof detailedSpending>;
+
+export interface AnnualSpendingRow {
+  key: string; label: string; group?: string; grossMinor: number; refundsMinor: number;
+  yearlyMinor: number; monthlyAverageMinor: number; monthlyMinor: number[]; count: number; merchantNames: string[];
+}
+
+/** Twelve calendar months, including zero-activity months. Averages are rounded only after summing. */
+export function annualSpending(input: EngineInput, year: number, filters: Omit<SpendingFilters, "from" | "to"> = {}, groupMerchants = true) {
+  if (!Number.isInteger(year) || year < 1900 || year > 2200) throw new Error("Choose a year between 1900 and 2200.");
+  const from = `${year}-01-01`, to = `${year}-12-31`;
+  const report = detailedSpending(input, { ...filters, from, to });
+  function annualRow(key: string, label: string, lines: SpendingLine[], group?: string): AnnualSpendingRow {
+    const summary = totals(lines, report.days);
+    const monthlyMinor = Array<number>(12).fill(0);
+    for (const line of lines) monthlyMinor[Number(line.date.slice(5, 7)) - 1] += line.amountMinor;
+    return {key,label,group,grossMinor:summary.grossMinor,refundsMinor:summary.refundsMinor,yearlyMinor:summary.netMinor,
+      monthlyAverageMinor:Math.round(summary.netMinor / 12),monthlyMinor,count:summary.count,merchantNames:[...new Set(lines.map(l=>l.merchant))].sort()};
+  }
+  function groupRows(keyOf: (line: SpendingLine) => string, labelOf: (line: SpendingLine) => string): AnnualSpendingRow[] {
+    const groups = new Map<string, SpendingLine[]>();
+    for (const line of report.lines) { const key = keyOf(line); const rows = groups.get(key) ?? []; rows.push(line); groups.set(key,rows); }
+    return [...groups].map(([key,lines])=>annualRow(key,labelOf(lines[0]),lines,lines[0].group)).sort((a,b)=>b.yearlyMinor-a.yearlyMinor||a.label.localeCompare(b.label));
+  }
+  const merchantKey = (line: SpendingLine) => groupMerchants ? spendingMerchantName(line.merchant) : line.merchant;
+  return {year,from,to,currency:report.currency,averageMonths:12,groupMerchants,summary:annualRow("all","All spending",report.lines),
+    monthly:report.monthly,categories:groupRows(l=>l.bucketId,l=>l.category),groups:groupRows(l=>l.group,l=>l.group),
+    merchants:groupRows(merchantKey,merchantKey),accounts:groupRows(l=>l.accountId,l=>l.account),
+    excluded:report.excluded};
+}
+export type AnnualSpendingReport = ReturnType<typeof annualSpending>;

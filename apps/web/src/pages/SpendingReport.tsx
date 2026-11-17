@@ -6,8 +6,9 @@ import { api, downloadFile } from "../api.js";
 import { formatMoney, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useLoad } from "../ui.js";
+import { AnnualSpending } from "./AnnualSpending.js";
 
-const filterKeys = ["accountId","bucketId","group","merchant","tag","q"] as const;
+const filterKeys = ["accountId","bucketId","group","merchant","merchantGroup","tag","q"] as const;
 const PAGE_SIZE = 25;
 function presetRange(preset:string) {
   const today=todayISO(), month=periodFromDate(today);
@@ -35,7 +36,7 @@ function SpendingReportBody() {
   useEffect(()=>{setDraft(filtersFrom(params));setPage(0);setError("");},[query]);
   const data=!report.loading&&report.data?.query===query?report.data.value:undefined, options=report.data?.value.options;
   const changed=queryFor(draft)!==query;
-  function apply(next:SpendingFilters){setParams(queryFor(next));setPage(0);}
+  function apply(next:SpendingFilters){const updated=new URLSearchParams(queryFor(next));for(const key of ["year","merchantGrouping"])if(params.has(key))updated.set(key,params.get(key)!);setParams(updated);setPage(0);}
   function drill(key:typeof filterKeys[number],value:string){apply({...filtersFrom(params),[key]:value});}
   const sorted=data?[...data.lines].sort((a,b)=>sort==="largest"?b.amountMinor-a.amountMinor||b.date.localeCompare(a.date):sort==="merchant"?a.merchant.localeCompare(b.merchant)||b.date.localeCompare(a.date):b.date.localeCompare(a.date)||a.key.localeCompare(b.key)):[];
   const pages=Math.max(1,Math.ceil(sorted.length/PAGE_SIZE));
@@ -57,16 +58,22 @@ function SpendingReportBody() {
         <Field label="Account"><select value={draft.accountId??""} onChange={e=>setDraft({...draft,accountId:e.target.value})}><option value="">All visible accounts</option>{options?.accounts.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></Field>
         <Field label="Category group"><select value={draft.group??""} onChange={e=>setDraft({...draft,group:e.target.value,bucketId:""})}><option value="">All groups</option>{options?.groups.map(g=><option key={g}>{g}</option>)}</select></Field>
         <Field label="Category"><select value={draft.bucketId??""} onChange={e=>setDraft({...draft,bucketId:e.target.value})}><option value="">All categories</option><option value="uncategorized">Uncategorized</option>{options?.categories.filter(c=>!draft.group||c.group===draft.group).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
-        <Field label="Merchant"><select value={draft.merchant??""} onChange={e=>setDraft({...draft,merchant:e.target.value})}><option value="">All merchants</option>{options?.merchants.map(m=><option key={m}>{m}</option>)}</select></Field>
+        <Field label="Merchant"><select value={draft.merchant??""} onChange={e=>setDraft({...draft,merchant:e.target.value,merchantGroup:""})}><option value="">All merchants</option>{options?.merchants.map(m=><option key={m}>{m}</option>)}</select></Field>
         <Field label="Tag"><select value={draft.tag??""} onChange={e=>setDraft({...draft,tag:e.target.value})}><option value="">All tags</option>{options?.tags.map(t=><option key={t}>{t}</option>)}</select></Field>
         <Field label="Search merchant or notes"><input type="search" maxLength={200} value={draft.q??""} onChange={e=>setDraft({...draft,q:e.target.value})}/></Field>
       </div></details>
       <div className="row"><button type="submit" className="btn">Apply filters</button><button type="button" className="btn-quiet" onClick={()=>apply(presetRange("month"))}>Reset report</button>{changed?<span className="muted">Apply to update the report below.</span>:null}</div>
+      {params.get("merchantGroup")?<p>Grouped merchant filter: <strong>{params.get("merchantGroup")}</strong> <button className="btn-quiet" type="button" onClick={()=>drill("merchantGroup","")}>Clear grouped merchant</button></p>:null}
     </form>
+    <AnnualSpending filters={filtersFrom(params)} onDrill={(extra,year,month)=>{
+      const range=month==null?{from:`${year}-01-01`,to:`${year}-12-31`}:((period)=>({from:period.start,to:period.end}))(periodFromDate(`${year}-${String(month+1).padStart(2,"0")}-01`));
+      apply({...filtersFrom(params),...range,...extra});document.getElementById("spending-period")?.scrollIntoView({behavior:"smooth"});
+    }}/>
+    <h2 id="spending-period">Selected-period details</h2>
     {report.loading?<Loading label="Building your spending report"/>:report.error?<ErrorNote message={report.error} onRetry={session.bump}/>:null}
     {data?<>
       <p className="report-period"><strong>{household?.name}</strong> · {data.from} through {data.to} · {data.currency}<br/><span className="muted">Compared with {data.previousFrom} through {data.previousTo} ({data.days} days each), using the same filters.</span></p>
-      <div className="chips report-no-print">{filterKeys.filter(k=>params.get(k)).map(k=><button key={k} className="chip" onClick={()=>drill(k,"")}>Clear {k==="bucketId"?"category":k==="accountId"?"account":k==="q"?"search":k} ×</button>)}</div>
+      <div className="chips report-no-print">{filterKeys.filter(k=>params.get(k)).map(k=><button key={k} className="chip" onClick={()=>drill(k,"")}>Clear {k==="bucketId"?"category":k==="accountId"?"account":k==="merchantGroup"?"grouped merchant":k==="q"?"search":k} ×</button>)}</div>
       <p className="report-print-only">Filters: {filterKeys.filter(k=>params.get(k)).map(k=>`${k==="accountId"?"Account":k==="bucketId"?"Category":k}: ${k==="accountId"?options?.accounts.find(a=>a.id===params.get(k))?.name:k==="bucketId"?options?.categories.find(c=>c.id===params.get(k))?.name??"Uncategorized":params.get(k)}`).join("; ")||"All visible spending"}</p>
       <div className="report-metrics">
         <article className="card report-total"><h2>Net spending</h2><p className="report-value"><Money minor={data.summary.netMinor}/></p><p>Spending minus refunds</p><p><Money minor={Math.abs(data.changeMinor)}/> {data.changeMinor<0?"less":data.changeMinor>0?"more":"change"} than the previous period{hidden||data.changeBps==null?"":` (${Math.abs(data.changeBps/100).toFixed(1)}%)`}</p></article>
