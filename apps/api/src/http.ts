@@ -13,6 +13,7 @@ import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, payc
 import { mountLoans } from "./loans.js";
 import { mountIncomePlan } from "./income-plan.js";
 import { mountBillImport } from "./bill-import.js";
+import { mountPhysicalAssets } from "./physical-assets.js";
 import { mountBankRoutes } from "./providers/bank-routes.js";
 import { mountMarketRoutes } from "./providers/market.js";
 import { queueAccountMail, mailConfigured } from "./providers/mail.js";
@@ -2800,6 +2801,7 @@ export function createApp(db: Database) {
   });
   mountIncome(app, db, incomeHooks());
   mountBillImport(app, db, { actor, assertSpace, mustAccount, createBill: (me, hid, raw) => createBill(db, me, hid, raw, incomeHooks()) });
+  mountPhysicalAssets(app, db, actor);
   mountLoans(app, db, {
     actor,
     assertSpace,
