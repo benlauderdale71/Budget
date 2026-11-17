@@ -70,14 +70,14 @@ function Shell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
-  if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
+  if (!session.ready) return <p className="state">Opening Budget HQ PRO…</p>;
   if (!session.user || !session.householdId) return <Navigate to="/login" replace />;
   const household = session.households.find((item) => item.id === session.householdId);
   return (
     <div className="shell">
       <a className="skip" href="#main">Skip to content</a>
       <aside className="sidebar">
-        <div className="wordmark">Budget<i>Cents</i></div>
+        <div className="wordmark">Budget <i>HQ</i> PRO</div>
         <nav aria-label="Primary">
           {primary.map(([to, label]) => <NavLink key={to} to={to} end={to === "/"} className="nav-link">{label}</NavLink>)}
           {groups.map((group) => (
@@ -120,7 +120,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             sessionStorage.setItem("budgetcents.reload", "1");
             navigator.serviceWorker.getRegistration().then((registration) => registration?.waiting?.postMessage("skip-waiting"));
           }}>Reload to update</button></div> : null}
-          {!standalone && install ? <div className="banner" role="status">Install BudgetCents on this device. It opens in its own window. The installed copy still needs a completed online load before it can start offline. <button className="btn-secondary" type="button" onClick={() => { void install.prompt(); setInstall(null); }}>Install</button></div> : null}
+          {!standalone && install ? <div className="banner" role="status">Install Budget HQ PRO on this device. It opens in its own window. The installed copy still needs a completed online load before it can start offline. <button className="btn-secondary" type="button" onClick={() => { void install.prompt(); setInstall(null); }}>Install</button></div> : null}
           {children}
         </main>
       </div>

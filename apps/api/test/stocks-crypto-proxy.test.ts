@@ -86,6 +86,64 @@ it("streams mutation bodies and response bytes without changing content", async 
   expect(await response.json()).toEqual({ ok: true });
 });
 
+const MARKET_HTML = '<!doctype html><html><head><title>Market Pulse</title><script src="/stocks-crypto/assets/app.js" defer></script></head><body class="market"><div id="root"></div></body></html>';
+
+it("keeps a same-window budget return link outside the market app on home and deep pages", async () => {
+  const policy = "default-src 'self'; script-src 'self'; style-src 'self'";
+  for (const path of ["/stocks-crypto/", "/stocks-crypto/asset/BTC", "/stocks-crypto/analysis?tab=metrics"]) {
+    const fake: typeof fetch = async () => new Response(MARKET_HTML, { headers: {
+      "content-type": "text/html; charset=utf-8", "content-security-policy": policy,
+      etag: '"original"', "last-modified": "Mon, 16 Nov 2026 10:00:00 GMT", "content-digest": "original-digest", "accept-ranges": "bytes",
+    } });
+    const response = await proxyStocksCrypto(new Request(`https://budgethqpro.com${path}`, { headers: { accept: "text/html", "sec-fetch-dest": "document" } }), USER_ID, fake);
+    const html = await response.text();
+    expect(html).toContain('<a href="/" target="_self">');
+    expect(html).toContain("Back to Budget HQ PRO");
+    expect(html).toContain('<link rel="stylesheet" href="/market-budget-nav.css"></head>');
+    expect(html).toContain('<body class="market"><nav');
+    expect(html).toContain('</nav><div id="root"></div>');
+    expect(html).toContain('<script src="/stocks-crypto/assets/app.js" defer></script>');
+    expect(response.headers.get("content-security-policy")).toBe(policy);
+    for (const name of ["etag", "last-modified", "content-digest", "accept-ranges"]) expect(response.headers.has(name)).toBe(false);
+  }
+});
+
+it("does not add navigation to API replies, assets, downloads, partial responses or mutation replies", async () => {
+  for (const scenario of [
+    { path: "/stocks-crypto/api/export" },
+    { path: "/stocks-crypto/assets/example.html" },
+    { path: "/stocks-crypto/analysis", method: "POST" },
+    { path: "/stocks-crypto/export", disposition: "attachment; filename=report.html" },
+    { path: "/stocks-crypto/analysis", status: 206 },
+    { path: "/stocks-crypto/analysis", range: "bytes=0-99" },
+    { path: "/stocks-crypto/analysis", status: 302 },
+  ]) {
+    const headers = new Headers({ "content-type": "text/html", etag: '"original"' });
+    if (scenario.disposition) headers.set("content-disposition", scenario.disposition);
+    const fake: typeof fetch = async () => new Response(MARKET_HTML, { status: scenario.status ?? 200, headers });
+    const requestHeaders = new Headers({ accept: "text/html", origin: "https://budgethqpro.com" });
+    if (scenario.range) requestHeaders.set("range", scenario.range);
+    const response = await proxyStocksCrypto(new Request(`https://budgethqpro.com${scenario.path}`, { method: scenario.method ?? "GET", headers: requestHeaders }), USER_ID, fake);
+    expect(await response.text()).toBe(MARKET_HTML);
+    expect(response.headers.get("etag")).toBe('"original"');
+  }
+});
+
+it("offers a return to the budget when the market service cannot open", async () => {
+  const request = new Request("https://budgethqpro.com/stocks-crypto/", { headers: { accept: "text/html" } });
+  for (const fake of [
+    async () => { throw new Error("private transport detail"); },
+    async () => new Response(null, { status: 401 }),
+  ]) {
+    const response = await proxyStocksCrypto(request, USER_ID, fake);
+    const html = await response.text();
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(html).toContain('<a href="/" target="_self">');
+    expect(html).not.toContain("private transport detail");
+  }
+});
+
 it("rejects cross-origin mutations and missing signing configuration before contacting the service", async () => {
   let calls = 0;
   const fake: typeof fetch = async () => { calls++; return new Response("unexpected"); };

@@ -74,6 +74,7 @@ it("serves an anonymous document handoff but protects assets and API responses",
   expect(response.headers.get("content-security-policy")).toContain("script-src 'self'");
   const html = await response.text();
   expect(html).toContain('src="/market-login.js"');
+  expect(html).toContain('<a href="/" target="_self">');
   expect(html).not.toContain(f.token); expect(html).not.toContain(f.userId);
   for (const path of ["/stocks-crypto/assets/index.js", "/stocks-crypto/api/market/paper"]) {
     const asset = await f.app.request(`https://budgethqpro.com${path}`, { headers: { accept: "text/html", "sec-fetch-dest": "script" } });

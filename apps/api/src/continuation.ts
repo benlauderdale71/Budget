@@ -21,7 +21,7 @@ const HELP = [
   { id: "alerts", title: "Alerts", body: "Alerts are checked from the ledger you can see. A background refresh does not send the same open alert again. Push, email, and text are off until a provider is connected." },
   { id: "offline", title: "Offline", body: "A transaction or assignment kept on this device is waiting. It is not saved on the ledger until the server accepts it. A saved dashboard is the last copy this device was allowed to see, and it is not the current ledger." },
   { id: "retirement", title: "Retirement projections", body: "A projection is a model with stated assumptions. It is not a guarantee and it does not move money in the register." },
-  { id: "providers", title: "Outside services", body: "The sandbox bank can import its built-in test history. That history is not your bank. A stored price or credit event does not create a transaction. A request stored in BudgetCents is not a completed cancellation, transfer, booking, tax filing, or legal document." },
+  { id: "providers", title: "Outside services", body: "The sandbox bank can import its built-in test history. That history is not your bank. A stored price or credit event does not create a transaction. A request stored in Budget HQ PRO is not a completed cancellation, transfer, booking, tax filing, or legal document." },
 ];
 
 export interface ContinuationDeps {
@@ -51,7 +51,7 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     await deps.actor(c);
     const q = (c.req.query("q") ?? "").trim().toLowerCase();
     const articles = HELP.filter((article) => !q || `${article.title} ${article.body}`.toLowerCase().includes(q));
-    return c.json({ articles, note: "These articles were written for BudgetCents. They are guidance, not a filed support request or an appointment." });
+    return c.json({ articles, note: "These articles were written for Budget HQ PRO. They are guidance, not a filed support request or an appointment." });
   });
 
   app.get("/api/support", async (c) => {
@@ -105,7 +105,7 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
       ? `localStorage.setItem("budgetcents.token", ${JSON.stringify(token)}); location.replace(${JSON.stringify(path)});`
       : `sessionStorage.setItem("budgetcents.oidcPending", ${JSON.stringify(pending)}); location.replace(${JSON.stringify(`/login?oidc=${mode}`)});`;
     const note = "note" in done ? String(done.note ?? "Signing in.") : "Signing in.";
-    return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>BudgetCents sign-in</title></head><body><p>${note.replace(/[<>&]/g, "")}</p><script>${script}</script></body></html>`);
+    return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Budget HQ PRO sign-in</title></head><body><p>${note.replace(/[<>&]/g, "")}</p><script>${script}</script></body></html>`);
   });
 
   app.post("/api/auth/oidc/link", async (c) => {
@@ -140,7 +140,7 @@ export function mountContinuation(app: Hono, db: Database, deps: ContinuationDep
     const body = z.object({ name: z.string().min(1).max(80), points: z.array(z.object({ date: z.string(), valueMinor: z.number().int() })).min(2) }).parse(await c.req.json());
     const benchmarkId = id();
     await db.query(`INSERT INTO benchmarks (id, household_id, name, points_json, source, updated_at) VALUES ($1,$2,$3,$4,'manual',$5)`, [benchmarkId, member.householdId, body.name, JSON.stringify(body.points), nowIso()]);
-    return c.json({ id: benchmarkId, source: "manual", note: "This series is what you entered. BudgetCents did not download a market index." }, 201);
+    return c.json({ id: benchmarkId, source: "manual", note: "This series is what you entered. Budget HQ PRO did not download a market index." }, 201);
   });
 
   app.get("/api/households/:hid/look-through", async (c) => {

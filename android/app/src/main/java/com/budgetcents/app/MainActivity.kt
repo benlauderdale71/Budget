@@ -121,14 +121,14 @@ class MainActivity : FragmentActivity() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onSuccess()
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) = onError(errString.toString())
         })
-        prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle("Unlock BudgetCents").setNegativeButtonText("Cancel").setAllowedAuthenticators(authenticators).build())
+        prompt.authenticate(BiometricPrompt.PromptInfo.Builder().setTitle("Unlock Budget HQ PRO").setNegativeButtonText("Cancel").setAllowedAuthenticators(authenticators).build())
     }
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel("budgetcents", "BudgetCents", NotificationManager.IMPORTANCE_DEFAULT)
-        channel.description = "In-app BudgetCents alerts. This is not remote push."
+        val channel = NotificationChannel("budgetcents", "Budget HQ PRO", NotificationManager.IMPORTANCE_DEFAULT)
+        channel.description = "In-app Budget HQ PRO alerts. This is not remote push."
         channel.lockscreenVisibility = android.app.Notification.VISIBILITY_SECRET
         manager.createNotificationChannel(channel)
     }

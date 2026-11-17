@@ -3,6 +3,7 @@ import type { Database } from "./db.js";
 import { sha256, nowIso } from "./crypto.js";
 import { marketSameOrigin } from "./market-identity.js";
 import { isStocksCryptoPath, proxyStocksCrypto } from "./stocks-crypto-proxy.js";
+import { addBudgetNavigation, needsMarketDocument } from "./market-navigation.js";
 
 export const MARKET_COOKIE = "__Secure-budgethq-market-session";
 const COOKIE_ATTRIBUTES = "Path=/stocks-crypto; HttpOnly; Secure; SameSite=Lax";
@@ -24,24 +25,16 @@ function readMarketCookie(request: Request): string {
   try { return decodeURIComponent(values[0].slice(MARKET_COOKIE.length + 1)); } catch { return ""; }
 }
 
-function needsDocument(request: Request): boolean {
-  if (request.method !== "GET" && request.method !== "HEAD") return false;
-  const path = new URL(request.url).pathname;
-  if (/^\/stocks-crypto\/(?:api|assets)(?:\/|$)/.test(path)) return false;
-  const destination = request.headers.get("sec-fetch-dest");
-  return destination === "document" || request.headers.get("sec-fetch-mode") === "navigate" || (!destination && (request.headers.get("accept") ?? "").includes("text/html"));
-}
-
 function signInResponse(request: Request): Response {
   const headers = new Headers({ "cache-control": "no-store", "set-cookie": clearCookie(), "referrer-policy": "no-referrer" });
-  if (!needsDocument(request)) {
+  if (!needsMarketDocument(request)) {
     headers.set("content-type", "application/json");
-    return new Response(JSON.stringify({ error: "Sign in to BudgetCents to open Market Pulse.", loginUrl: "/login" }), { status: 401, headers });
+    return new Response(JSON.stringify({ error: "Sign in to Budget HQ PRO to open Market Pulse.", loginUrl: "/login" }), { status: 401, headers });
   }
   headers.set("content-type", "text/html; charset=utf-8");
-  headers.set("content-security-policy", "default-src 'none'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  headers.set("content-security-policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opening Market Pulse</title><script src="/market-login.js" defer></script></head><body><p id="market-login-status" role="status">Opening Market Pulse…</p></body></html>';
-  return new Response(request.method === "HEAD" ? null : html, { headers });
+  return new Response(request.method === "HEAD" ? null : addBudgetNavigation(html), { headers });
 }
 
 export function mountMarketPulse(app: Hono, db: Database, upstreamFetch: typeof fetch = fetch): void {

@@ -34,7 +34,7 @@ self.addEventListener("fetch", (event) => {
       } catch {
         const cached = await caches.match("/index.html");
         if (cached) return cached;
-        return new Response("BudgetCents is offline and this page is not saved on the device.", {
+        return new Response("Budget HQ PRO is offline and this page is not saved on the device.", {
           status: 503,
           headers: { "content-type": "text/plain; charset=utf-8" },
         });

@@ -260,7 +260,7 @@ export function createApp(db: Database) {
         `INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'verify',$3,$4)`,
         [id(), userId, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
       );
-      await queueAccountMail(db, userId, email, "Verify your BudgetCents email", verificationMessage(origin, verify), created);
+      await queueAccountMail(db, userId, email, "Verify your Budget HQ PRO email", verificationMessage(origin, verify), created);
     });
     const token = await startSession(userId, c.req.header("user-agent") ?? "web");
     return c.json({ token, user: await publicUser(userId), verificationRequired: true });
@@ -317,7 +317,7 @@ export function createApp(db: Database) {
       const token = randomToken();
       const expires = new Date(Date.now() + 3_600_000).toISOString();
       await db.query(`INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'reset',$3,$4)`, [id(), rows[0].id, sha256(token), expires]);
-      await queueAccountMail(db, String(rows[0].id), body.email.toLowerCase(), "Reset your BudgetCents password", resetMessage(appOrigin(c), token));
+      await queueAccountMail(db, String(rows[0].id), body.email.toLowerCase(), "Reset your Budget HQ PRO password", resetMessage(appOrigin(c), token));
     }
     return c.json({ ok: true, message: "If that email has an account, a reset message was created." });
   });
@@ -358,7 +358,7 @@ export function createApp(db: Database) {
         `INSERT INTO email_tokens (id, user_id, purpose, token_hash, expires_at) VALUES ($1,$2,'verify',$3,$4)`,
         [id(), me.id, sha256(verify), new Date(Date.now() + 86_400_000 * 2).toISOString()],
       );
-      await queueAccountMail(db, me.id, String(rows[0].email), "Verify your BudgetCents email", verificationMessage(appOrigin(c), verify), created);
+      await queueAccountMail(db, me.id, String(rows[0].email), "Verify your Budget HQ PRO email", verificationMessage(appOrigin(c), verify), created);
     });
     return c.json({ ok: true, message: "A new verification message was created." });
   });
@@ -435,7 +435,7 @@ export function createApp(db: Database) {
     const secret = newMfaSecret();
     const updated = await db.query(`UPDATE users SET mfa_secret = $1 WHERE id = $2 AND mfa_enabled = 0 RETURNING id`, [secret, me.id]);
     if (!updated.length) throw new ApiError(400, "Turn off the authenticator before starting again.");
-    return c.json({ secret, otpauth: `otpauth://totp/BudgetCents:${me.email}?secret=${secret}&issuer=BudgetCents` });
+    return c.json({ secret, otpauth: `otpauth://totp/${encodeURIComponent(`Budget HQ PRO:${me.email}`)}?secret=${secret}&issuer=${encodeURIComponent("Budget HQ PRO")}` });
   });
 
   app.post("/api/auth/mfa/enable", async (c) => {
@@ -1434,14 +1434,14 @@ export function createApp(db: Database) {
       Category: txn.splits.map((split) => split.bucketId ?? "").join("|"), Check: txn.checkNumber ?? "", Notes: txn.notes ?? "",
       RefundOf: txn.refundOfId ?? "",
     })));
-    return new Response(csv, { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": "attachment; filename=budgetcents-transactions.csv" } });
+    return new Response(csv, { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": "attachment; filename=budget-hq-pro-transactions.csv" } });
   });
 
   app.get("/api/households/:hid/exports/report.pdf", async (c) => {
     const me = await actor(c);
     const loaded = await loadSpace(db, me, c.req.param("hid"), c.req.query("spaceId") ?? undefined);
     const lines = loaded.budget.buckets.filter((row) => !row.name.includes("Borrowed")).map((row) => `${row.name} available ${(row.availableMinor / 100).toFixed(2)}`);
-    return new Response(new Uint8Array(textPdf("BudgetCents report", lines)), { headers: { "content-type": "application/pdf" } });
+    return new Response(new Uint8Array(textPdf("Budget HQ PRO report", lines)), { headers: { "content-type": "application/pdf" } });
   });
 
   app.get("/api/households/:hid/backup", async (c) => {
@@ -1682,7 +1682,7 @@ export function createApp(db: Database) {
           continue;
         }
         if (group.currency && group.currency.toUpperCase() !== String(account.currency).toUpperCase()) {
-          throw new ApiError(400, `A row is in ${group.currency.toUpperCase()} and the account is ${account.currency}. BudgetCents does not convert currencies during import. Nothing was imported.`);
+          throw new ApiError(400, `A row is in ${group.currency.toUpperCase()} and the account is ${account.currency}. Budget HQ PRO does not convert currencies during import. Nothing was imported.`);
         }
         if (providerId) seenFit.add(providerId);
         importing.push(group);
@@ -2924,11 +2924,11 @@ function appOrigin(c: { req: { url: string } }) {
 }
 
 function verificationMessage(origin: string, token: string) {
-  return `Verify your BudgetCents email.\nVerification link: ${origin}/verify?token=${token}\nAndroid link: budgetcents://verify?token=${token}\nThe link expires in two days.`;
+  return `Verify your Budget HQ PRO email.\nVerification link: ${origin}/verify?token=${token}\nAndroid link: budgetcents://verify?token=${token}\nThe link expires in two days.`;
 }
 
 function resetMessage(origin: string, token: string) {
-  return `Reset your BudgetCents password.\nReset link: ${origin}/reset?token=${token}\nAndroid link: budgetcents://reset?token=${token}\nThe link expires in one hour.`;
+  return `Reset your Budget HQ PRO password.\nReset link: ${origin}/reset?token=${token}\nAndroid link: budgetcents://reset?token=${token}\nThe link expires in one hour.`;
 }
 
 function assertKnownType(type: string) {

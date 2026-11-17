@@ -80,7 +80,7 @@ export function Investments() {
         <Field label="Cost basis"><input name="cost" inputMode="decimal" /></Field>
         <Field label="Manual price per share"><input name="price" inputMode="decimal" /></Field>
         <Field label="Valuation date"><input name="priceAsOf" type="date" defaultValue="2026-11-11" /></Field>
-        <p className="muted">Leave the price blank and the value stays missing. BudgetCents does not invent a quote. A price in another currency is not converted.</p>
+        <p className="muted">Leave the price blank and the value stays missing. Budget HQ PRO does not invent a quote. A price in another currency is not converted.</p>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
         <button className="btn" type="submit">Save holding</button>
       </form>
@@ -347,8 +347,8 @@ export function Reports() {
   const max = Math.max(1, ...spending.data.rows.map((row) => Math.abs(row.amountMinor)));
   return (
     <Page title="Reports" lede={spending.data.formula} actions={<div className="row">
-      <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/exports/transactions.csv", session.spaceId), "budgetcents-transactions.csv")}>CSV</button>
-      <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/exports/report.pdf", session.spaceId), "budgetcents-report.pdf")}>PDF</button>
+      <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/exports/transactions.csv", session.spaceId), "budget-hq-pro-transactions.csv")}>CSV</button>
+      <button className="btn-secondary" onClick={() => downloadFile(scoped(session.householdId, "/exports/report.pdf", session.spaceId), "budget-hq-pro-report.pdf")}>PDF</button>
     </div>}>
       <Link className="btn-secondary" to="/spending">Open detailed spending report</Link>
       <div className="chips">

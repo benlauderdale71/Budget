@@ -134,7 +134,7 @@ internal fun AlertsScreen(
     }
     if (localError.isNotBlank() && settingsText.isBlank()) {
         Text(localError)
-        Text("You are offline or BudgetCents could not be reached. Alert history is not stored on this phone.")
+        Text("You are offline or Budget HQ PRO could not be reached. Alert history is not stored on this phone.")
         TextButton(onClick = { scope.launch { loading = true; try { reload(true) } catch (caught: Exception) { localError = caught.message ?: "Alerts could not be loaded." } finally { loading = false } } }) { Text("Try again") }
         return
     }

@@ -15,7 +15,7 @@ export async function sendOwnMessage(db: Database, userId: string, channel: "ema
     if (!user.email_verified_at) throw new ApiError(409, "Verify your account email before sending alert mail.");
     const url = process.env.BUDGETCENTS_PUBLIC_URL ?? "";
     if (!/^https:\/\//.test(url) && process.env.NODE_ENV !== "test") throw new ApiError(503, "Alert email needs the public HTTPS app address.");
-    return sendMail({ id: eventId, to: String(user.email), subject: "BudgetCents notification", text: `You have a BudgetCents notification. Sign in to review it.\n${url.replace(/\/$/, "")}/alerts\nManage notification consent in Connections.` });
+    return sendMail({ id: eventId, to: String(user.email), subject: "Budget HQ PRO notification", text: `You have a Budget HQ PRO notification. Sign in to review it.\n${url.replace(/\/$/, "")}/alerts\nManage notification consent in Connections.` });
   }
   const devices = await db.query(`SELECT id, push_token FROM devices WHERE user_id = $1 AND push_token IS NOT NULL AND revoked_at IS NULL`, [userId]);
   const tokens = [...new Set(devices.map((d) => String(d.push_token)))];

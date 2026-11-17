@@ -1,4 +1,5 @@
 import { createMarketAssertion, marketSameOrigin } from "./market-identity.js";
+import { addBudgetNavigation, marketUnavailable, needsMarketDocument } from "./market-navigation.js";
 
 const PREFIX = "/stocks-crypto";
 const UPSTREAM = "https://market-pulse-test-test.up.railway.app";
@@ -33,7 +34,7 @@ export async function proxyStocksCrypto(request: Request, userId: string, upstre
   // The upstream sees only a short-lived signed principal, never a password,
   // Budget cookie, bearer token, or caller-supplied identity header.
   try { headers.set("x-budgethq-assertion", createMarketAssertion(userId, request.method, `${target.pathname}${target.search}`)); }
-  catch { return new Response("Market Pulse sign-in is temporarily unavailable.", { status: 503, headers: { "cache-control": "no-store" } }); }
+  catch { return marketUnavailable(request, 503, "Market Pulse sign-in is temporarily unavailable."); }
   const init: RequestInit & { duplex?: "half" } = {
     method: request.method,
     headers,
@@ -48,6 +49,7 @@ export async function proxyStocksCrypto(request: Request, userId: string, upstre
     const upstream = await upstreamFetch(target, init);
     if (upstream.status === 401) {
       await upstream.body?.cancel();
+      if (needsMarketDocument(request)) return marketUnavailable(request, 503, "Market Pulse could not verify the shared sign-in. Please try again shortly.");
       return new Response(JSON.stringify({ error: "Market Pulse could not verify the shared sign-in. Please try again shortly." }), {
         status: 503,
         headers: { "content-type": "application/json", "cache-control": "no-store" },
@@ -67,11 +69,18 @@ export async function proxyStocksCrypto(request: Request, userId: string, upstre
     }
     responseHeaders.set("cache-control", "no-store");
     responseHeaders.set("referrer-policy", "no-referrer");
+    if (request.method === "GET" && needsMarketDocument(request) && upstream.status === 200
+      && /^text\/html(?:;|$)/i.test(responseHeaders.get("content-type") ?? "")
+      && !request.headers.has("range") && !responseHeaders.has("content-disposition")) {
+      const original = await upstream.text();
+      const html = addBudgetNavigation(original);
+      if (html !== original) {
+        for (const name of ["etag", "last-modified", "content-md5", "digest", "content-digest", "repr-digest", "accept-ranges"]) responseHeaders.delete(name);
+      }
+      return new Response(html, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+    }
     return new Response(request.method === "HEAD" ? null : upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
   } catch {
-    return new Response("Stocks & Crypto is temporarily unavailable. Please try again shortly.", {
-      status: 502,
-      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
-    });
+    return marketUnavailable(request, 502, "Stocks & Crypto is temporarily unavailable. Please try again shortly.");
   }
 }

@@ -22,7 +22,7 @@ export function Auth() {
     clearReturnPath();
     window.location.replace(marketDestination);
   }, [session.ready, session.user, marketDestination]);
-  if (!session.ready) return <p className="state">Opening BudgetCents…</p>;
+  if (!session.ready) return <p className="state">Opening Budget HQ PRO…</p>;
   if (session.user && marketDestination) return <p className="state">Opening Market Pulse…</p>;
   if (session.user && destination) return <Navigate to={destination} replace />;
   if (session.user && session.householdId) return <Navigate to={session.user.onboardingStep && session.user.onboardingStep !== "done" ? "/setup" : "/"} replace />;
@@ -75,7 +75,7 @@ export function Auth() {
     <div className="auth">
       <section className="auth-story">
         <div>
-          <div className="wordmark">Budget<i>Cents</i></div>
+          <div className="wordmark">Budget <i>HQ</i> PRO</div>
           <h1>One ledger for the plan and the money.</h1>
           <p>Categories, envelopes, and flex spending read the same transactions. A transfer, a card payment, and a savings allocation stay inside the household instead of looking like new income or a second expense.</p>
         </div>
@@ -86,7 +86,7 @@ export function Auth() {
         </ul>
       </section>
       <main className="auth-panel">
-        <div className="wordmark" style={{ marginBottom: 16 }}>Budget<i>Cents</i></div>
+        <div className="wordmark" style={{ marginBottom: 16 }}>Budget <i>HQ</i> PRO</div>
         <div className="chips" role="group" aria-label="Account">
           <button className="chip" aria-pressed={mode === "login"} onClick={() => setMode("login")}>Sign in</button>
           <button className="chip" aria-pressed={mode === "join"} onClick={() => setMode("join")}>Join a household</button>
