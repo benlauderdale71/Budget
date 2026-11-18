@@ -5,7 +5,7 @@ let db:Database;
 afterEach(async()=>{await db?.close();});
 const auth=(token:string)=>({authorization:`Bearer ${token}`,"content-type":"application/json"});
 describe("detailed spending API",()=>{
-  it("reads and exports the same authorized splits, compares periods, rejects inaccessible filters and never writes financial records",async()=>{
+  it("keeps reports read-only, recalculates transaction edits and enforces access in reports and exports",async()=>{
     db=await openMemoryDatabase();const app=createApp(db);
     async function request(path:string,token:string,body?:unknown) {
       const response=await app.request(path,{method:body?"POST":"GET",headers:auth(token),body:body?JSON.stringify(body):undefined});
@@ -54,6 +54,17 @@ describe("detailed spending API",()=>{
     expect((await request(`${annualUrl}&merchantGrouping=exact`,reader.token)).body.merchants[0].label).toBe("Market");
     expect((await request(`${annualUrl}&bucketId=${food}`,reader.token)).body.summary.yearlyMinor).toBe(8000);
     expect((await request(`${annualUrl}&merchantGroup=MARKET`,reader.token)).body.summary.yearlyMinor).toBe(12000);
+    for(const extra of ["",`&bucketId=${food}`,`&accountId=${shared}`,"&merchantGroup=MARKET","&tag=weekly"]) {
+      const yearReport=(await request(`${annualUrl}${extra}`,reader.token)).body;
+      const yearDetail=(await request(`${base}/reports/spending-detail?from=2026-01-01&to=2026-12-31&spaceId=${owner.spaceId}${extra}`,reader.token)).body;
+      const monthDetail=(await request(`${base}/reports/spending-detail?from=2026-11-01&to=2026-11-30&spaceId=${owner.spaceId}${extra}`,reader.token)).body;
+      expect(yearDetail.summary.netMinor).toBe(yearReport.summary.yearlyMinor);
+      expect(monthDetail.summary.netMinor).toBe(yearReport.summary.monthlyMinor[10]);
+      for(const rows of [monthDetail.categories,monthDetail.groups,monthDetail.accounts,monthDetail.merchants,monthDetail.daily,monthDetail.monthly]) expect(rows.reduce((sum:number,row:any)=>sum+row.netMinor,0)).toBe(monthDetail.summary.netMinor);
+    }
+    const emptyYear=(await request(`${base}/reports/spending-year?year=2025&spaceId=${owner.spaceId}`,reader.token)).body;
+    const emptyDetail=(await request(`${base}/reports/spending-detail?from=2025-01-01&to=2025-12-31&spaceId=${owner.spaceId}`,reader.token)).body;
+    expect(emptyYear.summary.yearlyMinor).toBe(0);expect(emptyDetail.summary.netMinor).toBe(0);
     const annualCsv=await app.request(`${annualUrl}&format=csv`,{headers:auth(reader.token)});expect(annualCsv.status).toBe(200);
     const annualText=await annualCsv.text();expect(annualText).toContain('Year total,Monthly average,Average months,2026-01');expect(annualText).toContain('120.00,10.00,12');expect(annualText).toContain('2026-12');expect(annualText).not.toMatch(/Secret Vault|Hidden Payee|654\.32/);
     expect((await request(`${annualUrl}&accountId=${secret}`,reader.token)).status).toBe(404);expect((await request(`${annualUrl}&bucketId=missing`,reader.token)).status).toBe(404);
@@ -63,6 +74,13 @@ describe("detailed spending API",()=>{
     expect((await request(`${url}&bucketId=absent`,reader.token)).status).toBe(404);
     for(const range of ["from=2026-02-30&to=2026-03-01","from=2026-11-02&to=2026-11-01","from=2000-01-01&to=2026-01-01"]) expect((await request(`${base}/reports/spending-detail?${range}`,reader.token)).status).toBe(400);
     expect(await financial()).toEqual(before);
+    const [{version}]=await db.query(`SELECT version FROM transactions WHERE id=$1`,[split]);
+    const edit=await app.request(`${base}/transactions/${split}`,{method:"PATCH",headers:auth(owner.token),body:JSON.stringify({version:Number(version),amountMinor:-12000,splits:[{bucketId:food,amountMinor:8000,role:"expense"},{bucketId:home,amountMinor:4000,role:"expense"}]})});
+    expect(edit.status).toBe(200);
+    const refreshed=(await request(url,reader.token)).body,refreshedYear=(await request(annualUrl,reader.token)).body;
+    expect(refreshed.summary.netMinor).toBe(11000);expect(refreshedYear.summary.yearlyMinor).toBe(14000);
+    expect(refreshedYear.summary.monthlyMinor[10]).toBe(refreshed.summary.netMinor);
+    expect(refreshed.lines.reduce((sum:number,line:any)=>sum+line.amountMinor,0)).toBe(11000);
     await db.query(`DELETE FROM memberships WHERE household_id=$1 AND user_id=$2`,[owner.hid,reader.userId]);
     expect((await request(url,reader.token)).status).toBe(404);
     expect((await app.request(`${url}&format=csv`,{headers:auth(reader.token)})).status).toBe(404);

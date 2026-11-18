@@ -83,7 +83,7 @@ export function detailedSpending(input: EngineInput, filters: SpendingFilters) {
     categories:breakdown(l=>l.bucketId,l=>l.category),groups:breakdown(l=>l.group,l=>l.group),merchants:breakdown(l=>l.merchant,l=>l.merchant),accounts:breakdown(l=>l.accountId,l=>l.account),
     daily,monthly:months.map(date=>({date,...totals(monthlyMap.get(date)??[],daily.filter(d=>d.date.startsWith(date)).length)})),lines,excluded,
     options:{accounts:[...accounts.values()].map(a=>({id:a.id,name:a.name})),categories:input.buckets.filter(b=>b.kind!=="income"&&!b.systemRole).map(b=>({id:b.id,name:b.name,group:b.group})),
-      groups:[...new Set(input.buckets.filter(b=>b.kind!=="income"&&!b.systemRole).map(b=>b.group||"Uncategorized"))].sort(),
+      groups:[...new Set([...input.buckets.filter(b=>b.kind!=="income"&&!b.systemRole).map(b=>b.group||"Uncategorized"),...all.map(line=>line.group)])].sort(),
       merchants:[...new Set(all.map(l=>l.merchant))].sort(),tags:[...new Set(all.flatMap(l=>l.tags))].sort()}};
 }
 export type DetailedSpendingReport = ReturnType<typeof detailedSpending>;
