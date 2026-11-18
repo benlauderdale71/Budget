@@ -22,6 +22,7 @@ describe("detailed spending report",()=>{
     for(const rows of [r.categories,r.groups,r.merchants,r.accounts,r.daily,r.monthly]) expect(rows.reduce((s,l)=>s+l.netMinor,0)).toBe(10500);
     expect(r.lines.reduce((s,l)=>s+l.amountMinor,0)).toBe(10500);
     expect(r.categories.find(r=>r.key==="Food")?.count).toBe(2);
+    expect(r.options.groups).toContain("Uncategorized");
     expect(r.excluded).toEqual({pending:1,markedExcluded:1,otherCurrency:1,nonSpending:8});expect(data).toEqual(original);
     const sameCurrency={...data,transactions:data.transactions.filter(t=>t.currency==="USD")};
     expect(spendingRows(sameCurrency,range.from,range.to,()=>"all")[0].amountMinor).toBe(r.summary.netMinor);
@@ -86,5 +87,20 @@ describe("yearly, monthly and average spending",()=>{
     const filtered=annualSpending(data,2024,{accountId:"checking",bucketId:"Food"});
     expect(filtered.summary).toMatchObject({yearlyMinor:-1200,monthlyAverageMinor:-100});expect(filtered.summary.monthlyMinor[1]).toBe(-1200);
     for(const year of [NaN,0,1899,2201,2026.5])expect(()=>annualSpending(data,year)).toThrow("Choose a year");
+  });
+  it("combines Sam's Club bank variants and reconciles their yearly, monthly and drilled totals",()=>{
+    const names = ["DEBIT CARD PURCHASE SAMSCLUB #8196 5300 FLORENCE AL", "DEBIT CARD PURCHASE SAMSCLUB 8196 GAS 5542 FLORENCE AL", "DEBIT CARD PURCHASE WAL SAMSCLUB #8196 ****** ***1 FLORENCE AL", "Sam's Club #4321", "SAMSCLUB.COM"];
+    for(const name of names) expect(spendingMerchantName(name)).toBe("Sam's Club");
+    expect(spendingMerchantName("SAMS CLUBHOUSE CAFE")).toBe("SAMS CLUBHOUSE CAFE");
+    expect(spendingMerchantName("THE SAMSCLUB CAFE")).toBe("THE SAMSCLUB CAFE");
+    const data=input(names.map((payee,i)=>txn(`sams-${i}`,{payee,date:i===0?"2026-10-01":"2026-11-05",amountMinor:-1000})));
+    const annual=annualSpending(data,2026);
+    expect(annual.merchants).toHaveLength(1);
+    expect(annual.summary.yearlyMinor).toBe(5000);
+    expect(annual.merchants[0].merchantNames).toHaveLength(5);
+    const month=detailedSpending(data,{from:"2026-11-01",to:"2026-11-30",merchantGroup:"Sam's Club"});
+    expect(month.summary.netMinor).toBe(annual.merchants[0].monthlyMinor[10]);
+    expect(month.summary.netMinor).toBe(4000);
+    expect(annualSpending(data,2026,{},false).merchants).toHaveLength(5);
   });
 });

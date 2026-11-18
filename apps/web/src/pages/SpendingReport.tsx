@@ -1,27 +1,20 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { DetailedSpendingReport, SpendingBreakdown, SpendingFilters, SpendingLine } from "@budgetcents/domain";
-import { addDays, addMonths, periodFromDate } from "@budgetcents/domain/dates";
 import { api, downloadFile } from "../api.js";
 import { formatMoney, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useLoad } from "../ui.js";
 import { AnnualSpending } from "./AnnualSpending.js";
+import { presetSpendingRange, spendingFilterKeys as filterKeys, spendingFiltersFrom, spendingQuery as queryFor, updateSpendingFilters } from "../spending-filters.js";
 
-const filterKeys = ["accountId","bucketId","group","merchant","merchantGroup","tag","q"] as const;
 const PAGE_SIZE = 25;
 function presetRange(preset:string) {
-  const today=todayISO(), month=periodFromDate(today);
-  if(preset==="last-month") {const last=periodFromDate(addMonths(month.start,-1));return {from:last.start,to:last.end};}
-  if(preset==="90-days") return {from:addDays(today,-89),to:today};
-  if(preset==="year") return {from:`${today.slice(0,4)}-01-01`,to:today};
-  if(preset==="last-year") return {from:`${Number(today.slice(0,4))-1}-01-01`,to:`${Number(today.slice(0,4))-1}-12-31`};
-  return {from:month.start,to:today};
+  return presetSpendingRange(preset,todayISO());
 }
 function filtersFrom(params:URLSearchParams):SpendingFilters {
-  return {...presetRange("month"),...Object.fromEntries(["from","to",...filterKeys].flatMap(key=>params.get(key)?[[key,params.get(key)!]]:[]))};
+  return spendingFiltersFrom(params,todayISO());
 }
-function queryFor(filters:SpendingFilters) {return new URLSearchParams(Object.entries(filters).filter(([,v])=>!!v)).toString();}
 
 export function SpendingReport() {
   const session=useSession();
@@ -36,8 +29,8 @@ function SpendingReportBody() {
   useEffect(()=>{setDraft(filtersFrom(params));setPage(0);setError("");},[query]);
   const data=!report.loading&&report.data?.query===query?report.data.value:undefined, options=report.data?.value.options;
   const changed=queryFor(draft)!==query;
-  function apply(next:SpendingFilters){const updated=new URLSearchParams(queryFor(next));for(const key of ["year","merchantGrouping"])if(params.has(key))updated.set(key,params.get(key)!);setParams(updated);setPage(0);}
-  function drill(key:typeof filterKeys[number],value:string){apply({...filtersFrom(params),[key]:value});}
+  function apply(next:SpendingFilters){const updated=new URLSearchParams(queryFor(next));if(params.has("merchantGrouping"))updated.set("merchantGrouping",params.get("merchantGrouping")!);setParams(updated);setPage(0);}
+  function drill(key:typeof filterKeys[number],value:string){apply(updateSpendingFilters(filtersFrom(params),{[key]:value}));}
   const sorted=data?[...data.lines].sort((a,b)=>sort==="largest"?b.amountMinor-a.amountMinor||b.date.localeCompare(a.date):sort==="merchant"?a.merchant.localeCompare(b.merchant)||b.date.localeCompare(a.date):b.date.localeCompare(a.date)||a.key.localeCompare(b.key)):[];
   const pages=Math.max(1,Math.ceil(sorted.length/PAGE_SIZE));
   useEffect(()=>setPage(p=>Math.min(p,pages-1)),[pages]);
@@ -65,9 +58,8 @@ function SpendingReportBody() {
       <div className="row"><button type="submit" className="btn">Apply filters</button><button type="button" className="btn-quiet" onClick={()=>apply(presetRange("month"))}>Reset report</button>{changed?<span className="muted">Apply to update the report below.</span>:null}</div>
       {params.get("merchantGroup")?<p>Grouped merchant filter: <strong>{params.get("merchantGroup")}</strong> <button className="btn-quiet" type="button" onClick={()=>drill("merchantGroup","")}>Clear grouped merchant</button></p>:null}
     </form>
-    <AnnualSpending filters={filtersFrom(params)} onDrill={(extra,year,month)=>{
-      const range=month==null?{from:`${year}-01-01`,to:`${year}-12-31`}:((period)=>({from:period.start,to:period.end}))(periodFromDate(`${year}-${String(month+1).padStart(2,"0")}-01`));
-      apply({...filtersFrom(params),...range,...extra});document.getElementById("spending-period")?.scrollIntoView({behavior:"smooth"});
+    <AnnualSpending filters={filtersFrom(params)} onRangeChange={range=>apply({...filtersFrom(params),...range})} onDrill={extra=>{
+      apply(updateSpendingFilters(filtersFrom(params),extra));document.getElementById("spending-period")?.scrollIntoView({behavior:"smooth"});
     }}/>
     <h2 id="spending-period">Selected-period details</h2>
     {report.loading?<Loading label="Building your spending report"/>:report.error?<ErrorNote message={report.error} onRetry={session.bump}/>:null}
@@ -109,6 +101,7 @@ function DetailTable({lines,hidden}:{lines:SpendingLine[];hidden:boolean}) {
 }
 function Trend({data,hidden}:{data:DetailedSpendingReport;hidden:boolean}) {
   const [monthly,setMonthly]=useState(data.days>62);
+  useEffect(()=>setMonthly(data.days>62),[data.from,data.to]);
   const rows=monthly?data.monthly:data.daily;
   const max=Math.max(1,...rows.map(r=>r.netMinor)),min=Math.min(0,...rows.map(r=>r.netMinor));
   const y=(value:number)=>180-(value-min)/(max-min)*150;

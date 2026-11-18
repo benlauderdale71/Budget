@@ -18,7 +18,7 @@ export function spendingMerchantName(payee: string): string {
     [/^(?:PAR\*)?JACKS(?=$|[\s*#.-]|\d)/, "Jack's"],
     [/^TARGET(?=$|[\s*#.-]|\d)/, "Target"],
     [/^COSTCO(?=$|[\s*#.-]|\d)/, "Costco"],
-    [/^SAMS CLUB(?=$|[\s*#.-]|\d)/, "Sam's Club"],
+    [/^(?:WAL\s+)?SAMS\s*CLUB(?:\.COM)?(?=$|[\s*#.-]|\d)/, "Sam's Club"],
     [/^(?:THE )?HOME DEPOT(?=$|[\s*#.-]|\d)/, "Home Depot"],
     [/^LOWES(?=$|[\s*#.-]|\d)/, "Lowe's"],
     [/^KROGER(?=$|[\s*#.-]|\d)/, "Kroger"],
