@@ -257,8 +257,8 @@ td.num, th.num { text-align: right; }
   .activity-register td::before { display: block; content: attr(data-label); color: var(--muted); font-size: .8rem; font-weight: 600; }
   .activity-register td:nth-child(2) { grid-column: 1 / -1; grid-row: 1; font-weight: 600; }
   .activity-register td:nth-child(1) { grid-column: 1; grid-row: 2; }
-  .activity-register td:nth-child(5) { grid-column: 2; grid-row: 2; }
-  .activity-register td:nth-child(3), .activity-register td:nth-child(4), .activity-register td:nth-child(6) { grid-column: 1 / -1; }
+  .activity-register td[data-label="Amount"] { grid-column: 2; grid-row: 2; }
+  .activity-register td:is([data-label="Account"], [data-label="Category"], [data-label="Review"], [data-label="Actions"]) { grid-column: 1 / -1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

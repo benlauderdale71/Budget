@@ -11,7 +11,7 @@ export interface SpendingLine {
 }
 export interface SpendingTotals {
   grossMinor: number; refundsMinor: number; netMinor: number; count: number;
-  dailyAverageMinor: number; averageTransactionMinor: number; uncategorizedMinor: number; uncategorizedCount: number;
+  dailyAverageMinor: number; averageTransactionMinor: number; uncategorizedMinor: number; uncategorizedCount: number; needsReviewCount: number;
 }
 export interface SpendingBreakdown extends SpendingTotals {
   key: string; label: string; group?: string; previousMinor: number; changeMinor: number; changeBps: number | null; shareBps: number;
@@ -29,7 +29,8 @@ function totals(lines: SpendingLine[], days: number): SpendingTotals {
   const uncategorized = lines.filter(l=>l.bucketId === "uncategorized");
   return { grossMinor, refundsMinor, netMinor:grossMinor-refundsMinor, count,
     dailyAverageMinor:Math.round((grossMinor-refundsMinor)/days), averageTransactionMinor:count?Math.round((grossMinor-refundsMinor)/count):0,
-    uncategorizedMinor:uncategorized.reduce((n,l)=>n+l.amountMinor,0), uncategorizedCount:new Set(uncategorized.map(l=>l.transactionId)).size };
+    uncategorizedMinor:uncategorized.reduce((n,l)=>n+l.amountMinor,0), uncategorizedCount:new Set(uncategorized.map(l=>l.transactionId)).size,
+    needsReviewCount:new Set(lines.filter(line=>line.reviewStatus==="needs_review").map(line=>line.transactionId)).size };
 }
 export function detailedSpending(input: EngineInput, filters: SpendingFilters) {
   const error = spendingRangeError(filters.from, filters.to); if(error) throw new Error(error);

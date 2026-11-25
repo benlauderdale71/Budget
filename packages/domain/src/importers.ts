@@ -101,7 +101,7 @@ export const IMPORT_PROFILES: { id: string; label: string; map: ColumnMap; missi
   {
     id: "amfirst", label: "America’s First Federal Credit Union",
     map: { date: "Posting Date", effectiveDate: "Effective Date", amount: "Amount", payee: "Description", description: "Extended Description", bankCategory: "Transaction Category", notes: "Memo", balance: "Balance", checkNumber: "Check Number", transactionId: "Transaction ID", transactionType: "Transaction Type", postingStatus: "Posting Status", referenceNumber: "Reference Number" },
-    missing: ["Bank categories are kept as reference details. They do not automatically create budget categories. Transfers and credit-card payments need an account decision before import."],
+    missing: ["Bank categories are kept as reference details and can suggest an existing budget category. Transfers and credit-card payments need an account decision before import."],
   },
   {
     id: "mint",
@@ -196,7 +196,7 @@ export function parseCsv(text: string): string[][] {
 }
 
 export function parseAmount(raw: string, decimal: "period" | "comma" = "period"): number | undefined {
-  let cleaned = raw.trim().replace(/[\s$€£]/g, "");
+  let cleaned = raw.trim().replace(/[\s$€£]/g, "").replace(/−/g, "-");
   if (!cleaned) return undefined;
   cleaned = cleaned.replace(/^(USD|EUR|GBP|CAD|AUD)\s*/i, "");
   const paren = cleaned.match(/^\((.+)\)$/);
@@ -205,6 +205,7 @@ export function parseAmount(raw: string, decimal: "period" | "comma" = "period")
     negative = true;
     cleaned = paren[1];
   }
+  if (/^\d[\d.,]*-$/.test(cleaned)) cleaned = `-${cleaned.slice(0, -1)}`;
   if (cleaned.startsWith("+")) cleaned = cleaned.slice(1);
   if (cleaned.startsWith("-")) {
     negative = !negative;
@@ -275,7 +276,7 @@ export function withHeaderDefaults(header: string[], map: ColumnMap): ColumnMap 
     const found = names.find((name) => has(name));
     if (found) next[key] = found as never;
   };
-  fill("date", ["Date", "Posting Date", "Posted Date", "Transaction Date"]);
+  fill("date", ["Date", "Posting Date", "Posted Date", "Transaction Date", "Date Posted"]);
   fill("payee", ["Payee", "Merchant", "Name", "Description"]);
   fill("description", ["Original Description", "Extended Description"]);
   fill("transactionId", ["Transaction ID"]);
@@ -293,9 +294,9 @@ export function withHeaderDefaults(header: string[], map: ColumnMap): ColumnMap 
   fill("checkNumber", ["Check Number"]);
   fill("currency", ["Currency"]);
   fill("account", ["Account", "Account Name"]);
-  if (!next.amount && !next.debit && !next.credit) fill("amount", ["Amount"]);
-  if (!next.amount && !next.debit) fill("debit", ["Outflow", "Debit"]);
-  if (!next.amount && !next.credit) fill("credit", ["Inflow", "Credit"]);
+  if (!next.amount && !next.debit && !next.credit) fill("amount", ["Amount", "Transaction Amount", "Net Amount"]);
+  if (!next.amount && !next.debit) fill("debit", ["Outflow", "Debit", "Debit Amount", "Withdrawal"]);
+  if (!next.amount && !next.credit) fill("credit", ["Inflow", "Credit", "Credit Amount", "Deposit"]);
   return next;
 }
 
@@ -529,10 +530,10 @@ export function importFieldReport(rows: ImportRow[], profileMissing: string[]): 
   const present: string[] = [];
   const absent = [...profileMissing];
   const has = (pred: (row: ImportRow) => boolean) => rows.some(pred);
-  if (has((row) => !!row.bankCategory)) { present.push("bank categories (reference details)"); absent.push("Bank categories are preserved as reference details; assign your own budget categories after import. Transfers need an explicit account decision."); }
+  if (has((row) => !!row.bankCategory)) { present.push("bank categories (reference details)"); absent.push("Bank categories are preserved as reference details and can suggest an existing category for review. Transfers need an explicit account decision."); }
   if (has((row) => !!row.sourceCells)) present.push("all original CSV columns");
   if (has((row) => !!row.category || (row.splits?.length ?? 0) > 0)) present.push("categories");
-  else absent.push(has((row) => !!row.bankCategory) ? "No budget category was mapped. The bank’s original category remains in the saved bank details." : "No category was in the file. Nothing is assigned to a category.");
+  else absent.push(has((row) => !!row.bankCategory) ? "The bank’s original category remains in the saved bank details and may suggest a budget category." : "No category was in the file. Merchant history may suggest a budget category.");
   if (has((row) => (row.tags?.length ?? 0) > 0)) present.push("tags");
   else absent.push("No tags were in the file.");
   if (has((row) => !!row.notes)) present.push("notes");
@@ -553,7 +554,7 @@ export function importFieldReport(rows: ImportRow[], profileMissing: string[]): 
     present,
     absent,
     balances: [...byAccount.values()],
-    note: has((row) => !!row.bankCategory) ? "Every original CSV column is retained. Bank labels and running balances are reference details; budget assignments are not inferred." : "This is not a lossless copy of the other app. Settings, targets, and fields that were not in the file are left blank.",
+    note: has((row) => !!row.bankCategory) ? "Every original CSV column is retained. Bank labels may suggest an existing category for review. Running balances are reference details." : "This is not a lossless copy of the other app. Settings, targets, and fields that were not in the file are left blank.",
   };
 }
 
