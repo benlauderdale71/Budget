@@ -750,6 +750,12 @@ CREATE TABLE IF NOT EXISTS transaction_matches (
 CREATE UNIQUE INDEX IF NOT EXISTS transaction_matches_archived_idx ON transaction_matches (archived_id);
 CREATE UNIQUE INDEX IF NOT EXISTS transaction_matches_keeper_idx ON transaction_matches (keeper_id);
 
+CREATE TABLE IF NOT EXISTS transaction_import_sources (
+  transaction_id text NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  source_row_id text NOT NULL,
+  PRIMARY KEY (transaction_id, source_row_id)
+);
+
 CREATE TABLE IF NOT EXISTS saved_views (
   id text PRIMARY KEY,
   household_id text NOT NULL REFERENCES households(id) ON DELETE CASCADE,

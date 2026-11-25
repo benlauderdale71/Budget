@@ -1915,6 +1915,9 @@ export function createApp(db: Database) {
           continue;
         }
         created += 1;
+        if (saved.id && group.sourceRowId) {
+          await db.query("INSERT INTO transaction_import_sources (transaction_id,source_row_id) VALUES($1,$2)", [saved.id, group.sourceRowId]);
+        }
         if (saved.id) transactionIds.push(saved.id);
       }
       const result = { created, skipped, heldForReview, transactionIds, createdCategories };

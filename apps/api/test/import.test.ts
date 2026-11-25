@@ -112,6 +112,13 @@ describe("guided import", () => {
     expect(concurrent.map(s => s.body.created).sort()).toEqual([0,2]);
     const other = (await post(owner.token, "/accounts", { spaceId: owner.spaceId, name: "Second checking", kind:"checking", visibility:"shared", onBudget:true })).body.id;
     expect((await preview(editor.token, screenshot, other)).groups.every((g: {possibleMatch:boolean;duplicate:boolean}) => !g.duplicate && !g.possibleMatch)).toBe(true);
+    const bank = (await post(owner.token, "/transactions", {accountId:account,spaceId:owner.spaceId,date:"2026-11-12",type:"expense",amountMinor:-200,payee:"Library",providerTransactionId:"bank-library-1"})).body;
+    const [fileTxn] = await db.query("SELECT id,provider_transaction_id FROM transactions WHERE account_id=$1 AND payee='Library' AND provider_transaction_id IS NULL", [account]);
+    const matched = await post(owner.token, "/transactions/"+bank.id+"/match", {otherId:fileTxn.id});
+    expect(matched.status).toBe(200);
+    expect((await preview(editor.token, screenshot)).groups[1].duplicate).toBe(true);
+    const backup = await json(await api.request("/api/households/"+owner.hid+"/backup", {headers:auth(owner.token)}));
+    expect(backup.body.transaction_import_sources).toContainEqual({transaction_id:bank.id,source_row_id:"a".repeat(64)+":2"});
   });
   it("retains every bank column, scopes CSV ids to an account, and protects private source details", async () => {
     const api = await app();
