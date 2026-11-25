@@ -342,7 +342,17 @@ describe("transaction workflow", () => {
       method: "POST", headers: auth(home.token),
       body: JSON.stringify({ accountId: account.body.id, rowNumbers: [cafe.rowNumber, diner.rowNumber] }),
     }));
-    expect(committed.body.created).toBe(2);
+    expect(committed.body).toMatchObject({ created: 1, heldForReview: 1 });
+    const scoped = await json(await api.request(`/api/households/${home.hid}/import/preview`, {
+      method: "POST", headers: auth(home.token),
+      body: JSON.stringify({ spaceId: home.spaceId, accountId: account.body.id, format: "ofx", text: ofx }),
+    }));
+    const separate = scoped.body.groups.find((group: {payee:string}) => group.payee === "Cafe");
+    const confirmed = await json(await api.request(`/api/households/${home.hid}/import/${scoped.body.batchId}/commit`, {
+      method:"POST", headers:auth(home.token),
+      body:JSON.stringify({accountId:account.body.id,rowNumbers:separate.rowNumbers,keepMatches:{[separate.groupKey]:separate.matchToken}}),
+    }));
+    expect(confirmed.body.created).toBe(1);
     const list = await json(await api.request(`/api/households/${home.hid}/transactions?sort=payee`, { headers: auth(home.token) }));
     const imported = list.body.transactions.find((txn: { payee: string; providerTransactionId?: string }) => txn.payee === "Cafe" && txn.providerTransactionId);
     expect(imported.providerTransactionId).toBe("bank-cafe-1");

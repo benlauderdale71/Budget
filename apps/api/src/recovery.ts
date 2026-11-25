@@ -1,9 +1,11 @@
 import { sha256 } from "./crypto.js";
 import type { Database } from "./db.js";
+import { transactionImportSources } from "./import-batch.js";
 
 type Row = Record<string, unknown>;
 export type Collections = Record<string, Row[]>;
 export const recoveryTables = {
+  transaction_import_sources: ["transaction_id source_row_id", ""],
   statement_periods: [
     "account_id end_date",
     "start_date closing_minor deposits_minor withdrawals_minor transaction_count",
@@ -99,6 +101,7 @@ export async function recoveryData(
   );
   const docIds = new Set(ids(docs));
   return {
+    transaction_import_sources: await transactionImportSources(db, [...txns]),
     statement_periods: await by("statement_periods", "account_id", accounts),
     account_lifetimes: await by("account_lifetimes", "account_id", accounts),
     income_sources: sources,
@@ -188,12 +191,12 @@ export function prepareRecovery(
         r.split_id = mapId("splits", r.split_id);
       }
       if (table === "transactions" && copy && typeof r.provider_transaction_id === "string") {
-        const providerId = r.provider_transaction_id;
-        for (const kind of ["csv", "file"]) {
-          const prefix = kind + ":" + String(oldAccount) + ":";
-          if (providerId.startsWith(prefix)) r.provider_transaction_id = kind + ":" + r.account_id + ":" + providerId.slice(prefix.length);
-        }
+        const prefix = "csv:" + String(oldAccount) + ":";
+        if (r.provider_transaction_id.startsWith(prefix))
+          r.provider_transaction_id = "csv:" + r.account_id + ":" + r.provider_transaction_id.slice(prefix.length);
       }
+      if (table === "transaction_import_sources" && (typeof r.source_row_id !== "string" || !/^[a-f0-9]{64}:[1-9]\d{0,6}$/.test(r.source_row_id)))
+        throw Error("Invalid transaction import source row.");
       if (copy) {
         if (table === "income_occurrences") r.occurrence_key = r.source_id + ":" + r.expected_date;
         for (const field of [

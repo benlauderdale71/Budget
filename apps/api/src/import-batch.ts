@@ -58,7 +58,6 @@ export function importFingerprint(accountId: string, rowNumbers: number[], categ
 }
 
 export function importProviderId(group: ImportGroup, accountId: string): string | undefined {
-  if (!group.fitId && group.sourceRowId) return `file:${accountId}:${group.sourceRowId}`;
   return group.fitId && group.csvSource ? `csv:${accountId}:${group.fitId}` : group.fitId;
 }
 
@@ -83,8 +82,19 @@ interface MatchRow {
   checkNumber?: string;
   fitId?: string;
   sourceRowId?: string;
+  linkedSources?: string[];
   pending: boolean;
   observedBalanceMinor?: number;
+}
+
+// A matched-away upload still represents the keeper. Unmatching naturally
+// returns its source rows to the original transaction.
+export function transactionImportSources(db: Database, transactionIds: string[]) {
+  return db.query<{transaction_id:string; source_row_id:string}>(`
+    SELECT transaction_id, source_row_id FROM transaction_import_sources WHERE transaction_id=ANY($1::text[])
+    UNION
+    SELECT m.keeper_id AS transaction_id, s.source_row_id FROM transaction_matches m
+    JOIN transaction_import_sources s ON s.transaction_id=m.archived_id WHERE m.keeper_id=ANY($1::text[])`, [transactionIds]);
 }
 
 export async function importLedger(db: Database, householdId: string, spaceId: string, userId: string, accountId?: string): Promise<MatchRow[]> {
@@ -94,16 +104,20 @@ export async function importLedger(db: Database, householdId: string, spaceId: s
     FROM transactions t JOIN accounts a ON a.id=t.account_id LEFT JOIN accounts c ON c.id=t.counter_account_id
     WHERE t.household_id=$1 AND t.deleted=0 AND a.space_id=$2 AND ($3::text IS NULL OR t.account_id=$3) ORDER BY t.id`,
     [householdId, spaceId, accountId ?? null]);
-  return rows.filter(row => canSeeAccount(userId, { visibility: String(row.visibility), owner_user_id: str(row.owner_user_id) ?? null })
-    && (!row.counter_visibility || canSeeAccount(userId, { visibility: String(row.counter_visibility), owner_user_id: str(row.counter_owner) ?? null })))
-    .map(row => {
+  const visible = rows.filter(row => canSeeAccount(userId, { visibility: String(row.visibility), owner_user_id: str(row.owner_user_id) ?? null })
+    && (!row.counter_visibility || canSeeAccount(userId, { visibility: String(row.counter_visibility), owner_user_id: str(row.counter_owner) ?? null })));
+  const byTransaction = new Map<string, string[]>();
+  for (const source of await transactionImportSources(db, visible.map(row => String(row.id)))) {
+    const keys = byTransaction.get(source.transaction_id);
+    if (keys) keys.push(source.source_row_id);
+    else byTransaction.set(source.transaction_id, [source.source_row_id]);
+  }
+  return visible.map(row => {
       const provider = str(row.provider_transaction_id);
-      const filePrefix = "file:" + row.account_id + ":";
       const bankPrefix = "csv:" + row.account_id + ":";
-      const sourceRowId = provider?.startsWith(filePrefix) ? provider.slice(filePrefix.length) : undefined;
-      const fitId = sourceRowId ? undefined : provider?.startsWith(bankPrefix) ? provider.slice(bankPrefix.length) : provider;
+      const fitId = provider?.startsWith(bankPrefix) ? provider.slice(bankPrefix.length) : provider;
       return { id: String(row.id), date: String(row.date), amountMinor: num(row.amount_minor), payee: String(row.payee),
-        originalDescription: str(row.original_description), checkNumber: str(row.check_number), pending: row.bank_status === "pending", fitId, sourceRowId };
+        originalDescription: str(row.original_description), checkNumber: str(row.check_number), pending: row.bank_status === "pending", fitId, linkedSources: byTransaction.get(String(row.id)) };
     });
 }
 
@@ -139,6 +153,7 @@ export function decorateGroups(groups: ImportGroup[], ledger: MatchRow[], accoun
   function index(row: Candidate) {
     if (row.fitId) ids.add("bank:" + row.fitId);
     if (row.sourceRowId) ids.add("file:" + row.sourceRowId);
+    for (const key of row.linkedSources ?? []) ids.add("file:" + key);
     const key = row.amountMinor + "/" + row.day;
     const bucket = buckets.get(key);
     if (bucket) bucket.push(row);
@@ -154,8 +169,7 @@ export function decorateGroups(groups: ImportGroup[], ledger: MatchRow[], accoun
       result.matchReason = row.fitId ? "Same bank transaction ID." : "Same row from the same uploaded file.";
       return result;
     }
-    // An unscoped legacy preview can identify bank IDs. Similarity requires a specific account.
-    if (accountId && row.names.length) {
+    if (row.names.length) {
       const nearby = [0, -1, 1, -2, 2].map(offset => buckets.get(row.amountMinor + "/" + (row.day + offset)) ?? []);
       let match: Candidate | undefined;
       for (const candidates of nearby) {
@@ -171,8 +185,9 @@ export function decorateGroups(groups: ImportGroup[], ledger: MatchRow[], accoun
       }
       if (match) {
         result.possibleMatch = true;
-        result.matchReason = (match.inFile ? "Another selected file or row" : "This account") + " contains " + match.payee + " on " + match.date + " for the same signed amount.";
-        result.matchToken = sha256(JSON.stringify([accountId, group.groupKey, match.inFile, match.id, nearby.map(bucket => bucket.length)]));
+        const where = match.inFile ? "Another selected file or row" : accountId ? "This account" : "A visible account";
+        result.matchReason = where + " contains " + match.payee + " on " + match.date + " for the same signed amount.";
+        if (accountId) result.matchToken = sha256(JSON.stringify([accountId, group.groupKey, match.inFile, match.id, nearby.map(bucket => bucket.length)]));
       }
     }
     index(row);
