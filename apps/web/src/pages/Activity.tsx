@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { ImportCategorization } from "./ImportCategorization.js";
 import { CsvSourceDetails, type SourceCell } from "../CsvSourceDetails.js";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -17,6 +18,7 @@ export function Activity() {
   const summaryRef = useRef<HTMLParagraphElement>(null);
   const pageChanged = useRef(false);
   const [params, setParams] = useSearchParams();
+  const [categorizing, setCategorizing] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Txn | null>(null);
   const [offset, setOffset] = useState(0);
@@ -52,6 +54,7 @@ export function Activity() {
   if ((dash.loading || list.loading) && !list.data) return <Loading label="Loading activity" />;
   if (!dash.data || !list.data) return <ErrorNote message={dash.error || list.error || "Could not load activity"} onRetry={session.bump} />;
   const names = new Map(dash.data.accounts.map((account) => [account.id, account.name]));
+  const bucketNames = new Map(dash.data.buckets.map(bucket => [bucket.id, bucket.name]));
   const payees = new Map((purchases.data?.transactions ?? list.data.transactions).map((txn) => [txn.id, txn.payee]));
   const visible = list.data.transactions;
   const currentQuery = { q: query, review, accountId, bucketId, tag, ids, sort, ownership, personId, reviewer };
@@ -72,7 +75,7 @@ export function Activity() {
     }
   }
   return (
-    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<button className="btn" type="button" disabled={!access.canWrite} onClick={() => { setEditing(null); setOpen(true); }}>Add</button>}>
+    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<>{access.canWrite ? <button className="btn-secondary" type="button" onClick={() => setCategorizing(true)}>Categorize imports</button> : null}<button className="btn" type="button" disabled={!access.canWrite} onClick={() => { setEditing(null); setOpen(true); }}>Add</button></>}>
       {ids ? <p><button className="btn-quiet" type="button" onClick={() => { const next = new URLSearchParams(params); next.delete("ids"); replaceFilters(next); }}>Show the whole register</button></p> : null}
       <div className="row">
         <OwnershipFilter people={people.data?.people ?? []} />
@@ -123,7 +126,7 @@ export function Activity() {
         <div className="card table-wrap">
           <table className="activity-register">
             <caption>Transactions in this view</caption>
-            <thead><tr><th>Date</th><th>Payee</th><th>Account</th><th>Review</th><th className="num">Amount</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Date</th><th>Payee</th><th>Account</th><th>Category</th><th>Review</th><th className="num">Amount</th><th>Actions</th></tr></thead>
             <tbody>
               {visible.map((txn) => (
                 <tr key={txn.id}>
@@ -138,6 +141,11 @@ export function Activity() {
                     {txn.matchedArchivedId ? <div className="muted">Matched. The other copy is hidden.</div> : null}
                   </td>
                   <td data-label="Account">{names.get(txn.accountId) ?? "Account"}</td>
+                  <td data-label="Category">
+                    {[...new Set(txn.splits.map(split => split.bucketId ? bucketNames.get(split.bucketId) ?? "Uncategorized" : "Uncategorized"))].join(", ")
+                      || (["expense", "income", "fee"].includes(txn.type) ? "Uncategorized" : "—")}
+                    {txn.reviewStatus === "needs_review" && txn.tags?.includes("category-estimate") ? <div className="muted">Estimated</div> : null}
+                  </td>
                   <td data-label="Review">{txn.reviewStatus === "needs_review" ? "Needs review" : txn.reconciled ? "Reconciled" : "Reviewed"}
                     <div className="muted">Owner: {txn.ownerUserId ? personNames.get(txn.ownerUserId) ?? "Former member" : "Ours"}</div>
                     {txn.reviewerUserId ? <div className="muted">Reviewer: {personNames.get(txn.reviewerUserId) ?? "Former member"}</div> : null}
@@ -168,6 +176,7 @@ export function Activity() {
         {offset > 0 ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(Math.max(0, offset - PAGE)); }}>Previous page</button> : null}
         {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
+      {categorizing ? <ImportCategorization key={session.spaceId} buckets={dash.data.buckets} onClose={() => setCategorizing(false)} /> : null}
       {peopleFor ? <PeopleForm txn={peopleFor} onClose={() => setPeopleFor(null)} /> : null}
       {sourceFor ? <ImportSource txn={sourceFor} onClose={() => setSourceFor(null)} /> : null}
       {commentFor ? <CommentForm txn={commentFor} onClose={() => setCommentFor(null)} onSaved={(message) => { setNoteBad(false); setNote(message); setCommentFor(null); }} /> : null}

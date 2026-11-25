@@ -1,6 +1,6 @@
 import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
 import { Hono } from "hono";
-import { annualSpending, detailedSpending, spendingRangeError } from "@budgetcents/domain";
+import { annualSpending, canEstimateImportedCategory, detailedSpending, importedCategoryEstimator, spendingRangeError } from "@budgetcents/domain";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
 import { mountTestIssuer } from "./oidc-test-provider.js";
@@ -731,6 +731,90 @@ export function createApp(db: Database) {
     await db.query(`UPDATE transactions SET deleted = 1, updated_at = $1 WHERE id = $2`, [nowIso(), existing.id]);
     await audit(db, member.householdId, me.id, "transaction.delete", "Deleted transaction", "transaction", String(existing.id));
     return c.json({ ok: true });
+  });
+
+  app.post("/api/households/:hid/transactions/categorization", async (c) => {
+    const me = await actor(c);
+    const hid = c.req.param("hid");
+    assertWrite(await requireMember(db, me.id, hid));
+    const body = z.object({
+      year: z.number().int().min(1900).max(9998),
+      expenseFallback: z.string().min(1).optional(),
+      incomeFallback: z.string().min(1).optional(),
+      confirm: z.string().length(64).optional(),
+    }).parse(await c.req.json());
+    const run = async () => {
+      if (body.confirm) await lockHousehold(db, hid);
+      const loaded = await loadSpace(db, me, hid, c.req.query("spaceId"));
+      assertWrite(loaded.member);
+      const { buckets, transactions } = loaded.input;
+      const fallback = { expense: body.expenseFallback, income: body.incomeFallback };
+      for (const [kind, bucketId] of Object.entries(fallback)) {
+        if (bucketId && !buckets.some(bucket => bucket.id === bucketId && bucket.kind === kind && !bucket.archived && !bucket.hidden && !bucket.systemRole)) {
+          throw new ApiError(400, "Choose an active fallback category in this plan.");
+        }
+      }
+      const year = String(body.year);
+      const imported = transactions.filter(txn => !txn.accountId.startsWith("redacted:")
+        && txn.date.startsWith(`${year}-`) && (txn.importBatchId || txn.providerTransactionId));
+      const candidates = imported.filter(canEstimateImportedCategory);
+      const batchIds = [...new Set(candidates.flatMap(txn => txn.importBatchId ? [txn.importBatchId] : []))];
+      const bankCategories = new Map<string, string>();
+      if (batchIds.length) {
+        const rows = await db.query(
+          `SELECT id, preview_json FROM import_batches WHERE household_id = $1 AND space_id = $2 AND status = 'committed' AND id = ANY($3::text[])`,
+          [hid, loaded.spaceId, batchIds],
+        );
+        for (const row of rows) {
+          for (const group of readStoredImport(String(row.preview_json)).groups) {
+            if (group.bankCategory) bankCategories.set(`import:${row.id}:${group.groupKey}`, group.bankCategory);
+          }
+        }
+      }
+      const estimate = importedCategoryEstimator(buckets, transactions);
+      const changes = candidates.flatMap(txn => {
+        const result = estimate(txn, bankCategories.get(txn.clientOpId ?? ""), fallback);
+        return result ? [{ id: txn.id, version: txn.version, ...result }] : [];
+      }).sort((a, b) => a.id.localeCompare(b.id));
+      const token = sha256(JSON.stringify([hid, loaded.spaceId, body.year, changes]));
+      if (body.confirm && body.confirm !== token) throw new ApiError(409, "The suggestions changed. Preview them again before applying.");
+      if (body.confirm && changes.length) {
+        const byId = new Map(candidates.map(txn => [txn.id, txn]));
+        for (const change of changes) {
+          const txn = byId.get(change.id)!;
+          const updated = await db.query(`UPDATE transactions SET version = version + 1, updated_at = $1
+            WHERE id = $2 AND household_id = $3 AND space_id = $4 AND version = $5 AND deleted = 0
+              AND review_status = 'needs_review' AND category_locked = 0 AND reconciled = 0 AND locked = 0
+            RETURNING id`, [nowIso(), txn.id, hid, loaded.spaceId, change.version]);
+          if (!updated.length) throw new ApiError(409, "A transaction changed. Preview again before applying.");
+          if (txn.splits.length) {
+            await db.query(`UPDATE splits SET bucket_id = $1 WHERE transaction_id = $2 AND bucket_id IS NULL`, [change.bucketId, txn.id]);
+          } else {
+            await replaceSplits(txn.id, [{ bucketId: change.bucketId, amountMinor: Math.abs(txn.amountMinor), role: txn.amountMinor < 0 ? "expense" : "income" }]);
+          }
+          await db.query(`INSERT INTO transaction_tags (transaction_id, tag) VALUES ($1, 'category-estimate') ON CONFLICT DO NOTHING`, [txn.id]);
+          await audit(db, hid, me.id, "transaction.category_estimated", `Category estimated using ${change.basis}`, "transaction", txn.id);
+        }
+      }
+      const groups = new Map<string, { bucketId: string; basis: typeof changes[number]["basis"]; count: number }>();
+      for (const { bucketId, basis } of changes) {
+        const key = JSON.stringify([bucketId, basis]);
+        const group = groups.get(key) ?? { bucketId, basis, count: 0 };
+        group.count++;
+        groups.set(key, group);
+      }
+      return {
+        imported: imported.length,
+        unreviewed: imported.filter(txn => txn.reviewStatus === "needs_review").length,
+        eligible: candidates.length,
+        remaining: candidates.length - changes.length,
+        proposed: changes.length,
+        applied: body.confirm ? changes.length : 0,
+        token,
+        groups: [...groups.values()],
+      };
+    };
+    return c.json(await (body.confirm ? db.tx(run) : run()));
   });
 
   app.post("/api/households/:hid/transactions/bulk", async (c) => {
@@ -1719,6 +1803,9 @@ export function createApp(db: Database) {
         bucketFor.set(key, bucketId);
         createdCategories.push({ id: bucketId, name: assignment.name });
       }
+      const importedLedger = importing.some(group => !group.opening && !group.requiresTransferReview && !group.splits?.length)
+        ? await loadSpace(db, me, member.householdId, String(batches[0].space_id)) : undefined;
+      const estimateCategory = importedLedger && importedCategoryEstimator(importedLedger.input.buckets, importedLedger.input.transactions);
       const transactionIds: string[] = [];
       let created = 0;
       for (const group of importing) {
@@ -1750,7 +1837,10 @@ export function createApp(db: Database) {
           importBatchId: String(batches[0].id),
           providerTransactionId: importProviderId(group, body.accountId),
           opId: `import:${batches[0].id}:${group.groupKey}`,
-        });
+        }, estimateCategory && !group.requiresTransferReview ? {
+          estimate: estimateCategory,
+          bankCategory: group.bankCategory,
+        } : undefined);
         if ("updated" in saved && saved.updated) throw new ApiError(409, "That provider id is already imported. Nothing new was added.");
         if ("duplicate" in saved && saved.duplicate) {
           skipped += 1;
@@ -2653,7 +2743,10 @@ export function createApp(db: Database) {
     }));
   }
 
-  async function insertTransaction(me: Actor, householdId: string, body: z.infer<typeof transactionSchema>) {
+  async function insertTransaction(me: Actor, householdId: string, body: z.infer<typeof transactionSchema>, categorization?: {
+    estimate: ReturnType<typeof importedCategoryEstimator>;
+    bankCategory?: string;
+  }) {
     const member = await requireMember(db, me.id, householdId);
     assertWrite(member);
     assertKnownType(body.type);
@@ -2685,6 +2778,13 @@ export function createApp(db: Database) {
         matchMode: String(rule.match_mode) as "all" | "any", conditions: JSON.parse(String(rule.conditions_json)), actions: JSON.parse(String(rule.actions_json)),
       })));
       draft = applied.transaction;
+    }
+    if (categorization && canEstimateImportedCategory(draft)) {
+      const result = categorization.estimate(draft, categorization.bankCategory);
+      if (result) {
+        draft.splits = [{ bucketId: result.bucketId, amountMinor: Math.abs(draft.amountMinor), role: draft.amountMinor < 0 ? "expense" : "income" }];
+        draft.tags = [...new Set([...(draft.tags ?? []), "category-estimate"])];
+      }
     }
     const prior = body.providerTransactionId
       ? await db.query(`SELECT * FROM transactions WHERE household_id = $1 AND provider_transaction_id = $2 AND deleted = 0`, [householdId, body.providerTransactionId])

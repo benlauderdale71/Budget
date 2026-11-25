@@ -83,6 +83,42 @@ describe("guided import", () => {
     expect(hiddenPreview.body.rows[0].possibleMatch).toBe(false);
   });
 
+  it("estimates new and historical imports without changing the posted spending or review state", async () => {
+    const api = await app();
+    const home = await household(api, "category-estimate@example.com");
+    const path = `/api/households/${home.hid}`;
+    const post = async (url: string, body: unknown) =>
+      json(await api.request(path + url, { method: "POST", headers: auth(home.token), body: JSON.stringify(body) }));
+    const account = await post("/accounts", { spaceId: home.spaceId, name: "Bank", kind: "checking", onBudget: true, openingBalanceMinor: 10000, openingDate: "2026-01-01" });
+    const fallBack = home.dash.buckets.find((bucket: { name: string }) => bucket.name === "Groceries").id;
+    const text = [
+      "Date Posted,Description,Transaction Amount,Transaction Category",
+      "2026-01-10,POS FOODLAND 4321,−12.00,Groceries",
+      "2026-12-18,Mystery merchant,7.00-,",
+      "2026-06-10,Zelle Example,-3.00,",
+      "2025-12-01,Older purchase,-2.00,",
+    ].join("\n");
+    const preview = await post("/import/preview", { spaceId: home.spaceId, accountId: account.body.id, format: "csv", text });
+    const done = await post(`/import/${preview.body.batchId}/commit`, { accountId: account.body.id, rowNumbers: [2, 3, 4, 5] });
+    expect(done.body.created).toBe(4);
+    const [recent, unknown, ambiguous, older] = done.body.transactionIds;
+    expect((await db.query("SELECT bucket_id FROM splits WHERE transaction_id = $1", [recent]))[0].bucket_id).toBe(fallBack);
+    const reassess = "/transactions/categorization";
+    const options = { year: 2026, expenseFallback: fallBack };
+    const plan = await post(reassess, options);
+    expect(plan.body).toMatchObject({ imported: 3, unreviewed: 3, eligible: 2, remaining: 1, proposed: 1 });
+    expect(await db.query("SELECT * FROM splits WHERE transaction_id = $1", [unknown])).toEqual([]);
+    const reportPath = `${path}/reports/spending-detail?from=2026-01-01&to=2026-12-31`;
+    const before = await json(await api.request(reportPath, { headers: auth(home.token) }));
+    expect(before.body.summary).toMatchObject({ netMinor: 2200, count: 3, needsReviewCount: 3, uncategorizedCount: 2 });
+    expect((await post(reassess, { ...options, confirm: plan.body.token })).body.applied).toBe(1);
+    expect((await post(reassess, { ...options, confirm: plan.body.token })).status).toBe(409);
+    expect((await db.query("SELECT bucket_id FROM splits WHERE transaction_id = $1", [unknown]))[0].bucket_id).toBe(fallBack);
+    expect(await db.query("SELECT * FROM splits WHERE transaction_id IN ($1, $2)", [ambiguous, older])).toEqual([]);
+    const after = await json(await api.request(reportPath, { headers: auth(home.token) }));
+    expect(after.body.summary).toMatchObject({ netMinor: 2200, count: 3, needsReviewCount: 3, uncategorizedCount: 1 });
+  });
+
   it("requires an explicit transfer decision and does not count transfers as spending", async () => {
     const api = await app();
     const home = await household(api, "bank-transfers@example.com");
