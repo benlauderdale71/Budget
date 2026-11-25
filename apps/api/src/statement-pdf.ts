@@ -1,5 +1,13 @@
 import { isIsoDate } from "@budgetcents/domain";
 
+export function statementFileType(bytes: Buffer) {
+  if (bytes.subarray(0, 5).toString() === "%PDF-") return "pdf";
+  if (bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) return "png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpg";
+  if (bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") return "webp";
+  return undefined;
+}
+
 interface DraftRow {
   page: number;
   source: string;
@@ -128,6 +136,6 @@ export function statementDraft(pages: string[], year: number) {
         "Page " + (index + 1) + " had no recognized transaction dates. Compare it with the original.",
       );
   }
-  if (rows.length > 5000) throw new Error("Split this PDF into smaller statements before importing.");
+  if (rows.length > 5000) throw new Error("Split this statement into smaller parts before importing.");
   return { rows, warnings, pages: pages.length };
 }

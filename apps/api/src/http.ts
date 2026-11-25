@@ -1,4 +1,4 @@
-import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
+import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
 import { Hono } from "hono";
 import { isIsoDate, annualSpending, canEstimateImportedCategory, detailedSpending, importedCategoryEstimator, spendingRangeError } from "@budgetcents/domain";
 import { z } from "zod";
@@ -13,7 +13,7 @@ import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, payc
 import { mountLoans } from "./loans.js";
 import { mountIncomePlan } from "./income-plan.js";
 import { mountBillImport } from "./bill-import.js";
-import { statementDraft } from "./statement-pdf.js";
+import { statementDraft, statementFileType } from "./statement-pdf.js";
 import { readBillDocument } from "./bill-document-reader.js";
 import { mountHouseholdTools, coverageFor, correctFutureImport } from "./household-tools.js";
 import { mountPhysicalAssets } from "./physical-assets.js";
@@ -54,7 +54,7 @@ import {
   financialRoadmap,
   neededForTarget,
 } from "./finance.js";
-import { decorateGroups, decorateRows, importFingerprint, importProviderId, readStoredImport, summarizeCategories, type StoredImport } from "./import-batch.js";
+import { decorateGroups, decorateRows, importFingerprint, importLedger, importProviderId, readStoredImport, sourceGroups, summarizeCategories, type StoredImport } from "./import-batch.js";
 import { readerStatus } from "./ocr.js";
 import { textPdf } from "./pdf.js";
 import { mountReceipts } from "./receipts.js";
@@ -1585,6 +1585,11 @@ export function createApp(db: Database) {
           if(source && !(await db.query("SELECT 1 FROM memberships WHERE household_id=$1 AND user_id=$2",[file.householdId,me.id])).length)throw Error("This backup belongs to a different household.");
         }
         const visible=await backupFor(me,member);
+        if (file.householdId !== member.householdId) {
+          // An uploaded file may still belong only to a draft. Its fingerprint is
+          // already reserved even though it is absent from a normal backup.
+          visible.physical_asset_documents = await db.query("SELECT id, owner_user_id, fingerprint FROM physical_asset_documents WHERE household_id=$1 AND owner_user_id=$2", [member.householdId, me.id]);
+        }
         const portable=prepareRecovery(file,member.householdId,me.id,visible,owners);
         const addedBytes=portable.extra.physical_asset_documents.reduce((total,row)=>total+Number(row.size_bytes),0);
         if(addedBytes){
@@ -1637,10 +1642,13 @@ export function createApp(db: Database) {
     const body=z.object({accountId:z.string(),year:z.number().int().min(1900).max(2200),data:z.string().max(10666668)}).parse(await c.req.json());
     await mustAccount(me.id,hid,body.accountId);
     const bytes=Buffer.from(body.data,"base64");
-    if(bytes.subarray(0,5).toString()!=="%PDF-") throw new ApiError(400,"Choose a bank statement PDF.");
+    const format = statementFileType(bytes);
+    if (!format) throw new ApiError(400, "Choose a PDF, PNG, JPEG or WebP statement or screenshot.");
     try {
-      const document=await readBillDocument(bytes,"statement.pdf",undefined,40);
-      return c.json(statementDraft(document.pageTexts??[document.text],body.year));
+      const document=await readBillDocument(bytes,"statement."+format,undefined,40);
+      const draft=statementDraft(document.pageTexts??[document.text],body.year);
+      const fingerprint=sha256(bytes.toString("base64"));
+      return c.json({...draft, rows:draft.rows.map((row,index)=>({...row,sourceRowId:fingerprint+":"+(index+1)}))});
     } catch(err){throw new ApiError(400,err instanceof Error?err.message:"Could not read statement.");}
   });
   app.post("/api/households/:hid/import/preview", async (c) => {
@@ -1673,14 +1681,9 @@ export function createApp(db: Database) {
       : rowsFromBank(body.format === "ofx" ? parseOfx(body.text) : parseQif(body.text));
     } catch (error) { throw new ApiError(400, error instanceof Error ? error.message : "The file could not be read."); }
     if (rows.length > 5000) throw new ApiError(400, "This file has more than 5,000 rows. Split it and import each part. Nothing was imported.");
-    const groups = groupImportRows(rows);
-    const existing = await db.query(`SELECT t.date, t.amount_minor, t.payee, t.provider_transaction_id, a.visibility, a.owner_user_id FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.household_id = $1 AND t.deleted = 0 AND a.space_id = $2 AND ($3::text IS NULL OR t.account_id = $3)`, [member.householdId, body.spaceId, body.accountId ?? null]);
-    const comparison = existing.filter((txn) => canSeeAccount(me.id, { visibility: String(txn.visibility), owner_user_id: str(txn.owner_user_id) ?? null })).map((txn) => {
-      const fitId = str(txn.provider_transaction_id);
-      const prefix = body.accountId ? `csv:${body.accountId}:` : "";
-      return { date: String(txn.date), amountMinor: num(txn.amount_minor), payee: String(txn.payee), fitId: prefix && fitId?.startsWith(prefix) ? fitId.slice(prefix.length) : fitId };
-    });
-    const decorated = decorateGroups(groups, comparison);
+    const groups = sourceGroups(rows, body.text);
+    const comparison = await importLedger(db, member.householdId, body.spaceId, me.id, body.accountId);
+    const decorated = decorateGroups(groups, comparison, body.accountId);
     const buckets = await db.query(`SELECT id, name, kind, archived FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, body.spaceId]);
     const explanations = importFieldReport(rows, [
       ...(profile?.missing ?? []),
@@ -1769,10 +1772,11 @@ export function createApp(db: Database) {
       categoryMap: z.record(z.string(), z.string().max(80)).optional(),
       createMissingCategories: z.boolean().optional(),
       transferChoices: z.record(z.string(), z.string().max(100)).optional(),
+      keepMatches: z.record(z.string(), z.string().length(64)).optional(),
     }).parse(await c.req.json());
     if (Object.keys(body.categoryMap ?? {}).length > 200) throw new ApiError(400, "Map fewer categories at once. Nothing was imported.");
     const account = await mustAccount(me.id, member.householdId, body.accountId);
-    const fingerprint = importFingerprint(body.accountId, body.rowNumbers, body.categoryMap ?? {}, body.createMissingCategories === true, body.transferChoices);
+    const fingerprint = importFingerprint(body.accountId, body.rowNumbers, body.categoryMap ?? {}, body.createMissingCategories === true, body.transferChoices, body.keepMatches);
     const outcome = await db.tx(async () => {
       await lockHousehold(db, member.householdId);
       const batches = await db.query(`SELECT * FROM import_batches WHERE id = $1 AND household_id = $2 FOR UPDATE`, [c.req.param("batchId"), member.householdId]);
@@ -1787,6 +1791,7 @@ export function createApp(db: Database) {
           return {
             created: stored.result?.created ?? 0,
             skipped: stored.result?.skipped ?? 0,
+            heldForReview: stored.result?.heldForReview ?? 0,
             duplicate: true,
             transactionIds: stored.result?.transactionIds ?? [],
             createdCategories: stored.result?.createdCategories ?? [],
@@ -1798,28 +1803,40 @@ export function createApp(db: Database) {
       }
       if (status !== "preview") throw new ApiError(404, "Not found");
       const selected = new Set(body.rowNumbers);
-      const chosen = stored.groups.filter((group) => (group.rowNumbers ?? []).some((rowNumber) => selected.has(rowNumber)));
+      const ledger = await importLedger(db, member.householdId, String(batches[0].space_id), me.id, body.accountId);
+      const chosen = decorateGroups(stored.groups, ledger, body.accountId)
+        .filter(group => group.rowNumbers.some(number => selected.has(number)));
       if (!chosen.length) throw new ApiError(400, "Select at least one row. Nothing was imported.");
       for (const group of chosen) {
         if (!(group.rowNumbers ?? []).every((rowNumber) => selected.has(rowNumber))) throw new ApiError(400, "Select every line of a split, or leave the whole split out. Nothing was imported.");
         if ((group.errors ?? []).length) throw new ApiError(400, `${group.errors[0]} Nothing was imported.`);
         if (!group.date || group.amountMinor == null) throw new ApiError(400, "A selected row is missing a date or amount. Nothing was imported.");
-        if (group.requiresTransferReview && !body.transferChoices?.[group.groupKey]) throw new ApiError(400, "Choose the other account for each transfer or confirm ordinary income/spending. Nothing was imported.");
       }
-      const existing = await db.query(`SELECT provider_transaction_id FROM transactions WHERE household_id = $1 AND deleted = 0 AND provider_transaction_id IS NOT NULL`, [member.householdId]);
-      const seenFit = new Set(existing.map((row) => String(row.provider_transaction_id)));
+      const rawBankIds = chosen.filter(group => group.fitId && !group.csvSource).map(group => group.fitId!);
+      // Older OFX entries use a household-wide raw FITID. Banks can reuse it on another account.
+      const collisions = rawBankIds.length ? await db.query(`SELECT provider_transaction_id FROM transactions
+        WHERE household_id=$1 AND account_id<>$2 AND deleted=0 AND provider_transaction_id=ANY($3::text[])`,
+        [member.householdId, body.accountId, rawBankIds]) : [];
+      const occupiedIds = new Set(collisions.map(r => String(r.provider_transaction_id)));
       const importing = [];
-      let skipped = 0;
+      let skipped = 0, heldForReview = 0;
       for (const group of chosen) {
-        const providerId = importProviderId(group, body.accountId);
-        if (providerId && seenFit.has(providerId)) {
+        if (group.duplicate) {
           skipped += 1;
           continue;
         }
         if (group.currency && group.currency.toUpperCase() !== String(account.currency).toUpperCase()) {
           throw new ApiError(400, `A row is in ${group.currency.toUpperCase()} and the account is ${account.currency}. Budget HQ PRO does not convert currencies during import. Nothing was imported.`);
         }
-        if (providerId) seenFit.add(providerId);
+        const decision = body.keepMatches?.[group.groupKey];
+        if (decision && group.possibleMatch && decision !== group.matchToken)
+          throw new ApiError(409, "The possible matches changed. Preview the file again before keeping a separate charge.");
+        if (group.possibleMatch && !decision) {
+          skipped++;
+          heldForReview++;
+          continue;
+        }
+        if (group.requiresTransferReview && !body.transferChoices?.[group.groupKey]) throw new ApiError(400, "Choose the other account for each transfer or confirm ordinary income/spending. Nothing was imported.");
         importing.push(group);
       }
       const buckets = await db.query(`SELECT id, name, kind, archived FROM buckets WHERE household_id = $1 AND space_id = $2`, [member.householdId, batches[0].space_id]);
@@ -1885,7 +1902,7 @@ export function createApp(db: Database) {
           reviewStatus: "needs_review",
           categoryLocked: splits.length > 0,
           importBatchId: String(batches[0].id),
-          providerTransactionId: importProviderId(group, body.accountId),
+          providerTransactionId: group.fitId && occupiedIds.has(group.fitId) ? `csv:${body.accountId}:${group.fitId}` : importProviderId(group, body.accountId),
           opId: `import:${batches[0].id}:${group.groupKey}`,
         }, estimateCategory && !group.requiresTransferReview ? {
           estimate: estimateCategory,
@@ -1898,9 +1915,12 @@ export function createApp(db: Database) {
           continue;
         }
         created += 1;
+        if (saved.id && group.sourceRowId) {
+          await db.query("INSERT INTO transaction_import_sources (transaction_id,source_row_id) VALUES($1,$2)", [saved.id, group.sourceRowId]);
+        }
         if (saved.id) transactionIds.push(saved.id);
       }
-      const result = { created, skipped, transactionIds, createdCategories };
+      const result = { created, skipped, heldForReview, transactionIds, createdCategories };
       const next: StoredImport = {
         ...stored,
         fingerprint,
@@ -1911,6 +1931,7 @@ export function createApp(db: Database) {
           categoryMap: body.categoryMap ?? {},
           createMissingCategories: body.createMissingCategories === true,
           transferChoices: body.transferChoices,
+          keepMatches: body.keepMatches,
         },
       };
       await db.query(`UPDATE import_batches SET status = 'committed', committed_at = $1, preview_json = $2 WHERE id = $3 AND household_id = $4`, [nowIso(), JSON.stringify(next), batches[0].id, member.householdId]);
@@ -1919,7 +1940,7 @@ export function createApp(db: Database) {
         ...result,
         duplicate: false,
         reversible: true,
-        note: created === 0
+        note: heldForReview ? `Imported ${created}. Skipped ${skipped-heldForReview} exact duplicates. Held ${heldForReview} possible matches. Preview again to keep a separate charge.` : created === 0
           ? "Those rows were already imported. Nothing new was added."
           : `Imported ${created}. They need review. Unchanged rows can be undone. A second confirm does not add them again.`,
       };

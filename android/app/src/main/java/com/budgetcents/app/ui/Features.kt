@@ -2093,7 +2093,8 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
     var format by remember { mutableStateOf("csv") }
     var profile by remember { mutableStateOf("") }
     var createMissing by remember { mutableStateOf(false) }
-    var includeMatches by remember { mutableStateOf(false) }
+    var keptGroups by remember { mutableStateOf(emptySet<String>()) }
+    var reviewPage by remember { mutableStateOf(0) }
     var preview by remember { mutableStateOf<JSONObject?>(null) }
     var batchId by remember { mutableStateOf("") }
     var canUndo by remember { mutableStateOf(false) }
@@ -2117,10 +2118,9 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
             Text(if (account.optString("id") == accountId) "Selected · ${account.optString("name")}" else account.optString("name"))
         }
     }
-    key(hid,accountId) { StatementPdf(api,hid,accountId){draft -> format="pdf"; profile=""; text=draft; preview=null; includeMatches=false} }
+    key(hid,accountId) { StatementPdf(api,hid,accountId){draft -> format="pdf"; profile=""; text=draft; preview=null} }
     OutlinedTextField(text, { text = it; preview=null }, label = { Text(if(format=="pdf") "Editable statement rows" else "CSV, OFX, or QIF") }, modifier = Modifier.fillMaxWidth())
     TextButton(onClick = { createMissing = !createMissing }) { Text(if (createMissing) "Create missing categories" else "Do not create categories") }
-    TextButton(onClick = { includeMatches = !includeMatches }) { Text(if (includeMatches) "Possible matches will be imported" else "Possible matches stay out") }
     Button(onClick = {
         if (accountId.isBlank()) onError("Choose an account.")
         else scope.launch {
@@ -2129,6 +2129,8 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
                 if (profile.isNotBlank()) body.put("profile", profile)
                 val next = api.request("POST", "/api/households/$hid/import/preview", body)
                 preview = next
+                keptGroups = emptySet()
+                reviewPage = 0
                 batchId = next.optString("batchId")
                 canUndo = false
                 onStatus("Preview only. Nothing was posted.")
@@ -2152,28 +2154,39 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
             Text(if (match == null) "${category.optString("name")} is not in this plan." else "${category.optString("name")} uses ${match.optString("name")}.")
         }
         val rows = shown.optJSONArray("rows") ?: JSONArray()
-        val limit = minOf(rows.length(), 12)
-        for (index in 0 until limit) {
+        val start = reviewPage * 20
+        for (index in start until minOf(rows.length(), start + 20)) {
             val row = rows.getJSONObject(index)
             val amount = if (row.isNull("amountMinor")) "" else money(row.optLong("amountMinor"), privacy)
             val errors = row.optJSONArray("errors")
             val problem = when {
                 (errors?.length() ?: 0) > 0 -> errors?.optString(0) ?: ""
-                row.optBoolean("duplicate") -> "Already imported"
-                row.optBoolean("possibleMatch") -> "Same date, payee, and amount"
+                row.optBoolean("duplicate") || row.optBoolean("possibleMatch") -> row.optString("matchReason")
                 else -> ""
             }
             Text("${row.optString("date")} ${row.optString("payee")} $amount $problem".trim())
+            if (row.optBoolean("possibleMatch")) {
+                val group = row.optString("groupKey")
+                TextButton(onClick = { keptGroups = if (group in keptGroups) keptGroups - group else keptGroups + group }) {
+                    Text(if (group in keptGroups) "Keep as separate transaction ✓" else "Leave out · Tap to keep separately")
+                }
+            }
         }
-        if (rows.length() > limit) Text("${rows.length() - limit} more rows are included when they have no error.")
+        if (reviewPage > 0) TextButton(onClick = { reviewPage-- }) { Text("Previous rows") }
+        if (start + 20 < rows.length()) TextButton(onClick = { reviewPage++ }) { Text("Next rows") }
         Button(onClick = {
             scope.launch {
                 runIo(onError) {
                     val numbers = JSONArray()
+                    val keepMatches = JSONObject()
                     for (index in 0 until rows.length()) {
                         val row = rows.getJSONObject(index)
                         if ((row.optJSONArray("errors")?.length() ?: 0) > 0 || row.optBoolean("duplicate")) continue
-                        if (row.optBoolean("possibleMatch") && !includeMatches) continue
+                        if (row.optBoolean("possibleMatch")) {
+                            val group = row.optString("groupKey")
+                            if (group !in keptGroups) continue
+                            keepMatches.put(group, row.getString("matchToken"))
+                        }
                         numbers.put(row.optInt("rowNumber"))
                     }
                     if (numbers.length() == 0) {
@@ -2183,6 +2196,7 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
                     val committed = api.request("POST", "/api/households/$hid/import/$batchId/commit", JSONObject()
                         .put("accountId", accountId)
                         .put("rowNumbers", numbers)
+                        .put("keepMatches", keepMatches)
                         .put("createMissingCategories", createMissing))
                     canUndo = true
                     onStatus(committed.optString("note"))

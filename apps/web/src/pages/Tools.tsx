@@ -234,6 +234,8 @@ type ImportGroup = {
   warnings?: string[];
   duplicate: boolean;
   possibleMatch: boolean;
+  matchToken?: string;
+  matchReason?: string;
   requiresTransferReview?: boolean;
 };
 type ImportPreview = {
@@ -366,7 +368,7 @@ export function ImportPage() {
       })}>
         <h2>Source</h2>
         <Field label="Import into account"><select aria-label="Import into account" required value={importAccountId} onChange={(event) => { setImportAccountId(event.target.value); setPreview(null); }}><option value="">Choose the bank account for this file</option>{accounts.data?.accounts.filter((account) => !account.archived).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        <Field label="Format"><select name="format" aria-label="Format" value={format} onChange={e=>{setFormat(e.target.value);setPreview(null);}}><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option><option value="pdf">Bank statement PDF</option></select></Field>
+        <Field label="Format"><select name="format" aria-label="Format" value={format} onChange={e=>{setFormat(e.target.value);setPreview(null);}}><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option><option value="pdf">Bank statements and screenshots</option></select></Field>
         {format==="pdf" ? <BankStatementPdf key={session.householdId+"/"+spaceId+"/"+importAccountId} url={scoped(session.householdId,"/import/statement-pdf",spaceId)} accountId={importAccountId} onEdit={()=>setPreview(null)} onPreview={text=>previewFile({format:"csv",text})}/> : <><fieldset>
         <legend>How to read the file</legend>
         <div className="grid two">
@@ -406,6 +408,7 @@ export function ImportPage() {
         const body = {
           accountId: importAccountId,
           rowNumbers: selected,
+          keepMatches: Object.fromEntries(preview.groups.filter(group => group.matchToken && group.rowNumbers.every(n => selected.includes(n))).map(group => [group.groupKey, group.matchToken])),
           categoryMap: Object.fromEntries(Object.entries(categoryMap).filter(([, value]) => value)),
           createMissingCategories: createMissing,
           transferChoices,
@@ -414,7 +417,8 @@ export function ImportPage() {
       })}>
         <h2 ref={previewRef} tabIndex={-1}>Preview</h2>
         <p>{preview.note}</p>
-        <p>{preview.rows.length} rows read · {selected.length} selected · {preview.rows.filter((row) => row.errors.length).length} with errors · {preview.rows.filter((row) => row.duplicate).length} already imported.</p>
+        <p>{preview.rows.length} rows read · {selected.length} selected · {preview.rows.filter(row => row.errors.length).length} with errors · {preview.rows.filter(row => row.duplicate).length} exact duplicates · {preview.groups.filter(group => group.possibleMatch).length} possible matches.</p>
+        {preview.groups.some(group => group.possibleMatch) && <p>Possible matches start unchecked. Select a match only if it is a separate transaction.</p>}
         <p>In this file: {preview.present.length ? preview.present.join(", ") : "no optional fields"}.</p>
         <ul>{preview.explanations.map((item) => <li key={item}>{item}</li>)}</ul>
         {preview.columns ? <p className="muted">Columns in use: {Object.entries(preview.columns).filter(([, value]) => value).map(([key, value]) => `${key} = ${value}`).join(", ")}.</p> : null}
@@ -439,7 +443,7 @@ export function ImportPage() {
         <p role="status">Showing {filteredRows.length ? previewPage * 50 + 1 : 0}–{Math.min((previewPage + 1) * 50, filteredRows.length)} of {filteredRows.length} rows.</p>
         {filteredRows.slice(previewPage * 50, (previewPage + 1) * 50).map((row) => {
           const group = groupsByRow.get(row.rowNumber);
-          const status = row.duplicate ? "Already imported" : row.possibleMatch ? "Same date, payee, and amount already in the register" : row.errors.join(" ");
+          const status = group?.matchReason ?? row.errors.join(" ");
           const detail = [
             row.splits?.map((split) => split.category).join(", "),
             row.notes,

@@ -45,6 +45,12 @@ export function mountPhysicalAssets(app: Hono, db: Database, actor: (c: Context)
     return {me,hid,membership};
   }
   function visible(row: Row, userId: string) { return row.owner_user_id===userId || JSON.parse(row.payload_json).visibility==="shared"; }
+  async function visibleImportKeys(hid: string, userId: string, fingerprint: string) {
+    const records = await db.query<{source_key: string}>(`SELECT source_key FROM physical_assets
+      WHERE household_id=$1 AND source_key LIKE $3 AND (owner_user_id=$2 OR payload_json::jsonb->>'visibility'='shared')`,
+      [hid, userId, fingerprint + ":%"]);
+    return new Set(records.map(record => record.source_key));
+  }
   async function get(hid: string, userId: string, assetId: string) {
     const [row] = await db.query<Row>(`SELECT * FROM physical_assets WHERE id=$1 AND household_id=$2`,[assetId,hid]);
     if (!row || !visible(row,userId)) throw new ApiError(404,"Asset not found.");
@@ -137,8 +143,7 @@ export function mountPhysicalAssets(app: Hono, db: Database, actor: (c: Context)
       await db.query(`DELETE FROM physical_asset_imports WHERE household_id=$1 AND expires_at<$2`,[hid,nowIso()]);
       await db.query(`DELETE FROM physical_asset_documents d WHERE household_id=$1 AND NOT EXISTS (SELECT 1 FROM physical_asset_files f WHERE f.document_id=d.id) AND NOT EXISTS (SELECT 1 FROM physical_asset_imports i WHERE i.document_id=d.id)`,[hid]);
       const document=await storeFile(hid,me,file,bytes);
-      const existing=await db.query<{source_key:string}>(`SELECT source_key FROM physical_assets WHERE household_id=$1 AND owner_user_id=$2`,[hid,me.id]);
-      const keys=new Set(existing.map(r=>r.source_key));
+      const keys=await visibleImportKeys(hid,me.id,document.fingerprint);
       preview={...preview,rows:preview.rows.map(r=>({...r,duplicate:keys.has(`${document.fingerprint}:${r.key}`)})),documentId:document.id};
       await db.query(`INSERT INTO physical_asset_imports (id,household_id,user_id,document_id,preview_json,created_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,[draftId,hid,me.id,document.id,JSON.stringify(preview),nowIso(),new Date(Date.now()+86400000).toISOString()]);
     });
@@ -157,10 +162,10 @@ export function mountPhysicalAssets(app: Hono, db: Database, actor: (c: Context)
       if(new Set(input.rows.map(r=>r.key)).size!==input.rows.length||input.rows.some(r=>!allowed.has(r.key))) throw new ApiError(400,"Choose each row from this preview once.");
       const [document]=await db.query<Document>(`SELECT * FROM physical_asset_documents WHERE id=$1`,[draft.document_id]);
       const created:string[]=[],skipped:string[]=[];
+      const keys=await visibleImportKeys(hid,me.id,document.fingerprint);
       for(const row of input.rows) {
         const key=`${document.fingerprint}:${row.key}`;
-        const existing=await db.query(`SELECT id FROM physical_assets WHERE household_id=$1 AND owner_user_id=$2 AND source_key=$3`,[hid,me.id,key]);
-        if(existing.length) {skipped.push(row.name);continue;}
+        if(keys.has(key)) {skipped.push(row.name);continue;}
         created.push(await create(hid,me,assetSchema.parse(row),row.estimate,key,document.id));
       }
       const result={created,skipped,repeated:false};

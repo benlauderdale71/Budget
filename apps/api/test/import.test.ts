@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/http.js";
 import { openMemoryDatabase, type Database } from "../src/db.js";
+import { textPdf } from "../src/pdf.js";
+import sharp from "sharp";
 
 let db: Database;
 
@@ -41,6 +43,83 @@ const csv = [
 ].join("\n");
 
 describe("guided import", () => {
+  it("reads an overlapping screenshot and PDF into one account with the original row identities", async () => {
+    const api = await app(), home = await household(api, "statement-images@example.com");
+    const post = async (path: string, body: object) => json(await api.request("/api/households/" + home.hid + path, {method:"POST", headers:auth(home.token), body:JSON.stringify(body)}));
+    const accountId = (await post("/accounts", {spaceId:home.spaceId, name:"Joint", kind:"checking", onBudget:true})).body.id;
+    const photo = await sharp(Buffer.from('<svg width="1100" height="240" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><g font-family="Arial, sans-serif" font-size="32" fill="black"><text x="40" y="70">11/12/2026 Market -15.00</text><text x="40" y="145">11/13/2026 Library -20.00</text></g></svg>')).png().toBuffer();
+    const pdf = textPdf("Account statement November 2026",["11/13/2026 Library -20.00","11/14/2026 Payroll +47.00"]);
+    type DraftRow = {date:string;payee:string;amount:string;sourceRowId:string};
+    async function read(bytes:Buffer):Promise<DraftRow[]> {
+      const reply = await post("/import/statement-pdf", {accountId,year:2026,data:bytes.toString("base64")});
+      expect(reply.status,reply.body.error).toBe(200);
+      return reply.body.rows;
+    }
+    const imageRows = await read(photo), pdfRows = await read(pdf);
+    expect(imageRows.map(r=>[r.date,r.amount])).toEqual([["2026-11-12","-15.00"],["2026-11-13","-20.00"]]);
+    const joined = [...imageRows, ...pdfRows, ...imageRows];
+    const text = ["Date,Payee,Amount,Statement row ID", ...joined.map(r=>[r.date,r.payee,r.amount,r.sourceRowId].join(","))].join("\n");
+    const preview = (await post("/import/preview", {spaceId:home.spaceId,accountId,format:"csv",text})).body;
+    expect(preview.groups.map((g:{duplicate:boolean,possibleMatch:boolean})=>[g.duplicate,g.possibleMatch])).toEqual([
+      [false,false],[false,false],[false,true],[false,false],[true,false],[true,false],
+    ]);
+    expect((await post("/import/"+preview.batchId+"/commit",{accountId,rowNumbers:[2,3,4,5,6,7]})).body).toMatchObject({created:3,skipped:3,heldForReview:1});
+    expect(Number((await db.query("SELECT SUM(amount_minor) AS total FROM transactions WHERE account_id=$1 AND deleted=0",[accountId]))[0].total)).toBe(1200);
+  });
+  it("rechecks overlaps across uploaders, retains new rows, and requires an individual decision for identical purchases", async () => {
+    const api = await app();
+    const owner = await household(api, "overlap-owner@example.com");
+    const editor = await household(api, "overlap-editor@example.com");
+    const [user] = await db.query("SELECT id FROM users WHERE email=$1", ["overlap-editor@example.com"]);
+    await db.query("INSERT INTO memberships(household_id,user_id,role,created_at) VALUES($1,$2,'editor',$3)", [owner.hid, user.id, new Date().toISOString()]);
+    const post = async (token: string, url: string, data: object) => json(await api.request("/api/households/" + owner.hid + url, {
+      method: "POST", headers: auth(token), body: JSON.stringify(data),
+    }));
+    const account = (await post(owner.token, "/accounts", { spaceId: owner.spaceId, name: "Joint checking", kind: "checking", visibility: "shared", onBudget: true })).body.id;
+    const preview = async (token: string, text: string, accountId = account) =>
+      (await post(token, "/import/preview", { spaceId: owner.spaceId, format: "csv", accountId, text })).body;
+    const save = (token: string, batch: {batchId: string}, rowNumbers: number[], keepMatches = {}) =>
+      post(token, "/import/" + batch.batchId + "/commit", { accountId: account, rowNumbers, keepMatches });
+    const doc = (source: string, n: number, payee: string, amount: string) =>
+      ["2026-11-12", payee, amount, source.repeat(64) + ":" + n].join(",");
+    const header = "Date,Payee,Amount,Statement row ID";
+    const screenshot = [header, doc("a", 1, "Foodland", "-15.00"), doc("a", 2, "Library", "-2.00")].join("\n");
+    const statement = [header, doc("b", 1, "POS DEBIT F00dland", "-15.00"), doc("b", 2, "Fuel", "-28.00")].join("\n");
+    const first = await preview(owner.token, screenshot);
+    const stale = await preview(editor.token, statement);
+    expect(stale.rows.every((r: {possibleMatch: boolean}) => !r.possibleMatch)).toBe(true);
+    expect((await save(owner.token, first, [2,3])).body.created).toBe(2);
+    const checked = await save(editor.token, stale, [2,3]);
+    expect(checked.body).toMatchObject({created: 1, skipped: 1, heldForReview: 1});
+    expect((await save(editor.token, stale, [2,3])).body).toMatchObject({created: 1, duplicate: true});
+    const again = await preview(editor.token, screenshot);
+    expect(again.groups.every((g: {duplicate:boolean}) => g.duplicate)).toBe(true);
+    expect((await save(editor.token, again, [2,3])).body.created).toBe(0);
+
+    const identical = [header, doc("c", 1, "Food-land", "-15.00"), doc("c", 2, "Food-land", "-15.00"), doc("c", 2, "Food-land", "-15.00"), doc("c", 3, "Foodland", "+15.00")].join("\n");
+    const review = await preview(editor.token, identical);
+    expect(review.groups.map((g: {duplicate:boolean;possibleMatch:boolean}) => [g.duplicate,g.possibleMatch])).toEqual([[false,true],[false,true],[true,false],[false,false]]);
+    const genuine = review.groups[1];
+    expect((await save(editor.token, review, [2,3,4,5], {[genuine.groupKey]: genuine.matchToken})).body).toMatchObject({created: 2, skipped: 2, heldForReview: 1});
+    const balances = await db.query("SELECT amount_minor AS amount FROM transactions WHERE account_id=$1 AND deleted=0 ORDER BY amount_minor", [account]);
+    expect(balances.map(r => Number(r.amount))).toEqual([-2800,-1500,-1500,-200,1500]);
+
+    const ids = "Date,Payee,Amount,Transaction ID\n2026-11-13,Cafe,-5.00,a01\n2026-11-13,Cafe,-5.00,a02";
+    const sameDay = await preview(owner.token, ids);
+    expect(sameDay.groups.every((g: {possibleMatch:boolean}) => !g.possibleMatch)).toBe(true);
+    const secondCopy = await preview(editor.token, ids);
+    const concurrent = await Promise.all([save(owner.token, sameDay, [2,3]), save(editor.token, secondCopy, [2,3])]);
+    expect(concurrent.map(s => s.body.created).sort()).toEqual([0,2]);
+    const other = (await post(owner.token, "/accounts", { spaceId: owner.spaceId, name: "Second checking", kind:"checking", visibility:"shared", onBudget:true })).body.id;
+    expect((await preview(editor.token, screenshot, other)).groups.every((g: {possibleMatch:boolean;duplicate:boolean}) => !g.duplicate && !g.possibleMatch)).toBe(true);
+    const bank = (await post(owner.token, "/transactions", {accountId:account,spaceId:owner.spaceId,date:"2026-11-12",type:"expense",amountMinor:-200,payee:"Library",providerTransactionId:"bank-library-1"})).body;
+    const [fileTxn] = await db.query("SELECT id,provider_transaction_id FROM transactions WHERE account_id=$1 AND payee='Library' AND provider_transaction_id IS NULL", [account]);
+    const matched = await post(owner.token, "/transactions/"+bank.id+"/match", {otherId:fileTxn.id});
+    expect(matched.status).toBe(200);
+    expect((await preview(editor.token, screenshot)).groups[1].duplicate).toBe(true);
+    const backup = await json(await api.request("/api/households/"+owner.hid+"/backup", {headers:auth(owner.token)}));
+    expect(backup.body.transaction_import_sources).toContainEqual({transaction_id:bank.id,source_row_id:"a".repeat(64)+":2"});
+  });
   it("retains every bank column, scopes CSV ids to an account, and protects private source details", async () => {
     const api = await app();
     const home = await household(api, "bank-import@example.com");
