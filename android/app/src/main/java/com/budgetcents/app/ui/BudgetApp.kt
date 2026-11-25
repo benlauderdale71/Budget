@@ -452,8 +452,10 @@ private fun SignIn(
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Budget HQ PRO", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
         if (notice.isNotBlank()) Text(notice)
-        Text("Same household as the web app. The emulator reaches a computer at 10.0.2.2.", color = Ink)
-        OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
+        Text("Sign in with your Budget HQ PRO web account.", color = Ink)
+        var serverOptions by remember { mutableStateOf(false) }
+        TextButton(onClick = { serverOptions = !serverOptions }) { Text("Server settings") }
+        if (serverOptions) OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("login" to "Sign in", "invite" to "Join a household", "register" to "Create household", "reset" to "Reset password", "verify" to "Verify email").forEach { (id, label) ->
                 TextButton(onClick = { mode = id; note = "" }) { Text(label) }
@@ -915,6 +917,8 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
         "Catch-up plan" to "Paycheck catch-up plan",
         "Statement coverage" to "Statement coverage and spending averages",
         "Merchant corrections" to "Merchant corrections",
+        "Import category estimates" to "Reassess imported categories",
+        "Household backup" to "Household backup and restore",
         "receipts" to "Receipts",
         "investments" to "Investments",
         "retirement" to "Retirement",

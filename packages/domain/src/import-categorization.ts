@@ -3,7 +3,7 @@ import type { Bucket, Transaction } from "./types.js";
 
 type Candidate = Pick<Transaction, "accountId" | "amountMinor" | "type" | "payee" | "originalDescription">;
 type Kind = "income" | "expense";
-export type CategoryEstimate = { bucketId: string; basis: "account history" | "bank category" | "merchant" | "fallback" };
+export type CategoryEstimate = { bucketId: string; basis: "account history" | "fuel description" | "bank category" | "merchant" | "fallback" };
 
 const words = (value: string) => value.normalize("NFKC").toLowerCase().replace(/['’]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -24,16 +24,24 @@ function kindOf(txn: Candidate): Kind | undefined {
   if (["expense", "fee"].includes(txn.type) && txn.amountMinor < 0) return "expense";
 }
 
-export function canEstimateImportedCategory(txn: Transaction): boolean {
+export function canEstimateImportedCategory(txn: Transaction, revisit = false): boolean {
   const kind = kindOf(txn);
   return !!kind && !!(txn.importBatchId || txn.providerTransactionId) && txn.reviewStatus === "needs_review"
     && txn.bankStatus === "posted" && !txn.deleted && !txn.categoryLockedByUser && !txn.counterAccountId
     && !txn.excludeFromReports && !txn.locked && !txn.reconciled
-    && (!txn.splits.length || (txn.splits.length === 1 && !txn.splits[0].bucketId
+    && (!txn.splits.length || (txn.splits.length === 1 && (!txn.splits[0].bucketId || (revisit && !!txn.tags?.includes("category-estimate")))
       && txn.splits[0].role === kind && txn.splits[0].amountMinor === Math.abs(txn.amountMinor)));
 }
 
+function warehouseKey(txn:Candidate) {
+  const description=words(txn.payee+" "+(txn.originalDescription??""));
+  const brand=/\bsams(?:\s*club(?:gas|fuel)?|\s+(?:gas|fuel))\b/.test(description) ? "samsclub" : /\b(costco|walmart|kroger)\b/.exec(description)?.[1];
+  const fuel=/\b(?:fuel|gas|gasoline|pump)\b|samsclub(?:gas|fuel)/.test(description);
+  return brand ? {brand,fuel} : undefined;
+}
 function merchantKeys(txn: Candidate) {
+  const warehouse=warehouseKey(txn);
+  if(warehouse) return [warehouse.fuel ? "fuel:"+warehouse.brand : warehouse.brand];
   const raw = [txn.payee, txn.originalDescription ?? ""]
     .map(value => words(value).replace(/^(?:(?:pos|debit card|checkcard|check card|card purchase|purchase|point of sale)\s+)+/, "")
       .replace(/\s+(?:store\s+)?\d{3,}(?:\s.*)?$/, ""));
@@ -84,6 +92,10 @@ export function importedCategoryEstimator(buckets: Bucket[], transactions: Trans
       if (votes.length && winners.length === votes.length && new Set(winners).size === 1) {
         return { bucketId: winners[0], basis: "account history" };
       }
+      if(warehouseKey(txn)?.fuel && !classifications[0].labels.test(label)) {
+        const bucketId=choose(classifications[0].names);
+        if(bucketId) return {bucketId,basis:"fuel description"};
+      }
       if (label) {
         const bucketId = choose([label]) ?? choose(classifications.find(entry => entry.labels.test(label))?.names ?? []);
         if (bucketId) return { bucketId, basis: "bank category" };
@@ -108,9 +120,7 @@ export function correctionMerchant(txn: Candidate): string | undefined {
   if (!keys.length) return;
   const brand = words(spendingMerchantName(txn.payee));
   const key = brand !== words(txn.payee) && keys.some(k=>k.replace(/^fuel:/,"")===brand) ? brand : keys[0].replace(/^fuel:/,"");
-  const description=descriptors.join(" ");
-  const warehouse = /\bsams(?:\s*club(?:gas|fuel)?|\s+(?:gas|fuel))\b/.test(description) ? "samsclub"
-    : /\b(?:costco|walmart|kroger)\b/.exec(description)?.[0];
+  const warehouse=warehouseKey(txn)?.brand;
   const fuel = descriptors.some(d=>/\b(?:fuel|gas|gasoline|pump)\b/.test(d) || /samsclub(?:gas|fuel)/.test(d));
   return [kind, warehouse ?? key, fuel ? "fuel" : "store"].join("|");
 }

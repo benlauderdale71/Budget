@@ -3,7 +3,7 @@ import { spendingContributions } from "./reports.js";
 import type { EngineInput } from "./types.js";
 import { spendingMerchantName } from "./merchant-names.js";
 
-export interface SpendingFilters { from: string; to: string; accountId?: string; bucketId?: string; group?: string; merchant?: string; merchantGroup?: string; tag?: string; q?: string }
+export interface SpendingFilters { from: string; to: string; accountId?: string; bucketId?: string; group?: string; merchant?: string; merchantGroup?: string; tag?: string; review?: string; q?: string }
 export interface SpendingLine {
   key: string; transactionId: string; date: string; accountId: string; account: string;
   bucketId: string; category: string; group: string; merchant: string; amountMinor: number;
@@ -55,11 +55,12 @@ export function detailedSpending(input: EngineInput, filters: SpendingFilters) {
       all.push({key:`${txn.id}:${split.index}`,transactionId:txn.id,date:txn.date,accountId:account.id,account:account.name,
         bucketId:bucket?.id??"uncategorized",category:bucket?.name??"Uncategorized",group:bucket?.group||"Uncategorized",
         merchant:txn.payee.trim()||"Unknown merchant",amountMinor:split.amountMinor,type:txn.type,
-        notes:txn.notes??"",memo:split.memo??"",tags:txn.tags??[],reviewStatus:txn.reviewStatus,cleared:!!txn.cleared,reconciled:!!txn.reconciled});
+        notes:txn.notes??"",memo:split.memo??"",tags:txn.categoryLockedByUser ? (txn.tags??[]).filter(t=>t!=="category-estimate") : txn.tags??[],reviewStatus:txn.reviewStatus,cleared:!!txn.cleared,reconciled:!!txn.reconciled});
     }
   }
   const matching = all.filter(l=>(!filters.bucketId||l.bucketId===filters.bucketId)&&(!filters.group||l.group===filters.group)
     &&(!filters.merchant||l.merchant===filters.merchant)&&(!filters.merchantGroup||spendingMerchantName(l.merchant)===filters.merchantGroup)&&(!filters.tag||l.tags.includes(filters.tag))
+    &&(!filters.review||l.reviewStatus===filters.review)
     &&(!filters.q||[l.merchant,l.notes,l.memo,...l.tags].join(" ").toLocaleLowerCase().includes(filters.q.toLocaleLowerCase())));
   const lines = matching.filter(l=>l.date>=filters.from).sort((a,b)=>b.date.localeCompare(a.date)||a.key.localeCompare(b.key));
   const previous = matching.filter(l=>l.date<filters.from);
@@ -113,7 +114,10 @@ export function annualSpending(input: EngineInput, year: number, filters: Omit<S
     return [...groups].map(([key,lines])=>annualRow(key,labelOf(lines[0]),lines,lines[0].group)).sort((a,b)=>b.yearlyMinor-a.yearlyMinor||a.label.localeCompare(b.label));
   }
   const merchantKey = (line: SpendingLine) => groupMerchants ? spendingMerchantName(line.merchant) : line.merchant;
-  return {year,from,to,currency:report.currency,averageMonths:12,completeMonths,groupMerchants,summary:annualRow("all","All spending",report.lines),
+  const estimates=report.lines.filter(l=>l.reviewStatus==="needs_review" && l.tags.includes("category-estimate"));
+  const confirmed=report.lines.filter(l=>l.reviewStatus==="reviewed");
+  const review={confirmedCount:new Set(confirmed.map(l=>l.transactionId)).size,confirmedMinor:confirmed.reduce((sum,l)=>sum+l.amountMinor,0),estimatedMinor:estimates.reduce((n,l)=>n+l.amountMinor,0), estimatedCount:new Set(estimates.map(l=>l.transactionId)).size, unresolvedCount:report.summary.needsReviewCount, uncategorizedCount:report.summary.uncategorizedCount};
+  return {year,from,to,review,currency:report.currency,averageMonths:12,completeMonths,groupMerchants,summary:annualRow("all","All spending",report.lines),
     monthly:report.monthly,categories:groupRows(l=>l.bucketId,l=>l.category),groups:groupRows(l=>l.group,l=>l.group),
     merchants:groupRows(merchantKey,merchantKey),accounts:groupRows(l=>l.accountId,l=>l.account),
     excluded:report.excluded};

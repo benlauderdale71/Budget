@@ -1,3 +1,4 @@
+import { BankStatementPdf } from "./BankStatementPdf.js";
 import { useEffect, useRef, useState } from "react";
 import { CsvSourceDetails, type SourceCell } from "../CsvSourceDetails.js";
 import { Link } from "react-router-dom";
@@ -309,43 +310,17 @@ export function ImportPage() {
       form.setError(caught instanceof Error ? caught.message : "That did not save.");
     }
   }
-  return (
-    <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. Categories, notes, tags, and splits are kept when the file has them. Fields that are missing stay blank.">
-      <p>Uploading a list of bills or due dates? <Link to="/bills/import">Import bills from an image, PDF, CSV or Excel file</Link>.</p>
-      <ol className="wizard-steps" aria-label="Import steps">
-        <li aria-current={step === "Source" ? "step" : undefined}>1. Source and columns</li>
-        <li aria-current={step === "Preview" ? "step" : undefined}>2. Preview</li>
-        <li aria-current={step === "Confirm" ? "step" : undefined}>3. Confirm</li>
-      </ol>
-      {accounts.data ? <p>Cash <Money minor={accounts.data.budget.cashPoolMinor} /> · Ready to Assign <Money minor={accounts.data.budget.readyToAssignMinor} /> · Spending <Money minor={accounts.data.budget.spendingMinor} /></p> : null}
-      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-      {recent.error ? <Notice kind="bad">{recent.error}</Notice> : null}
-      <form className="card" onSubmit={(event) => form.run(event, async () => {
-        const data = new FormData(event.currentTarget);
-        const file = data.get("file") as File;
-        const text = await file.text();
-        const mapping: Record<string, string> = {};
-        for (const [field, key] of [
-          ["dateColumn", "date"], ["amountColumn", "amount"], ["outflowColumn", "debit"], ["inflowColumn", "credit"],
-          ["payeeColumn", "payee"], ["categoryColumn", "category"], ["notesColumn", "notes"], ["tagsColumn", "tags"],
-          ["splitsColumn", "splits"], ["splitGroupColumn", "splitGroup"], ["balanceColumn", "balance"], ["currencyColumn", "currency"],
-          ["descriptionColumn", "description"], ["transactionIdColumn", "transactionId"], ["checkNumberColumn", "checkNumber"],
-          ["effectiveDateColumn", "effectiveDate"], ["transactionTypeColumn", "transactionType"], ["postingStatusColumn", "postingStatus"], ["referenceNumberColumn", "referenceNumber"], ["bankCategoryColumn", "bankCategory"],
-        ] as const) {
-          const value = columnValue(data, field);
-          if (value) mapping[key] = value;
-        }
+  const [format,setFormat]=useState("csv");
+  const previewScope=useRef("");
+  previewScope.current=JSON.stringify([session.householdId,spaceId,importAccountId,format]);
+  async function previewFile(options:Record<string,unknown>){
+        const source=previewScope.current;
         const next = await api<ImportPreview>(scoped(session.householdId, "/import/preview"), { method: "POST", body: JSON.stringify({
           spaceId: accounts.data?.spaceId,
           accountId: importAccountId,
-          profile: data.get("profile") || undefined,
-          format: data.get("format"),
-          text,
-          mapping,
-          dateOrder: data.get("dateOrder"),
-          decimal: data.get("decimal"),
-          inflowSign: data.get("inflowSign"),
+          ...options,
         }) });
+        if(source!==previewScope.current)return;
         const chosen: number[] = [];
         for (const group of next.groups) {
           if (!group.duplicate && !group.possibleMatch && !group.requiresTransferReview && group.errors.length === 0) chosen.push(...group.rowNumbers);
@@ -359,13 +334,43 @@ export function ImportPage() {
         setCategoryMap(mapped);
         setCreateMissing(false);
         setTransferChoices({}); setPreviewPage(0); setOnlyAttention(false);
+  }
+  return (
+    <Page title="Import" lede="Choose a source, map the columns that exist, preview every row, and confirm. Categories, notes, tags, and splits are kept when the file has them. Fields that are missing stay blank.">
+      <p>Uploading a list of bills or due dates? <Link to="/bills/import">Import bills from an image, PDF, CSV or Excel file</Link>.</p>
+      <ol className="wizard-steps" aria-label="Import steps">
+        <li aria-current={step === "Source" ? "step" : undefined}>1. Source and columns</li>
+        <li aria-current={step === "Preview" ? "step" : undefined}>2. Preview</li>
+        <li aria-current={step === "Confirm" ? "step" : undefined}>3. Confirm</li>
+      </ol>
+      {accounts.data ? <p>Cash <Money minor={accounts.data.budget.cashPoolMinor} /> · Ready to Assign <Money minor={accounts.data.budget.readyToAssignMinor} /> · Spending <Money minor={accounts.data.budget.spendingMinor} /></p> : null}
+      {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
+      {recent.error ? <Notice kind="bad">{recent.error}</Notice> : null}
+      <form className="card" onSubmit={(event) => form.run(event, async () => {
+        const data = new FormData(event.currentTarget);
+        if(format==="pdf") return;
+        const file = data.get("file") as File;
+        const text = await file.text();
+        const mapping: Record<string, string> = {};
+        for (const [field, key] of [
+          ["dateColumn", "date"], ["amountColumn", "amount"], ["outflowColumn", "debit"], ["inflowColumn", "credit"],
+          ["payeeColumn", "payee"], ["categoryColumn", "category"], ["notesColumn", "notes"], ["tagsColumn", "tags"],
+          ["splitsColumn", "splits"], ["splitGroupColumn", "splitGroup"], ["balanceColumn", "balance"], ["currencyColumn", "currency"],
+          ["descriptionColumn", "description"], ["transactionIdColumn", "transactionId"], ["checkNumberColumn", "checkNumber"],
+          ["effectiveDateColumn", "effectiveDate"], ["transactionTypeColumn", "transactionType"], ["postingStatusColumn", "postingStatus"], ["referenceNumberColumn", "referenceNumber"], ["bankCategoryColumn", "bankCategory"],
+        ] as const) {
+          const value = columnValue(data, field);
+          if (value) mapping[key] = value;
+        }
+        await previewFile({profile:data.get("profile")||undefined,format:data.get("format"),text,mapping,dateOrder:data.get("dateOrder"),decimal:data.get("decimal"),inflowSign:data.get("inflowSign")});
       })}>
         <h2>Source</h2>
         <Field label="Import into account"><select aria-label="Import into account" required value={importAccountId} onChange={(event) => { setImportAccountId(event.target.value); setPreview(null); }}><option value="">Choose the bank account for this file</option>{accounts.data?.accounts.filter((account) => !account.archived).map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
-        <fieldset>
+        <Field label="Format"><select name="format" aria-label="Format" value={format} onChange={e=>{setFormat(e.target.value);setPreview(null);}}><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option><option value="pdf">Bank statement PDF</option></select></Field>
+        {format==="pdf" ? <BankStatementPdf key={session.householdId+"/"+spaceId+"/"+importAccountId} url={scoped(session.householdId,"/import/statement-pdf",spaceId)} accountId={importAccountId} onEdit={()=>setPreview(null)} onPreview={text=>previewFile({format:"csv",text})}/> : <><fieldset>
         <legend>How to read the file</legend>
         <div className="grid two">
-          <Field label="Format"><select name="format" aria-label="Format"><option value="csv">CSV</option><option value="ofx">OFX / QFX</option><option value="qif">QIF</option></select></Field>
+
           <Field label="Source"><select name="profile" aria-label="Source"><option value="">Automatic columns</option><option value="amfirst">America’s First Federal Credit Union</option><option value="mint">Mint</option><option value="ynab">YNAB</option><option value="monarch">Monarch</option><option value="simplifi">Simplifi</option><option value="rocket">Rocket Money</option><option value="everydollar">EveryDollar</option><option value="empower">Empower</option><option value="goodbudget">Goodbudget</option></select></Field>
           <Field label="Date order"><select name="dateOrder" aria-label="Date order"><option value="mdy">Month/day/year</option><option value="dmy">Day/month/year</option></select></Field>
           <Field label="Decimal mark"><select name="decimal" aria-label="Decimal mark"><option value="period">1,234.56</option><option value="comma">1.234,56</option></select></Field>
@@ -394,7 +399,7 @@ export function ImportPage() {
         </fieldset>
         </details>
         <Field label="File"><input name="file" type="file" required accept=".csv,.ofx,.qfx,.qif,text/csv,text/plain" aria-label="Import file" /></Field>
-        <button className="btn" type="submit" disabled={!accounts.data || !access.canWrite}>Preview</button>
+        <button className="btn" type="submit" disabled={!accounts.data || !access.canWrite}>Preview</button></>}
       </form>
       {preview ? <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         if (!selected.length) throw new Error("Select at least one row. Nothing was imported.");

@@ -57,6 +57,10 @@ internal fun HouseholdTool(page: String, api: BudgetApi, hid: String, dash: JSON
     val home = dash.optJSONObject("household")
     val writable = home?.optString("role") in listOf("owner", "admin", "editor", "contributor")
     val currency = home?.optString("currency", "USD") ?: "USD"
+    if(page=="Import category estimates"){
+        if(writable) MobileEstimates(client,dash.rows("buckets"),privacy) else Text("Editing access is required to update categories.")
+        return
+    }
     val accounts = dash.rows("accounts").filter { page != "Catch-up plan" ||
         (it.optBoolean("onBudget") && !it.optBoolean("archived") && it.optString("currency") == currency && it.optString("kind") in listOf("checking","cash","savings")) }
     if (accounts.isEmpty()) { Text("No eligible accounts in this space."); return }
@@ -82,6 +86,7 @@ private fun MobileStatements(client: ToolApi, id: String, unit: ToolCurrency, wr
     var account by remember(year) { mutableStateOf<JSONObject?>(null) }
     var report by remember(year) { mutableStateOf<JSONObject?>(null) }
     var start by remember { mutableStateOf("") }; var end by remember { mutableStateOf("") }; var closing by remember { mutableStateOf("") }
+    var deposits by remember { mutableStateOf("") }; var withdrawals by remember { mutableStateOf("") }; var count by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }; var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val query = "?year=$year&accountId=" + Uri.encode(id)
@@ -97,21 +102,35 @@ private fun MobileStatements(client: ToolApi, id: String, unit: ToolCurrency, wr
         val reportUnit = ToolCurrency(r.getString("currency"), unit.hidden)
         Text("Year total ÷ 12: " + reportUnit.display(row.getLong("monthlyAverageMinor")))
         Text("Average per complete month: " + if (row.isNull("completeMonthAverageMinor")) "Unavailable" else reportUnit.display(row.getLong("completeMonthAverageMinor")))
+        r.optJSONObject("review")?.let { v -> Text("Estimated spending: "+reportUnit.display(v.optLong("estimatedMinor"))+" across "+v.optInt("estimatedCount")+" transactions · "+v.optInt("unresolvedCount")+" awaiting review") }
         Text((r.optJSONArray("completeMonths")?.length() ?: 0).toString() + " of 12 months reconciled")
     }
     account?.let { a ->
         a.rows("months").forEach { m -> Text(m.optString("month") + " · " + m.optString("status") + " · " + m.optInt("imported") + " imported") }
         a.rows("statements").forEach { p -> Text(p.optString("start")+" – "+p.optString("end")+" · closing "+unit.display(p.getLong("closingMinor"))+" · difference "+unit.display(p.getLong("differenceMinor"))) }
         if (writable && !unit.hidden) {
+            val lifetime=a.optJSONObject("lifetime")?:JSONObject()
+            var opened by remember(a) { mutableStateOf(if(lifetime.isNull("opened")) "" else lifetime.getString("opened")) }
+            var closed by remember(a) { mutableStateOf(if(lifetime.isNull("closed")) "" else lifetime.getString("closed")) }
+            ToolField("Account opened (optional)",opened){opened=it}; ToolField("Account closed (optional)",closed){closed=it}
+            TextButton(enabled=!saving,onClick={saving=true;scope.launch { try {
+                client.call("account-lifetime",JSONObject().put("accountId",id).put("opened",opened.ifBlank { null }?:JSONObject.NULL)
+                    .put("closed",closed.ifBlank { null }?:JSONObject.NULL).put("previous",lifetime));reload++;message="Account dates saved."
+            }catch(e:Exception){message=e.message.orEmpty()}finally{saving=false} }}){Text("Save account dates")}
+
             ToolField("Statement starts (YYYY-MM-DD)",start) { start=it }; ToolField("Statement ends (YYYY-MM-DD)",end) { end=it }
             ToolField("Closing balance",closing) { closing=it }
+            ToolField("Statement deposits",deposits){deposits=it}; ToolField("Statement withdrawals",withdrawals){withdrawals=it}; ToolField("Statement transaction count (optional)",count){count=it}
+            Text("Enter both activity totals, including zero, to verify the statement. Empty fields keep previously recorded totals.")
             Button(enabled=!saving,onClick={
                 saving=true
                 scope.launch {
                     try {
                         val old=a.rows("statements").find { it.optString("end")==end }
-                        val previous=old?.let { JSONObject().put("start",it.optString("start")).put("closingMinor",it.getLong("closingMinor")) }
-                        client.call("statement-coverage",JSONObject().put("accountId",id).put("start",start).put("end",end).put("closingMinor",unit.parse(closing)).put("previous",previous?:JSONObject.NULL))
+                        val previous=old
+                        client.call("statement-coverage",JSONObject().put("accountId",id).put("start",start).put("end",end).put("closingMinor",unit.parse(closing)).put("depositsMinor",if(deposits.isBlank()) old?.opt("depositsMinor")?:JSONObject.NULL else unit.parse(deposits))
+                            .put("withdrawalsMinor",if(withdrawals.isBlank()) old?.opt("withdrawalsMinor")?:JSONObject.NULL else unit.parse(withdrawals))
+                            .put("transactionCount",if(count.isBlank()) old?.opt("transactionCount")?:JSONObject.NULL else count.toInt()).put("previous",previous?:JSONObject.NULL))
                         year=LocalDate.parse(end).year; reload++; message="Statement saved."
                     } catch(e:Exception) { message=e.message.orEmpty() } finally { saving=false }
                 }
@@ -120,6 +139,8 @@ private fun MobileStatements(client: ToolApi, id: String, unit: ToolCurrency, wr
     }
     Text(message)
 }
+
+private data class CreditorDraft(val name:String="",val debt:String="",val date:String="",val normal:String="",val promises:List<Pair<String,String>> = emptyList())
 
 @Composable
 private fun MobileCatchUp(client: ToolApi, id: String, unit: ToolCurrency, writable: Boolean) {
@@ -140,7 +161,14 @@ private fun MobileCatchUp(client: ToolApi, id: String, unit: ToolCurrency, writa
     val installments=remember { mutableStateListOf<Pair<String,String>>().apply {
         addAll(terms?.rows("agreements")?.map { it.optString("date") to unit.input(it.optLong("amountMinor")) }?:emptyList())
     } }
-    val fingerprint=listOf(name,start,days,debt,buffer,essentials,due,normal,installments.toList())
+    val others=remember { mutableStateListOf<CreditorDraft>().apply {
+        addAll(terms?.rows("additionalBills")?.map { b ->
+            val payment=b.optJSONObject("regular")
+            CreditorDraft(b.optString("name"),unit.input(b.getLong("pastDueMinor")),payment?.optString("date")?:"",
+                payment?.let {unit.input(it.getLong("amountMinor"))}?:"",b.rows("agreements").map {it.getString("date") to unit.input(it.getLong("amountMinor"))})
+        }?:emptyList())
+    } }
+    val fingerprint=listOf(name,start,days,debt,buffer,essentials,due,normal,installments.toList(),others.toList())
     var result by remember(fingerprint) { mutableStateOf<JSONObject?>(null) }
     var status by remember(fingerprint) { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }; val scope=rememberCoroutineScope()
@@ -155,6 +183,22 @@ private fun MobileCatchUp(client: ToolApi, id: String, unit: ToolCurrency, writa
         TextButton({installments.removeAt(index)}){Text("Remove installment")}
     }
     TextButton({installments.add("" to "")}){Text("Add agreed installment")}
+    Text("Extra funds go to creditors in the order shown after dated promises and shared essentials.")
+    others.forEachIndexed { i,b ->
+        ToolField("Creditor",b.name){others[i]=b.copy(name=it)}
+        ToolField("Past due",b.debt){others[i]=b.copy(debt=it)}
+        ToolField("Additional regular payment date",b.date){others[i]=b.copy(date=it)}
+        ToolField("Additional regular amount",b.normal){others[i]=b.copy(normal=it)}
+        b.promises.forEachIndexed { j,p ->
+            fun replace(next:Pair<String,String>) { others[i]=b.copy(promises=b.promises.mapIndexed { k,v->if(k==j)next else v }) }
+            ToolField("Promised date",p.first){replace(it to p.second)}
+            ToolField("Promised amount",p.second){replace(p.first to it)}
+            TextButton({others[i]=b.copy(promises=b.promises.filterIndexed { k,_->k!=j })}){Text("Remove installment")}
+        }
+        TextButton({others[i]=b.copy(promises=b.promises+("" to ""))}){Text("Add promised installment")}
+        TextButton({others.removeAt(i)}){Text("Remove creditor")}
+    }
+    TextButton({others.add(CreditorDraft())}){Text("Add another past-due bill")}
     fun calculate(save:Boolean) {
         busy=true
         scope.launch {
@@ -164,6 +208,11 @@ private fun MobileCatchUp(client: ToolApi, id: String, unit: ToolCurrency, writa
                     .put("bufferMinor",unit.parse(buffer)).put("essentialsPerPayMinor",unit.parse(essentials))
                     .put("regular",if(normal.isBlank() && due.isBlank()) JSONObject.NULL else payment(due,normal))
                     .put("agreements",JSONArray().apply { installments.forEach { put(payment(it.first,it.second)) } })
+                plan.put("additionalBills",JSONArray().apply { others.forEach { b ->
+                    put(JSONObject().put("name",b.name).put("pastDueMinor",unit.parse(b.debt))
+                        .put("regular",if(b.date.isBlank() && b.normal.isBlank()) JSONObject.NULL else payment(b.date,b.normal))
+                        .put("agreements",JSONArray().apply { b.promises.forEach{put(payment(it.first,it.second))} }))
+                } })
                 val response=client.call("catch-up",JSONObject().put("accountId",id).put("terms",plan).put("version",version).put("save",save))
                 result=response; version=response.getInt("version"); status=if(save) "Plan saved." else ""
             } catch(e:Exception){result=null;status=e.message.orEmpty()} finally{busy=false}
@@ -177,13 +226,55 @@ private fun MobileCatchUp(client: ToolApi, id: String, unit: ToolCurrency, writa
         Text(if(r.isNull("payoffDate")) "No funded payoff date in this forecast." else "Projected catch-up: "+r.getString("payoffDate"))
         if(!r.isNull("firstShortfall")) Text("Shortfall on "+r.getString("firstShortfall"))
         Text("Remaining after planned payments: "+unit.display(r.getLong("remainingMinor")))
+        r.rows("creditors").forEach { b -> Text(b.getString("name")+" · extra "+unit.display(b.getLong("extraMinor"))+" · remaining "+unit.display(b.getLong("remainingMinor"))+" · unfunded "+unit.display(b.getLong("unfundedMinor"))) }
         r.rows("rows").forEach { row ->
+            row.rows("payments").forEach { p->Text(row.getString("date")+" · "+p.getString("name")+" · agreed "+unit.display(p.getLong("agreed"))+" · extra "+unit.display(p.getLong("extra"))) }
             Text(row.getString("date")+" · pay "+unit.display(row.getLong("payMinor"))+" · bills "+unit.display(row.getLong("billsMinor"))+" · essentials "+unit.display(row.getLong("essentialsMinor"))+
                 " · agreed "+unit.display(row.getLong("agreedMinor"))+" · extra "+unit.display(row.getLong("extraMinor"))+" · balance "+unit.display(row.getLong("balanceMinor")))
         }
     }
 }
 
+
+@Composable
+private fun MobileEstimates(client:ToolApi,buckets:List<JSONObject>,privacy:Boolean) {
+    val scope=rememberCoroutineScope()
+    var year by remember {mutableStateOf(LocalDate.now().year.toString())}
+    var expense by remember {mutableStateOf("")}; var income by remember {mutableStateOf("")}
+    var preview by remember(year,expense,income){mutableStateOf<JSONObject?>(null)}
+    var busy by remember {mutableStateOf(false)}; var status by remember {mutableStateOf("")}
+    fun label(id:String)=buckets.find{it.optString("id")==id}?.optString("name")?:"Uncategorized"
+    ToolField("Year to reassess",year){year=it}
+    listOf("expense" to expense,"income" to income).forEach{(kind,selected)->
+        var choose by remember{mutableStateOf(false)}
+        TextButton({choose=!choose}){Text("Fallback for "+kind+": "+label(selected))}
+        if(choose) {
+            fun select(id:String){if(kind=="expense")expense=id else income=id;choose=false}
+            TextButton({select("")}){Text("Leave uncategorized")}
+            buckets.filter{it.optString("kind")==kind && !it.optBoolean("archived") && !it.optBoolean("hidden") && it.isNull("systemRole")}.forEach{
+                TextButton({select(it.getString("id"))}){Text(it.getString("name"))}
+            }
+        }
+    }
+    fun run(token:String?=null){busy=true;scope.launch{
+        try{
+            val body=JSONObject().put("year",year.toInt())
+            if(expense.isNotBlank())body.put("expenseFallback",expense)
+            if(income.isNotBlank())body.put("incomeFallback",income)
+            if(token!=null)body.put("confirm",token)
+            val result=client.call("transactions/categorization",body)
+            preview=if(token==null) result else null
+            status=if(token==null) result.optInt("proposed").toString()+" proposed changes." else result.optInt("applied").toString()+" estimates applied."
+        }catch(e:Exception){preview=null;status=e.message.orEmpty()}finally{busy=false}
+    }}
+    Button(enabled=!busy,onClick={run()}){Text("Preview estimates")}
+    Text(status)
+    preview?.let{p->
+        p.rows("impacts").forEach{r->Text(label(r.optString("from"))+" → "+label(r.getString("to"))+" · "+
+            ToolCurrency(r.getString("currency"),privacy).display(r.getLong("totalMinor"))+" across "+r.getInt("count")+" records")}
+        if(p.optInt("proposed")>0)Button(enabled=!busy,onClick={run(p.getString("token"))}){Text("Apply estimates")}
+    }
+}
 
 @Composable
 private fun MobileCorrections(client:ToolApi, id:String, buckets:List<JSONObject>, unit:ToolCurrency) {

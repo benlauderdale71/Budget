@@ -3,9 +3,10 @@ import { api } from "../api.js";
 import { todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
 import type { Dashboard } from "../types.js";
-import { Field, Modal, Notice } from "../ui.js";
+import { Field, Modal, Money, Notice } from "../ui.js";
 
 type Preview = {
+  impacts:{currency:string;from:string|null;to:string;totalMinor:number;count:number}[];
   imported: number;
   unreviewed: number;
   eligible: number;
@@ -60,7 +61,7 @@ export function ImportCategorization({ buckets, onClose }: { buckets: Dashboard[
   }
 
   return <Modal title="Categorize imported transactions" onClose={onClose}>
-    <p>Estimate missing categories from verified merchant history, bank labels, and merchant names. Saved estimates stay marked for review.</p>
+    <p>Recheck missing categories and earlier estimates against verified merchant history, bank labels, and merchant names. Saved estimates stay marked for review.</p>
     <form onSubmit={event => { event.preventDefault(); void run(); }}>
       <Field label="Year"><input type="number" min="1900" max="9998" step="1" required value={year} disabled={busy} onChange={event => change(setYear, event.target.value)} /></Field>
       {([
@@ -81,6 +82,7 @@ export function ImportCategorization({ buckets, onClose }: { buckets: Dashboard[
       {preview.groups.length ? <ul>{preview.groups.map(group => <li key={JSON.stringify([group.bucketId, group.basis])}>
         {buckets.find(bucket => bucket.id === group.bucketId)?.name} · {group.count} · {group.basis}
       </li>)}</ul> : null}
+      {preview.impacts.map(i=><p key={JSON.stringify([i.currency,i.from,i.to])}>{buckets.find(b=>b.id===i.from)?.name??"Uncategorized"} → {buckets.find(b=>b.id===i.to)?.name}: <Money currency={i.currency} minor={i.totalMinor}/> across {i.count} records.</p>)}
       {preview.proposed ? <button className="btn" type="button" disabled={busy} onClick={() => void run(preview.token)}>Apply {preview.proposed} estimates</button> : null}
     </> : null}
     {saved ? <Notice kind="ok">Applied {saved.applied} category estimates. {saved.remaining} eligible records remain uncategorized.</Notice> : null}

@@ -20,7 +20,7 @@ class Store(private val context: Context) {
     }
 
     var baseUrl: String
-        get() = prefs.getString("base", "http://10.0.2.2:8787") ?: "http://10.0.2.2:8787"
+        get() = prefs.getString("base", null)?.takeIf { it.isNotBlank() } ?: "https://budgethqpro.com"
         set(value) { prefs.edit().putString("base", value.trim().trimEnd('/')).apply() }
     var token: String?
         get() = prefs.getString("token", null)
