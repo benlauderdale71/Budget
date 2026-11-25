@@ -65,7 +65,7 @@ async function readDocument(bytes: Buffer, filename: string, header?: (s:string)
     // Sharp validates image signatures and pixel limits, regardless of the supplied name.
     if (!["png", "jpg", "jpeg", "webp"].includes(ext ?? "")) throw new Error("Use PNG, JPG, WebP, PDF, CSV, XLS or XLSX.");
     const read = await image(bytes, dir, "Image", header);
-    return { grids: [read.grid], text: read.text, format: "image", pages: 1, warnings: ["Images are read privately on the app server. Check recognition carefully, especially small text and handwritten entries."] };
+    return { grids: [read.grid], text: read.text, pageTexts: [read.layout], format: "image", pages: 1, warnings: ["Images are read privately on the app server. Check recognition carefully, especially small text and handwritten entries."] };
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 

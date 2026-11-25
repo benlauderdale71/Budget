@@ -142,8 +142,26 @@ export function prepareRecovery(
     rows[table] = list.map((r) => ({ ...r }));
     keys[table] = new Set(ids(rows[table]));
   }
+  const existingDocuments = new Map((visible.physical_asset_documents ?? [])
+    .filter(row => row.owner_user_id === user).map(row => [row.fingerprint, row.id]));
+  const reusedDocuments = new Map(rows.physical_asset_documents
+    .filter(row => existingDocuments.has(row.fingerprint))
+    .map(row => [row.id, existingDocuments.get(row.fingerprint)]));
   const mapId = (table: string, value: unknown) =>
+    copy && table === "physical_asset_documents" && reusedDocuments.has(value) ? reusedDocuments.get(value) :
     copy ? "restored-" + sha256(JSON.stringify([source, target, table, value])).slice(0, 40) : value;
+  if (copy) {
+    // Each imported row keeps its own identity and attachments. Only one row can
+    // claim an inventory import key when several original owners become one.
+    const used = new Map((visible.physical_assets ?? []).filter(row => row.owner_user_id === user && row.source_key != null)
+      .map(row => [row.source_key, row.id]));
+    for (const asset of [...rows.physical_assets].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+      if (asset.source_key == null) continue;
+      const id = mapId("physical_assets", asset.id);
+      if (used.has(asset.source_key) && used.get(asset.source_key) !== id) asset.source_key = null;
+      else used.set(asset.source_key, id);
+    }
+  }
   const splitParents = new Map(rows.splits.map((s) => [s.id, s.transaction_id]));
   for (const table of tables) {
     const visibleIds = new Set(ids(visible[table] ?? []));
@@ -170,10 +188,11 @@ export function prepareRecovery(
         r.split_id = mapId("splits", r.split_id);
       }
       if (table === "transactions" && copy && typeof r.provider_transaction_id === "string") {
-        const prefix = "csv:" + String(oldAccount) + ":";
-        if (r.provider_transaction_id.startsWith(prefix))
-          r.provider_transaction_id =
-            "csv:" + r.account_id + ":" + r.provider_transaction_id.slice(prefix.length);
+        const providerId = r.provider_transaction_id;
+        for (const kind of ["csv", "file"]) {
+          const prefix = kind + ":" + String(oldAccount) + ":";
+          if (providerId.startsWith(prefix)) r.provider_transaction_id = kind + ":" + r.account_id + ":" + providerId.slice(prefix.length);
+        }
       }
       if (copy) {
         if (table === "income_occurrences") r.occurrence_key = r.source_id + ":" + r.expected_date;

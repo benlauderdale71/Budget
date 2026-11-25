@@ -24,6 +24,50 @@ async function upload(app:App,h:Home,data=csv,name="assets.csv") {
 const selected=(p:any)=>({reviewed:true,rows:p.rows.map((r:any)=>({...r,estimate:r.estimateMinor===null?undefined:{...estimate,amountMinor:r.estimateMinor}}))});
 async function money() {return {accounts:await db.query("SELECT * FROM accounts ORDER BY id"),transactions:await db.query("SELECT * FROM transactions ORDER BY id"),assignments:await db.query("SELECT * FROM assignments ORDER BY id")};}
 describe("physical asset inventory",()=>{
+  it("filters shared inventory across members and restores original owners' colliding rows without losing either asset", async()=>{
+    db=await openMemoryDatabase();
+    const app=createApp(db), owner=await home(app), other=await home(app,"second-owner@example.com");
+    const editor={...other,hid:owner.hid};
+    await db.query("INSERT INTO memberships(household_id,user_id,role,created_at) VALUES($1,$2,'editor',$3)",[owner.hid,other.userId,new Date().toISOString()]);
+    const first=await upload(app,owner), second=await upload(app,editor);
+    const importRow=(h:Home, draft:any, index:number, visibility:string) => request(app,h,"/imports/"+draft.body.id+"/confirm",{
+      reviewed:true,rows:[{...selected(draft.body).rows[index],visibility}],
+    });
+    const saved=await importRow(owner,first,0,"private");
+    expect(saved.body.created).toHaveLength(1);
+    expect((await upload(app,editor)).body.rows[0].duplicate).toBe(false);
+    const another=await importRow(editor,second,0,"shared");
+    expect(another.body.created).toHaveLength(1);
+    const ownerAsset=(await request(app,owner)).body.assets.find((r:any)=>r.id===saved.body.created[0]);
+    await request(app,owner,"/"+ownerAsset.id,{...ownerAsset,visibility:"shared"},"PUT");
+    const stale=await upload(app,editor);
+    const secondOwnerDraft=await upload(app,owner);
+    await importRow(owner,secondOwnerDraft,1,"shared");
+    expect((await importRow(editor,stale,1,"shared")).body.skipped).toEqual(["Desk"]);
+    expect((await upload(app,editor)).body.rows.every((r:any)=>r.duplicate)).toBe(true);
+
+    const call=async(h:Home,route:string,body?:object)=>json(await app.request("/api/households/"+h.hid+route,{
+      method:body?"POST":"GET",headers:auth(h.token),body:body?JSON.stringify(body):undefined,
+    }));
+    const backup=(await call(owner,"/backup")).body;
+    const laptops=backup.physical_assets.filter((r:any)=>JSON.parse(r.payload_json).name==="Laptop");
+    expect(laptops).toHaveLength(2);
+    expect(laptops[0].source_key).toBe(laptops[1].source_key);
+    expect(backup.physical_asset_documents).toHaveLength(1);
+    const target=await home(app,"restore-owner@example.com");
+    await db.query("INSERT INTO memberships(household_id,user_id,role,created_at) VALUES($1,$2,'editor',$3)",[owner.hid,target.userId,new Date().toISOString()]);
+    const targetDraft=await upload(app,target);
+    await importRow(target,targetDraft,1,"private");
+    const restore=(mode:string)=>call(target,"/restore",{mode,backup});
+    const plan=await restore("preview");
+    expect(plan.body.adds).toMatchObject({physical_assets:3,physical_asset_documents:0});
+    expect((await restore("add-missing")).status).toBe(200);
+    const copied=(await call(target,"/backup")).body;
+    expect(copied.physical_assets).toHaveLength(4);
+    expect(new Set(copied.physical_assets.map((r:any)=>r.id)).size).toBe(4);
+    expect(copied.physical_asset_documents).toHaveLength(1);
+    expect(Object.values((await restore("add-missing")).body.added).every(n=>n===0)).toBe(true);
+  });
   it("stores and previews private photos, removes attachments and preserves the asset",async()=>{
     db=await openMemoryDatabase();const app=createApp(db),h=await home(app),a=(await request(app,h,"",{name:"Desk photo"})).body.asset;
     const bytes=await sharp({create:{width:100,height:100,channels:3,background:"teal"}}).png().toBuffer();

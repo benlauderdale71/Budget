@@ -43,6 +43,7 @@ export interface ImportRow {
 
 export interface ImportGroup {
   groupKey: string;
+  sourceRowId?: string;
   rowNumbers: number[];
   date?: string;
   amountMinor?: number;

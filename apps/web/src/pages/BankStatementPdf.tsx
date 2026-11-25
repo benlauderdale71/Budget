@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../api.js";
 import { Field } from "../ui.js";
 
-type Row = { page: number; source: string; date: string; payee: string; amount: string; issue: string };
+type Row = { page: number; source: string; date: string; payee: string; amount: string; issue: string; filename?: string; sourceRowId?: string };
 type Draft = { rows: Row[]; warnings: string[]; pages: number };
 const empty: Row = { page: 0, source: "Manually added", date: "", payee: "", amount: "", issue: "" };
 const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
@@ -19,7 +19,7 @@ export function BankStatementPdf({
   onEdit: () => void;
 }) {
   const [year, setYear] = useState(String(new Date().getFullYear()));
-  const [file, setFile] = useState<File>(),
+  const [files, setFiles] = useState<File[]>([]),
     [draft, setDraft] = useState<Draft>();
   const [included, setIncluded] = useState<boolean[]>([]),
     [busy, setBusy] = useState(false),
@@ -34,21 +34,29 @@ export function BankStatementPdf({
     reset();
     setBusy(true);
     try {
-      if (!file || file.size > 8_000_000) throw Error("Choose a PDF of up to 8 MB.");
-      const data = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result).split(",")[1]);
-        reader.onerror = () => reject(Error("Could not open the file."));
-        reader.readAsDataURL(file);
-      });
-      const next = await api<Draft>(url, {
-        method: "POST",
-        body: JSON.stringify({ accountId, year: Number(year), data }),
-      });
+      if (!files.length || files.some(file => file.size > 8_000_000)) throw Error("Choose files of up to 8 MB each.");
+      const next: Draft = { rows: [], warnings: [], pages: 0 };
+      for (const file of files) {
+        try {
+          const data = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1]);
+            reader.onerror = () => reject(Error("Could not open the file."));
+            reader.readAsDataURL(file);
+          });
+          const part = await api<Draft>(url, { method: "POST", body: JSON.stringify({ accountId, year: Number(year), data }) });
+          next.pages += part.pages;
+          next.rows.push(...part.rows.map(row => ({ ...row, filename: file.name })));
+          next.warnings.push(...part.warnings.map(warning => file.name + " — " + warning));
+          if (next.rows.length > 5000) throw Error("Choose fewer files so each preview has at most 5,000 rows.");
+        } catch (e) {
+          throw Error(file.name + " — " + (e instanceof Error ? e.message : "Could not read this file."));
+        }
+      }
       setDraft(next);
       setIncluded(next.rows.map((row) => !row.issue));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read PDF.");
+      setError(e instanceof Error ? e.message : "Could not read statement.");
     } finally {
       setBusy(false);
     }
@@ -79,11 +87,11 @@ export function BankStatementPdf({
       )
         throw Error("Each included row needs a date, a payee and a signed, nonzero amount.");
       const rows = chosen.map((r) =>
-        [r.date, r.payee, r.amount, "Statement " + (r.page ? "page " + r.page + ": " : "") + r.source]
+        [r.date, r.payee, r.amount, [r.filename, r.page ? "page " + r.page : "", r.source].filter(Boolean).join(" · "), r.sourceRowId ?? ""]
           .map(quote)
           .join(","),
       );
-      await onPreview(["Date,Payee,Amount,Notes", ...rows].join("\n"));
+      await onPreview(["Date,Payee,Amount,Notes,Statement row ID", ...rows].join("\n"));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not preview rows.");
     } finally {
@@ -92,31 +100,34 @@ export function BankStatementPdf({
   }
   return (
     <section>
-      <h3>Bank statement PDF</h3>
+      <h3>Bank statements and screenshots</h3>
       <Field label="Year for dates without a printed year">
         <input
           type="number"
           min="1900"
           max="2200"
           value={year}
+          disabled={busy}
           onChange={(e) => {
             reset();
             setYear(e.target.value);
           }}
         />
       </Field>
-      <Field label="Statement PDF">
+      <Field label="PDF statements or screenshots (PNG, JPEG, WebP)">
         <input
           type="file"
-          accept="application/pdf,.pdf"
+          multiple
+          disabled={busy}
+          accept="application/pdf,image/png,image/jpeg,image/webp,.pdf,.png,.jpg,.jpeg,.webp"
           onChange={(e) => {
             reset();
-            setFile(e.target.files?.[0]);
+            setFiles(Array.from(e.target.files ?? []));
           }}
         />
       </Field>
-      <button type="button" disabled={busy || !accountId || !file} onClick={read}>
-        {busy ? "Working…" : "Read statement"}
+      <button type="button" disabled={busy || !accountId || !files.length} onClick={read}>
+        {busy ? "Reading files…" : "Read selected files"}
       </button>
       {draft && (
         <>
@@ -152,7 +163,7 @@ export function BankStatementPdf({
                       />
                     </td>
                     <td>
-                      {r.page > 0 && <strong>Page {r.page} · </strong>}
+                      {r.page > 0 && <strong>{r.filename} · Page {r.page} · </strong>}
                       {r.source}
                       {r.issue && <p>{r.issue}</p>}
                     </td>
