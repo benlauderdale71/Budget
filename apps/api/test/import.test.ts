@@ -72,9 +72,9 @@ describe("guided import", () => {
     const editor = await household(api, "overlap-editor@example.com");
     const [user] = await db.query("SELECT id FROM users WHERE email=$1", ["overlap-editor@example.com"]);
     await db.query("INSERT INTO memberships(household_id,user_id,role,created_at) VALUES($1,$2,'editor',$3)", [owner.hid, user.id, new Date().toISOString()]);
-    const post = (token: string, url: string, data: object) => api.request("/api/households/" + owner.hid + url, {
+    const post = async (token: string, url: string, data: object) => json(await api.request("/api/households/" + owner.hid + url, {
       method: "POST", headers: auth(token), body: JSON.stringify(data),
-    }).then(json);
+    }));
     const account = (await post(owner.token, "/accounts", { spaceId: owner.spaceId, name: "Joint checking", kind: "checking", visibility: "shared", onBudget: true })).body.id;
     const preview = async (token: string, text: string, accountId = account) =>
       (await post(token, "/import/preview", { spaceId: owner.spaceId, format: "csv", accountId, text })).body;
