@@ -10,6 +10,8 @@ import type { Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
 const moreLinks = [
+  ["/statement-coverage", "Statement coverage", "Find gaps and compare closing balances"],
+  ["/catch-up", "Paycheck catch-up", "Plan installments and see the lowest projected balance"],
   ["/physical-assets", "Physical assets", "Organize belongings, import records, and track values with sources"],
   ["/spending", "Spending report", "Detailed categories, merchants, trends, and every purchase"],
   ["/forecast", "Forecast", "Cash projection and paycheck coverage"],

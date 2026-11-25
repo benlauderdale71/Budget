@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type { AnnualSpendingReport, AnnualSpendingRow, SpendingFilters } from "@budgetcents/domain";
 import { api, downloadFile } from "../api.js";
 import { todayISO } from "../format.js";
@@ -35,43 +35,44 @@ export function AnnualSpending({filters,onDrill,onRangeChange}:{filters:Spending
       <button type="button" className="btn-secondary" disabled={!data||!data.summary.count||hidden||session.offline||exporting} onClick={async()=>{setExporting(true);setError("");try{await downloadFile(scoped(session.householdId,`/reports/spending-year?${query}&format=csv`,session.spaceId),`spending-year-${year}.csv`);}catch(e){setError(e instanceof Error?e.message:"Could not export the year.");}finally{setExporting(false);}}}>{exporting?"Exporting…":"Export yearly & monthly CSV"}</button>
     </form>
     <label className="annual-grouping report-no-print"><input type="checkbox" checked={groupMerchants} onChange={event=>change("merchantGrouping",event.target.checked?"common":"exact")}/> Group common merchant names (for example, Walmart store numbers and Amazon / AMZN)</label>
-    <p className="muted">Monthly average = year total ÷ 12, rounded for your currency. Every calendar month counts, including months with no recorded spending. This is based on recorded transactions; missing bank history is not estimated, and the current year is not projected.</p>
+    <p className="muted">Year total ÷ 12 spreads recorded spending across all twelve months. The complete-month average uses only months covered by matching statements across the selected accounts, including months with zero spending.</p>
     {error?<ErrorNote message={error}/>:null}
     {result.loading?<Loading label="Calculating yearly and monthly spending"/>:result.error?<ErrorNote message={result.error} onRetry={session.bump}/>:null}
     {data?<>
       <p><strong>{data.year}: January 1 – December 31</strong> · {data.currency} · Spending after refunds · {data.summary.count} {data.summary.count===1?"transaction":"transactions"}</p>
       <div className="report-metrics annual-metrics">
         <article><h3>{year} year total</h3><p className="report-value"><Money minor={data.summary.yearlyMinor}/></p><p>Purchases <Money minor={data.summary.grossMinor}/> minus refunds <Money minor={data.summary.refundsMinor}/>.</p><button className="report-drill report-no-print" onClick={()=>onDrill(spendingYearRange(year))}>View full year's transactions</button></article>
-        <article><h3>{MONTHS[month]} {year} total</h3><p className="report-value"><Money minor={data.summary.monthlyMinor[month]}/></p><p>Complete calendar month.</p><button className="report-drill report-no-print" onClick={()=>onDrill(spendingMonthRange(year,month))}>View this month's transactions</button></article>
-        <article><h3>Monthly average</h3><p className="report-value"><Money minor={data.summary.monthlyAverageMinor}/></p><p>{data.year} total divided by 12 months.</p></article>
+        <article><h3>{MONTHS[month]} {year} total</h3><p className="report-value"><Money minor={data.summary.monthlyMinor[month]}/></p><p>{data.completeMonths.includes(month) ? "Covered by reconciled statements." : "Statement coverage is incomplete."}</p><button className="report-drill report-no-print" onClick={()=>onDrill(spendingMonthRange(year,month))}>View this month's transactions</button></article>
+        <article><h3>Year total ÷ 12</h3><p className="report-value"><Money minor={data.summary.monthlyAverageMinor}/></p><p>{data.year} total divided by 12 months.</p></article>
+        <article><h3>Average per complete month</h3><p className="report-value">{data.summary.completeMonthAverageMinor === null ? "Unavailable" : <Money minor={data.summary.completeMonthAverageMinor}/>}</p><p>{data.completeMonths.length} of 12 months reconciled{data.completeMonths.length ? " · "+data.completeMonths.map(i=>MONTHS[i]).join(", ") : ""}.</p><Link to={"/statement-coverage?year="+year+(filters.accountId?"&accountId="+encodeURIComponent(filters.accountId):"")}>View statement coverage</Link></article>
       </div>
       {!data.summary.count?<Notice>No posted spending is recorded for this year and these filters. Import the bank history for the months you want to include, or choose another year.</Notice>:null}
       <h3>Month-by-month totals</h3>
       <div className="annual-month-grid">{data.monthly.map((row,index)=><article key={row.date}><h4><button className="report-drill" onClick={()=>onDrill(spendingMonthRange(year,index))}>{MONTHS[index]}</button></h4><strong><Money minor={row.netMinor}/></strong><small>{row.count} {row.count===1?"transaction":"transactions"}</small></article>)}</div>
       {data.categories.some(row=>row.key==="uncategorized")?<Notice>Uncategorized purchases are included in the totals. They cannot appear under specific categories until you assign categories to their transactions. <button className="btn-quiet report-no-print" onClick={()=>onDrill({...spendingYearRange(year),bucketId:"uncategorized",group:""})}>Review uncategorized transactions</button></Notice>:null}
-      <AnnualBreakdown title="Categories - year, month & average" label="Category" rows={data.categories} month={month} year={year} showGroup onSelect={key=>onDrill({bucketId:key})}/>
-      <AnnualBreakdown title="Merchants - year, month & average" label="Merchant" rows={data.merchants} month={month} year={year} merchantNames onSelect={key=>onDrill(groupMerchants?{merchant:"",merchantGroup:key}:{merchant:key,merchantGroup:""})}/>
+      <AnnualBreakdown title="Categories - year, month & average" label="Category" completeMonths={data.completeMonths} rows={data.categories} month={month} year={year} showGroup onSelect={key=>onDrill({bucketId:key})}/>
+      <AnnualBreakdown title="Merchants - year, month & average" label="Merchant" completeMonths={data.completeMonths} rows={data.merchants} month={month} year={year} merchantNames onSelect={key=>onDrill(groupMerchants?{merchant:"",merchantGroup:key}:{merchant:key,merchantGroup:""})}/>
       <p className="muted">{groupMerchants?"Common merchant descriptions are combined for this report only. Expand a merchant to inspect the original bank names, or turn grouping off to keep them separate.":"Merchant names are shown exactly as recorded by the bank."} Other merchants remain separate. Gas spending follows your assigned categories; a gas-station purchase is not automatically categorized as fuel.</p>
-      <details className="annual-extra"><summary>Category groups - year, month & average</summary><AnnualBreakdown title="Category group totals" label="Group" rows={data.groups} month={month} year={year} onSelect={key=>onDrill({group:key})}/></details>
-      <details className="annual-extra"><summary>Accounts - year, month & average</summary><AnnualBreakdown title="Account totals" label="Account" rows={data.accounts} month={month} year={year} onSelect={key=>onDrill({accountId:key})}/></details>
+      <details className="annual-extra"><summary>Category groups - year, month & average</summary><AnnualBreakdown title="Category group totals" label="Group" completeMonths={data.completeMonths} rows={data.groups} month={month} year={year} onSelect={key=>onDrill({group:key})}/></details>
+      <details className="annual-extra"><summary>Accounts - year, month & average</summary><AnnualBreakdown title="Account totals" label="Account" completeMonths={data.completeMonths} rows={data.accounts} month={month} year={year} onSelect={key=>onDrill({accountId:key})}/></details>
       {hidden?<p>All amounts are hidden. Show amounts to export this report.</p>:null}
     </>:null}
   </section>;
 }
 
-function AnnualBreakdown({title,label,rows,year,month,onSelect,showGroup=false,merchantNames=false}:{title:string;label:string;rows:AnnualSpendingRow[];year:number;month:number;onSelect:(key:string)=>void;showGroup?:boolean;merchantNames?:boolean}) {
+function AnnualBreakdown({title,label,rows,year,month,completeMonths,onSelect,showGroup=false,merchantNames=false}:{title:string;label:string;rows:AnnualSpendingRow[];completeMonths:number[];year:number;month:number;onSelect:(key:string)=>void;showGroup?:boolean;merchantNames?:boolean}) {
   const [page,setPage]=useState(0),[search,setSearch]=useState("");
   const matching=rows.filter(row=>[row.label,...(merchantNames?row.merchantNames:[])].some(name=>name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const matchingYear=matching.reduce((sum,row)=>sum+row.yearlyMinor,0),matchingMonth=matching.reduce((sum,row)=>sum+row.monthlyMinor[month],0);
   const pages=Math.max(1,Math.ceil(matching.length/PAGE_SIZE)),safePage=Math.min(page,pages-1);
   useEffect(()=>setPage(0),[search,year]);
   function table(items:AnnualSpendingRow[],print=false) { return <div className="table-wrap report-table" tabIndex={0} role="region" aria-label={`${label} yearly monthly and average spending`}><table>
-    <thead><tr><th scope="col">{label}</th><th scope="col">{year} year total</th><th scope="col">{MONTHS[month]} total</th><th scope="col">Monthly average</th></tr></thead>
+    <thead><tr><th scope="col">{label}</th><th scope="col">{year} year total</th><th scope="col">{MONTHS[month]} total</th><th scope="col">Year total ÷ 12</th><th scope="col">Avg. per complete month</th></tr></thead>
     <tbody>{items.map(row=><tr key={row.key}>
       <th scope="row"><button className="report-drill" onClick={()=>onSelect(row.key)}>{row.label}</button>{showGroup?<small>{row.group}</small>:null}<small>{row.count} {row.count===1?"transaction":"transactions"} · <Money minor={row.grossMinor}/> before refunds · <Money minor={row.refundsMinor}/> refunded</small>
         <details className="annual-row-months" open={print||undefined}><summary>All 12 months{merchantNames?" & original names":""}</summary><dl>{MONTHS.map((name,index)=><div key={name}><dt>{name}</dt><dd><Money minor={row.monthlyMinor[index]}/></dd></div>)}</dl>{merchantNames?<p className="annual-original-names">Original names: {row.merchantNames.join("; ")}</p>:null}</details>
-      </th><td><strong><Money minor={row.yearlyMinor}/></strong></td><td><Money minor={row.monthlyMinor[month]}/></td><td><Money minor={row.monthlyAverageMinor}/><small>Year total ÷ 12</small></td>
-    </tr>)}</tbody><tfoot><tr><th scope="row">{search.trim()?"Matching rows total":"Total"}</th><td><Money minor={matchingYear}/></td><td><Money minor={matchingMonth}/></td><td><Money minor={Math.round(matchingYear/12)}/></td></tr></tfoot>
+      </th><td><strong><Money minor={row.yearlyMinor}/></strong></td><td><Money minor={row.monthlyMinor[month]}/></td><td><Money minor={row.monthlyAverageMinor}/></td><td>{row.completeMonthAverageMinor===null ? "—" : <Money minor={row.completeMonthAverageMinor}/>}</td>
+    </tr>)}</tbody><tfoot><tr><th scope="row">{search.trim()?"Matching rows total":"Total"}</th><td><Money minor={matchingYear}/></td><td><Money minor={matchingMonth}/></td><td><Money minor={Math.round(matchingYear/12)}/></td><td>{completeMonths.length ? <Money minor={Math.round(matching.reduce((total,row)=>total+completeMonths.reduce((sum,i)=>sum+row.monthlyMinor[i],0),0)/completeMonths.length)}/> : "—"}</td></tr></tfoot>
   </table></div>; }
   return <section className="annual-breakdown"><h3>{title}</h3><p className="muted">Choose a name to filter the report while keeping the selected dates. Expand "All 12 months" for that row's monthly breakdown. Find searches this table only; the total below includes every matching row across all pages.</p>
     <div className="row report-no-print"><Field label={`Find ${label.toLowerCase()}`}><input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder={`Search ${label.toLowerCase()} names`}/></Field><span role="status">{matching.length} of {rows.length} {label.toLowerCase()} entries · page {safePage+1} of {pages}</span></div>

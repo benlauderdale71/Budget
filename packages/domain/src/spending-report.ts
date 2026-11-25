@@ -91,11 +91,11 @@ export type DetailedSpendingReport = ReturnType<typeof detailedSpending>;
 
 export interface AnnualSpendingRow {
   key: string; label: string; group?: string; grossMinor: number; refundsMinor: number;
-  yearlyMinor: number; monthlyAverageMinor: number; monthlyMinor: number[]; count: number; merchantNames: string[];
+  yearlyMinor: number; completeMonthAverageMinor: number | null; monthlyAverageMinor: number; monthlyMinor: number[]; count: number; merchantNames: string[];
 }
 
 /** Twelve calendar months, including zero-activity months. Averages are rounded only after summing. */
-export function annualSpending(input: EngineInput, year: number, filters: Omit<SpendingFilters, "from" | "to"> = {}, groupMerchants = true) {
+export function annualSpending(input: EngineInput, year: number, filters: Omit<SpendingFilters, "from" | "to"> = {}, groupMerchants = true, completeMonths: number[] = []) {
   if (!Number.isInteger(year) || year < 1900 || year > 2200) throw new Error("Choose a year between 1900 and 2200.");
   const from = `${year}-01-01`, to = `${year}-12-31`;
   const report = detailedSpending(input, { ...filters, from, to });
@@ -104,6 +104,7 @@ export function annualSpending(input: EngineInput, year: number, filters: Omit<S
     const monthlyMinor = Array<number>(12).fill(0);
     for (const line of lines) monthlyMinor[Number(line.date.slice(5, 7)) - 1] += line.amountMinor;
     return {key,label,group,grossMinor:summary.grossMinor,refundsMinor:summary.refundsMinor,yearlyMinor:summary.netMinor,
+      completeMonthAverageMinor:completeMonths.length ? Math.round(completeMonths.reduce((sum,i)=>sum+monthlyMinor[i],0)/completeMonths.length) : null,
       monthlyAverageMinor:Math.round(summary.netMinor / 12),monthlyMinor,count:summary.count,merchantNames:[...new Set(lines.map(l=>l.merchant))].sort()};
   }
   function groupRows(keyOf: (line: SpendingLine) => string, labelOf: (line: SpendingLine) => string): AnnualSpendingRow[] {
@@ -112,7 +113,7 @@ export function annualSpending(input: EngineInput, year: number, filters: Omit<S
     return [...groups].map(([key,lines])=>annualRow(key,labelOf(lines[0]),lines,lines[0].group)).sort((a,b)=>b.yearlyMinor-a.yearlyMinor||a.label.localeCompare(b.label));
   }
   const merchantKey = (line: SpendingLine) => groupMerchants ? spendingMerchantName(line.merchant) : line.merchant;
-  return {year,from,to,currency:report.currency,averageMonths:12,groupMerchants,summary:annualRow("all","All spending",report.lines),
+  return {year,from,to,currency:report.currency,averageMonths:12,completeMonths,groupMerchants,summary:annualRow("all","All spending",report.lines),
     monthly:report.monthly,categories:groupRows(l=>l.bucketId,l=>l.category),groups:groupRows(l=>l.group,l=>l.group),
     merchants:groupRows(merchantKey,merchantKey),accounts:groupRows(l=>l.accountId,l=>l.account),
     excluded:report.excluded};

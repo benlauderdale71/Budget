@@ -1,6 +1,6 @@
 import { allows, BudgetError, MoneyError, DashboardLayoutError, DASHBOARD_LAYOUT_MAX_BYTES, answerFinanceQuestion, applyScenario, allocationByKey, allocationDrift, compareRefinance, contributionGap, displayBalance, eligiblePostedIncomeMinor, essentialObligations, evaluateWatchlist, feeImpact, holdingPeriodDays, IMPORT_PROFILES, isOnBudgetCash, mapCsv, matchProblem, moneyWeightedReturn, parseOfx, parseQif, positionView, projectCash, projectRetirement, readDashboardLayout, RetirementError, spendingRows, suggestBucket, targetProgress, timeWeightedReturn, toCsv, updateDashboardLayout, validateTransaction, groupImportRows, importFieldReport, planCategoryAssignments, resolvedColumnMap, rowsFromBank, type Account, type ColumnMap, type Transaction, incomeRows, cashFlowSankey, savingsRate, amortize, planReconciliation } from "@budgetcents/domain";
 import { Hono } from "hono";
-import { annualSpending, canEstimateImportedCategory, detailedSpending, importedCategoryEstimator, spendingRangeError } from "@budgetcents/domain";
+import { isIsoDate, annualSpending, canEstimateImportedCategory, detailedSpending, importedCategoryEstimator, spendingRangeError } from "@budgetcents/domain";
 import { z } from "zod";
 import { mountContinuation } from "./continuation.js";
 import { mountTestIssuer } from "./oidc-test-provider.js";
@@ -13,6 +13,7 @@ import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, payc
 import { mountLoans } from "./loans.js";
 import { mountIncomePlan } from "./income-plan.js";
 import { mountBillImport } from "./bill-import.js";
+import { mountHouseholdTools, coverageFor, correctFutureImport } from "./household-tools.js";
 import { mountPhysicalAssets } from "./physical-assets.js";
 import { mountBankRoutes } from "./providers/bank-routes.js";
 import { mountMarketRoutes } from "./providers/market.js";
@@ -1457,7 +1458,8 @@ export function createApp(db: Database) {
       if (kind === "spending-year") {
         const year = z.coerce.number().int().min(1900).max(2200).parse(c.req.query("year") ?? loaded.input.asOf.slice(0,4));
         const grouping = z.enum(["common","exact"]).parse(c.req.query("merchantGrouping") ?? "common");
-        const report = annualSpending(loaded.input, year, filters, grouping === "common");
+        const coverage = await coverageFor(db, loaded, year, accountId);
+        const report = annualSpending(loaded.input, year, filters, grouping === "common", coverage.completeMonths);
         c.header("Cache-Control", "no-store");
         if (c.req.query("format") === "csv") {
           const places = new Intl.NumberFormat("en", {style:"currency",currency:report.currency}).resolvedOptions().maximumFractionDigits ?? 2;
@@ -1467,6 +1469,8 @@ export function createApp(db: Database) {
             Section:section,Name:row.label,Year:year,Currency:report.currency,"Year total":amount(row.yearlyMinor),"Monthly average":amount(row.monthlyAverageMinor),"Average months":12,
             ...Object.fromEntries(row.monthlyMinor.map((value,index)=>[`${year}-${String(index+1).padStart(2,"0")}`,amount(value)])),
             Spending:amount(row.grossMinor),Refunds:amount(row.refundsMinor),Transactions:row.count,"Original merchant names":section==="Merchant"?row.merchantNames.join(" | "):"",
+            "Average per complete month": row.completeMonthAverageMinor === null ? "" : amount(row.completeMonthAverageMinor),
+            "Complete months":report.completeMonths.length,"Reconciled months":report.completeMonths.map(index => index+1).join(" | "),
           }))));
           return new Response(csv,{headers:{"content-type":"text/csv; charset=utf-8","content-disposition":`attachment; filename=spending-year-${year}.csv`,"cache-control":"no-store"}});
         }
@@ -2175,7 +2179,8 @@ export function createApp(db: Database) {
     assertWrite(member);
     const body = z.object({
       accountId: z.string(),
-      statementDate: z.string(),
+      statementDate: z.string().refine(isIsoDate),
+      statementStart: z.string().refine(isIsoDate).optional(),
       statementBalanceMinor: money,
       clearedIds: z.array(z.string()),
       lock: z.boolean().default(false),
@@ -2184,6 +2189,7 @@ export function createApp(db: Database) {
     }).parse(await c.req.json());
     const account = await mustAccount(me.id, member.householdId, body.accountId);
     const loaded = await loadSpace(db, me, member.householdId, String(account.space_id), body.statementDate);
+    if (body.statementStart && (body.statementStart>body.statementDate || body.statementDate>localDate(member.timeZone))) throw new ApiError(400,"Enter a statement period ending on or before today.");
     const onAccount = loaded.input.transactions.filter((txn) => txn.accountId === account.id || txn.counterAccountId === account.id);
     const plan = planReconciliation({
       accountId: String(account.id),
@@ -2220,6 +2226,11 @@ export function createApp(db: Database) {
           [nowIso(), txnId, member.householdId, expected],
         );
         if (!updated.length) throw new ApiError(409, "That register changed. Nothing was locked.");
+      }
+      if (body.statementStart) {
+        await db.query("INSERT INTO statement_periods(account_id,start_date,end_date,closing_minor) VALUES($1,$2,$3,$4) ON CONFLICT(account_id,end_date) DO NOTHING",[body.accountId,body.statementStart,body.statementDate,body.statementBalanceMinor]);
+        const [stored] = await db.query("SELECT start_date,closing_minor FROM statement_periods WHERE account_id=$1 AND end_date=$2",[body.accountId,body.statementDate]);
+        if (stored.start_date!==body.statementStart || stored.closing_minor!==body.statementBalanceMinor) throw new ApiError(409,"Update this statement in Statement coverage before locking it.");
       }
       await audit(db, member.householdId, me.id, "reconcile.lock", `Locked ${account.name} at the statement balance`, "account", String(account.id));
     });
@@ -2803,6 +2814,7 @@ export function createApp(db: Database) {
       validateTransaction(draft, accounts, draft.currency);
     }
     return db.tx(async () => {
+      if (draft.providerTransactionId || draft.importBatchId) await lockHousehold(db,householdId);
       if (body.opId) {
         const claimed = await db.query(
           `INSERT INTO applied_ops (household_id, op_id, created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING op_id`,
@@ -2814,10 +2826,17 @@ export function createApp(db: Database) {
         }
       }
       if (prior.length) {
-        await db.query(
-          `UPDATE transactions SET bank_status = $1, amount_minor = $2, payee = CASE WHEN category_locked = 1 THEN payee ELSE $3 END, updated_at = $4 WHERE id = $5 AND household_id = $6`,
+        if (prior[0].account_id!==draft.accountId) throw new ApiError(409,"This provider transaction belongs to a different account.");
+        const [updated]=await db.query(
+          `UPDATE transactions SET version=version+CASE WHEN bank_status<>$1 OR amount_minor<>$2 OR (category_locked=0 AND payee<>$3) THEN 1 ELSE 0 END, bank_status = $1, amount_minor = $2, payee = CASE WHEN category_locked = 1 THEN payee ELSE $3 END, updated_at = $4 WHERE id = $5 AND household_id = $6 AND deleted=0 RETURNING *`,
           [draft.bankStatus, draft.amountMinor, draft.payee, nowIso(), prior[0].id, householdId],
         );
+        if (updated && prior[0].bank_status==="pending" && updated.bank_status==="posted") {
+          const settled = transactionFromRow(updated,await splitsOf(String(updated.id)));
+          await correctFutureImport(db,{...settled,version:num(updated.version),providerTransactionId:str(updated.provider_transaction_id),
+            originalDescription:str(updated.original_description) ?? draft.originalDescription, categoryLockedByUser:num(updated.category_locked)===1,
+            reconciled:num(updated.reconciled)===1,locked:num(updated.locked)===1,excludeFromReports:num(updated.exclude_from_reports)===1});
+        }
         await audit(db, householdId, me.id, "transaction.update", `Updated ${draft.payee} from the provider id`, "transaction", String(prior[0].id));
         return { id: String(prior[0].id), updated: true as const };
       }
@@ -2828,6 +2847,7 @@ export function createApp(db: Database) {
       );
       await replaceSplits(draft.id!, draft.splits);
       await replaceTags(draft.id!, draft.tags ?? []);
+      await correctFutureImport(db, draft);
       await audit(db, householdId, me.id, "transaction.create", `Added ${draft.payee}`, "transaction", draft.id);
       return { id: draft.id };
     });
@@ -2901,6 +2921,7 @@ export function createApp(db: Database) {
   });
   mountIncome(app, db, incomeHooks());
   mountBillImport(app, db, { actor, assertSpace, mustAccount, createBill: (me, hid, raw) => createBill(db, me, hid, raw, incomeHooks()) });
+  mountHouseholdTools(app, db, actor);
   mountPhysicalAssets(app, db, actor);
   mountLoans(app, db, {
     actor,
