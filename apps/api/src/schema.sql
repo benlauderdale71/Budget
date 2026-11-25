@@ -1118,3 +1118,28 @@ CREATE TABLE IF NOT EXISTS support_attachments (
   body text NOT NULL,
   created_at text NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS statement_periods (
+  account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  start_date text NOT NULL, end_date text NOT NULL, closing_minor bigint NOT NULL,
+  PRIMARY KEY (account_id,end_date)
+);
+CREATE TABLE IF NOT EXISTS catch_up_plans (
+  account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  terms_json text NOT NULL, version integer NOT NULL,
+  PRIMARY KEY (account_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS merchant_corrections (
+  id text PRIMARY KEY, account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  creator_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE, merchant_key text NOT NULL,
+  bucket_id text NOT NULL REFERENCES buckets(id), future integer NOT NULL, undone integer NOT NULL DEFAULT 0,
+  created_at text NOT NULL, preview_token text NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_future_rule ON merchant_corrections(account_id,merchant_key) WHERE future=1 AND undone=0;
+CREATE TABLE IF NOT EXISTS merchant_correction_rows (
+  batch_id text NOT NULL REFERENCES merchant_corrections(id) ON DELETE CASCADE,
+  transaction_id text NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  split_id text NOT NULL, prior_bucket text, inserted_split integer NOT NULL, removed_estimate integer NOT NULL DEFAULT 0,
+  applied_version integer NOT NULL, PRIMARY KEY (batch_id,transaction_id)
+);

@@ -31,7 +31,7 @@ export function Forecast() {
   const data = state.data;
   const cashAccounts = (accounts.data?.accounts ?? []).filter((account) => ["checking", "savings", "cash"].includes(account.kind));
   return (
-    <Page title="Forecast" lede={data.note}>
+    <Page title="Forecast" lede={data.note} actions={<Link to="/catch-up">Plan past-due payments</Link>}>
       <form className="card row" onSubmit={(event) => event.preventDefault()}>
         <Field label="Start date"><input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></Field>
         <Field label="Days"><input inputMode="numeric" value={days} onChange={(event) => setDays(event.target.value)} /></Field>

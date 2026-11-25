@@ -97,3 +97,20 @@ export function importedCategoryEstimator(buckets: Bucket[], transactions: Trans
     if (bucketId && byId.get(bucketId)?.kind === kind) return { bucketId, basis: "fallback" };
   };
 }
+
+/** Same-account correction key. Keep warehouse fuel apart even when the identifying word follows a store number. */
+export function correctionMerchant(txn: Candidate): string | undefined {
+  const kind = kindOf(txn);
+  if (!kind) return;
+  const descriptors = [txn.payee,txn.originalDescription ?? ""].map(words);
+  if (descriptors.some(s=>/\b(?:transfer|xfer|zelle|venmo|cash app|withdrawal|refund|reversal|payment thank you)\b/.test(s))) return;
+  const keys = merchantKeys(txn);
+  if (!keys.length) return;
+  const brand = words(spendingMerchantName(txn.payee));
+  const key = brand !== words(txn.payee) && keys.some(k=>k.replace(/^fuel:/,"")===brand) ? brand : keys[0].replace(/^fuel:/,"");
+  const description=descriptors.join(" ");
+  const warehouse = /\bsams(?:\s*club(?:gas|fuel)?|\s+(?:gas|fuel))\b/.test(description) ? "samsclub"
+    : /\b(?:costco|walmart|kroger)\b/.exec(description)?.[0];
+  const fuel = descriptors.some(d=>/\b(?:fuel|gas|gasoline|pump)\b/.test(d) || /samsclub(?:gas|fuel)/.test(d));
+  return [kind, warehouse ?? key, fuel ? "fuel" : "store"].join("|");
+}

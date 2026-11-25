@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -22,7 +22,7 @@ export function Accounts() {
   const dash = state.data;
   const worth = new Map(dash.netWorth.accounts.map((account) => [account.accountId, account]));
   return (
-    <Page title="Accounts" lede="On-budget cash is what the plan can assign. Loans and investments stay visible in net worth without becoming spending money.">
+    <Page title="Accounts" actions={<Link to="/statement-coverage">Statement coverage</Link>} lede="On-budget cash is what the plan can assign. Loans and investments stay visible in net worth without becoming spending money.">
       <div className="card" style={{ overflowX: "auto" }}>
         <table>
           <thead><tr><th>Name</th><th>Kind</th><th>Visibility</th><th className="num">Balance</th></tr></thead>
@@ -110,7 +110,7 @@ function Reconcile({ accounts, currency, selected, onSelect }: { accounts: Dashb
           const chosen = txns.data?.transactions.filter((txn) => data.get(`clear-${txn.id}`) === "on") ?? [];
           const response = await api<{ differenceMinor: number; locked: boolean; wrote: boolean; formula: string; clearedBalanceMinor: number; canLock: boolean }>(scoped(session.householdId, "/reconcile"), { method: "POST", body: JSON.stringify({
             accountId: data.get("accountId"),
-            statementDate: data.get("date"),
+            statementDate: data.get("date"), statementStart: data.get("start") || undefined,
             statementBalanceMinor: parseAmount(String(data.get("balance")), currency),
             clearedIds: chosen.map((txn) => txn.id),
             lock: intent === "lock",
@@ -129,6 +129,7 @@ function Reconcile({ accounts, currency, selected, onSelect }: { accounts: Dashb
         <h2>Reconcile</h2>
         <p className="muted">Compare does not clear, lock, or post anything. A reconciled transaction stays in the balance until you unlock it. Locking is allowed only when the difference is zero. Cancelling leaves the register as it was.</p>
         <Field label="Account"><select name="accountId" value={selected} onChange={(event) => { onSelect(event.target.value); setResult(null); }} required><option value="">Choose</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></Field>
+        <Field label="Statement starts (optional, for coverage)"><input name="start" type="date"/></Field>
         <Field label="Statement date"><input name="date" type="date" required defaultValue={todayISO()} /></Field>
         <Field label="Statement balance"><input name="balance" required inputMode="decimal" /></Field>
         {txns.data?.transactions.map((txn) => (

@@ -30,3 +30,5 @@ export * from "./reconciliation.js";
 export * from "./spending-report.js";
 
 export * from "./import-categorization.js";
+export * from "./statement-coverage.js";
+export * from "./catch-up.js";

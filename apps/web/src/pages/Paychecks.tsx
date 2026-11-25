@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { minorToInput, parseAmount, todayISO } from "../format.js";
 import { scoped, useSession } from "../session.js";
@@ -100,7 +100,7 @@ export function Paychecks() {
     <Page
       title="Paychecks"
       lede={data.note}
-      actions={<div className="chips" role="group" aria-label="Planning scenario">
+      actions={<div className="chips" role="group" aria-label="Planning scenario"><Link to="/catch-up">Paycheck catch-up plan</Link>
         {(["conservative", "expected", "optimistic"] as const).map((choice) => (
           <button key={choice} className="chip" aria-pressed={scenario === choice} onClick={() => setParams({ scenario: choice })}>{choice[0].toUpperCase() + choice.slice(1)}</button>
         ))}

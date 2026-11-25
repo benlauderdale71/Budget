@@ -161,7 +161,11 @@ fun FeatureScreen(
             }
           }
         }
-        "reports" -> ReportScreen(api, hid, privacy, onError, onOpenTransactions)
+        "Statement coverage", "Catch-up plan", "Merchant corrections" -> HouseholdTool(page, api, hid, dash, privacy)
+        "reports" -> {
+            HouseholdAnnualSpending(api, hid, dash?.optString("spaceId").orEmpty(), privacy)
+            ReportScreen(api, hid, privacy, onError, onOpenTransactions)
+        }
         "reconcile" -> ReconcileScreen(api, hid, dash, privacy, onError, onStatus, onChanged)
         "rules" -> RemoteScreen("rules", { api.request("GET", "/api/households/$hid/rules") }) { data ->
             val rules = data.optJSONArray("rules") ?: JSONArray()

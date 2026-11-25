@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { MerchantCorrections } from "./MerchantCorrections.js";
 import { ImportCategorization } from "./ImportCategorization.js";
 import { CsvSourceDetails, type SourceCell } from "../CsvSourceDetails.js";
 import { useSearchParams } from "react-router-dom";
@@ -18,6 +19,8 @@ export function Activity() {
   const summaryRef = useRef<HTMLParagraphElement>(null);
   const pageChanged = useRef(false);
   const [params, setParams] = useSearchParams();
+  const [correction,setCorrection]=useState<{source:Txn|null;scope:string}|null>(null);
+  const scope=session.householdId+"/"+session.spaceId;
   const [categorizing, setCategorizing] = useState(false);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Txn | null>(null);
@@ -75,7 +78,7 @@ export function Activity() {
     }
   }
   return (
-    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<>{access.canWrite ? <button className="btn-secondary" type="button" onClick={() => setCategorizing(true)}>Categorize imports</button> : null}<button className="btn" type="button" disabled={!access.canWrite} onClick={() => { setEditing(null); setOpen(true); }}>Add</button></>}>
+    <Page title="Activity" lede={ids ? "These are the transactions behind that report row. The total on the report is their spending after refunds, not a second copy of the money." : query ? `Matches for “${query}”.` : review === "needs_review" ? "These still need a person to confirm the category." : "Splits, refunds, and transfers stay attached to the original money."} actions={<>{access.canWrite && <button className="btn-secondary" onClick={()=>setCorrection({source:null,scope})}>Correction history</button>}{access.canWrite ? <button className="btn-secondary" type="button" onClick={() => setCategorizing(true)}>Categorize imports</button> : null}<button className="btn" type="button" disabled={!access.canWrite} onClick={() => { setEditing(null); setOpen(true); }}>Add</button></>}>
       {ids ? <p><button className="btn-quiet" type="button" onClick={() => { const next = new URLSearchParams(params); next.delete("ids"); replaceFilters(next); }}>Show the whole register</button></p> : null}
       <div className="row">
         <OwnershipFilter people={people.data?.people ?? []} />
@@ -153,6 +156,7 @@ export function Activity() {
                   </td>
                   <td className="num" data-label="Amount"><Money minor={txn.amountMinor} /></td>
                   <td data-label="Actions">
+                    {access.canWrite && !txn.reconciled && txn.bankStatus==="posted" && ["expense","income","fee"].includes(txn.type) && txn.splits.length<=1 && !txn.counterAccountId && <button className="btn-quiet" onClick={()=>setCorrection({source:txn,scope})}>Correct similar</button>}
                     <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Edit ${txn.payee} on ${txn.date}`} onClick={() => { setEditing(txn); setOpen(true); }}>Edit</button>
                     <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-label={`Duplicate ${txn.payee} on ${txn.date}`} onClick={() => act("A copy was added and marked for review. The original was not changed, and its bank id was not copied.", () => api(scoped(session.householdId, `/transactions/${txn.id}/duplicate`), { method: "POST" }).then(() => undefined))}>Duplicate</button>
                     <button className="btn-quiet" type="button" disabled={!access.canWrite} aria-pressed={matchId === txn.id} aria-label={matchId === txn.id ? `${txn.payee} on ${txn.date} is selected to match` : `Match ${txn.payee} on ${txn.date}`} onClick={() => setMatchId(matchId === txn.id ? "" : txn.id)}>{matchId === txn.id ? "Selected to match" : "Match"}</button>
@@ -176,6 +180,7 @@ export function Activity() {
         {offset > 0 ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(Math.max(0, offset - PAGE)); }}>Previous page</button> : null}
         {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
+      {correction?.scope===scope && access.canWrite && <MerchantCorrections key={scope} source={correction.source} accounts={names} buckets={dash.data.buckets} onClose={()=>setCorrection(null)}/>}
       {categorizing ? <ImportCategorization key={session.spaceId} buckets={dash.data.buckets} onClose={() => setCategorizing(false)} /> : null}
       {peopleFor ? <PeopleForm txn={peopleFor} onClose={() => setPeopleFor(null)} /> : null}
       {sourceFor ? <ImportSource txn={sourceFor} onClose={() => setSourceFor(null)} /> : null}

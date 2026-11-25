@@ -13,6 +13,8 @@ import { Accounts } from "./pages/Accounts.js";
 import { Bills, Debts, Forecast, Goals } from "./pages/Planning.js";
 import { BillImport } from "./pages/BillImport.js";
 import { PhysicalAssets } from "./pages/PhysicalAssets.js";
+import { StatementCoverage } from "./pages/StatementCoverage.js";
+import { CatchUp } from "./pages/CatchUp.js";
 import { SpendingReport } from "./pages/SpendingReport.js";
 import { CalendarPage, Paychecks } from "./pages/Paychecks.js";
 import { Receipts } from "./pages/Receipts.js";
@@ -35,8 +37,8 @@ const primary = [
 ] as const;
 
 const groups: { title: string; links: [string, string][] }[] = [
-  { title: "Planning", links: [["/forecast", "Forecast"], ["/receipts", "Receipts"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"], ["/alerts", "Alerts"]] },
-  { title: "Insight", links: [["/reports", "Reports"], ["/investments", "Investments"], ["/stocks-crypto/", "Stocks & Crypto"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
+  { title: "Planning", links: [["/forecast", "Forecast"], ["/catch-up","Paycheck catch-up"], ["/receipts", "Receipts"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"], ["/alerts", "Alerts"]] },
+  { title: "Insight", links: [["/reports", "Reports"], ["/statement-coverage","Statement coverage"], ["/investments", "Investments"], ["/stocks-crypto/", "Stocks & Crypto"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
   { title: "Household", links: [["/setup", "Setup"], ["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
 ];
 
@@ -151,6 +153,8 @@ export function App() {
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/wealth" element={<Wealth />} />
         <Route path="/physical-assets" element={<PhysicalAssets />} />
+        <Route path="/statement-coverage" element={<StatementCoverage/>}/>
+        <Route path="/catch-up" element={<CatchUp/>}/>
         <Route path="/forecast" element={<Forecast />} />
         <Route path="/receipts" element={<Receipts />} />
         <Route path="/paychecks" element={<Paychecks />} />
