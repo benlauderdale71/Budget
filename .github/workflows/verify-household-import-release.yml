@@ -1,0 +1,26 @@
+name: Verify household import release
+on:
+  push:
+    branches: [qa/household-import-overlap-20261125]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BUDGETCENTS_TEST_PYTHON: /usr/bin/python3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install OCR and document test tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr-eng tesseract-ocr poppler-utils fonts-dejavu-core python3-pil
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm test
