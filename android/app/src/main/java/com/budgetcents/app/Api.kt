@@ -60,7 +60,7 @@ class BudgetApi(private val store: Store) {
         val connection = (URL(store.baseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 12000
-            readTimeout = 20000
+            readTimeout = if (path.endsWith("/import/statement-pdf")) 240_000 else 20_000
             setRequestProperty("accept", "application/json")
             if (auth) setRequestProperty("authorization", "Bearer ${store.token}")
             if (body != null) {

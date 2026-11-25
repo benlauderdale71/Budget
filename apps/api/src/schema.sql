@@ -1119,10 +1119,19 @@ CREATE TABLE IF NOT EXISTS support_attachments (
   created_at text NOT NULL
 );
 
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS category_estimate_basis text;
+
 CREATE TABLE IF NOT EXISTS statement_periods (
   account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   start_date text NOT NULL, end_date text NOT NULL, closing_minor bigint NOT NULL,
   PRIMARY KEY (account_id,end_date)
+);
+ALTER TABLE statement_periods ADD COLUMN IF NOT EXISTS deposits_minor bigint;
+ALTER TABLE statement_periods ADD COLUMN IF NOT EXISTS withdrawals_minor bigint;
+ALTER TABLE statement_periods ADD COLUMN IF NOT EXISTS transaction_count integer;
+CREATE TABLE IF NOT EXISTS account_lifetimes (
+  account_id text PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  opened text, closed text
 );
 CREATE TABLE IF NOT EXISTS catch_up_plans (
   account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

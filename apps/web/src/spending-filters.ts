@@ -1,7 +1,7 @@
 import type { SpendingFilters } from "@budgetcents/domain";
 import { addDays, addMonths, isIsoDate, periodFromDate } from "@budgetcents/domain/dates";
 
-export const spendingFilterKeys = ["accountId", "bucketId", "group", "merchant", "merchantGroup", "tag", "q"] as const;
+export const spendingFilterKeys = ["accountId", "bucketId", "group", "merchant", "merchantGroup", "tag", "review", "q"] as const;
 
 export function spendingYearRange(year: number) {
   return { from: `${year}-01-01`, to: `${year}-12-31` };

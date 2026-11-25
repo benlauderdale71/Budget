@@ -13,6 +13,8 @@ import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, payc
 import { mountLoans } from "./loans.js";
 import { mountIncomePlan } from "./income-plan.js";
 import { mountBillImport } from "./bill-import.js";
+import { statementDraft } from "./statement-pdf.js";
+import { readBillDocument } from "./bill-document-reader.js";
 import { mountHouseholdTools, coverageFor, correctFutureImport } from "./household-tools.js";
 import { mountPhysicalAssets } from "./physical-assets.js";
 import { mountBankRoutes } from "./providers/bank-routes.js";
@@ -20,6 +22,7 @@ import { mountMarketRoutes } from "./providers/market.js";
 import { queueAccountMail, mailConfigured } from "./providers/mail.js";
 import { mountLiveMessages } from "./providers/live-messages.js";
 import { mountOnboarding } from "./onboarding.js";
+import { recoveryData, prepareRecovery, recoveryTables, scopeLinks } from "./recovery.js";
 import { planRestore } from "./restore.js";
 import { acceptInvitation, changeMemberRole, createInvitation, leaveHousehold, listAccess, previewInvitation, reissueInvitation, removeMember, revokeInvitation, setMemberLimit, transferOwnership, visibleAudit } from "./sharing.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, verifyPassword, verifyTotp } from "./crypto.js";
@@ -758,7 +761,7 @@ export function createApp(db: Database) {
       const year = String(body.year);
       const imported = transactions.filter(txn => !txn.accountId.startsWith("redacted:")
         && txn.date.startsWith(`${year}-`) && (txn.importBatchId || txn.providerTransactionId));
-      const candidates = imported.filter(canEstimateImportedCategory);
+      const candidates = imported.filter(t=>canEstimateImportedCategory(t,true));
       const batchIds = [...new Set(candidates.flatMap(txn => txn.importBatchId ? [txn.importBatchId] : []))];
       const bankCategories = new Map<string, string>();
       if (batchIds.length) {
@@ -773,9 +776,15 @@ export function createApp(db: Database) {
         }
       }
       const estimate = importedCategoryEstimator(buckets, transactions);
+      const priorEvidence=await db.query("SELECT id,category_estimate_basis FROM transactions WHERE household_id=$1 AND space_id=$2 AND category_estimate_basis IS NOT NULL",[hid,loaded.spaceId]);
+      const strengths=new Map(priorEvidence.map(r=>[String(r.id),String(r.category_estimate_basis)]));
+      const strength=(basis:string)=>["fallback","merchant","bank category","fuel description","account history"].indexOf(basis);
       const changes = candidates.flatMap(txn => {
         const result = estimate(txn, bankCategories.get(txn.clientOpId ?? ""), fallback);
-        return result ? [{ id: txn.id, version: txn.version, ...result }] : [];
+        const priorBucket=txn.splits[0]?.bucketId ?? null;
+        if (!result || result.bucketId===priorBucket || (priorBucket && result.basis==="fallback")) return [];
+        if(priorBucket && strength(result.basis)<strength(strengths.get(txn.id)??""))return [];
+        return [{id:txn.id, version:txn.version, priorBucket, amountMinor:Math.abs(txn.amountMinor), currency:txn.currency, ...result}];
       }).sort((a, b) => a.id.localeCompare(b.id));
       const token = sha256(JSON.stringify([hid, loaded.spaceId, body.year, changes]));
       if (body.confirm && body.confirm !== token) throw new ApiError(409, "The suggestions changed. Preview them again before applying.");
@@ -783,13 +792,13 @@ export function createApp(db: Database) {
         const byId = new Map(candidates.map(txn => [txn.id, txn]));
         for (const change of changes) {
           const txn = byId.get(change.id)!;
-          const updated = await db.query(`UPDATE transactions SET version = version + 1, updated_at = $1
+          const updated = await db.query(`UPDATE transactions SET version = version + 1, updated_at = $1, category_estimate_basis=$6
             WHERE id = $2 AND household_id = $3 AND space_id = $4 AND version = $5 AND deleted = 0
               AND review_status = 'needs_review' AND category_locked = 0 AND reconciled = 0 AND locked = 0
-            RETURNING id`, [nowIso(), txn.id, hid, loaded.spaceId, change.version]);
+            RETURNING id`, [nowIso(), txn.id, hid, loaded.spaceId, change.version,change.basis]);
           if (!updated.length) throw new ApiError(409, "A transaction changed. Preview again before applying.");
           if (txn.splits.length) {
-            await db.query(`UPDATE splits SET bucket_id = $1 WHERE transaction_id = $2 AND bucket_id IS NULL`, [change.bucketId, txn.id]);
+            await db.query(`UPDATE splits SET bucket_id = $1 WHERE transaction_id = $2 AND bucket_id IS NOT DISTINCT FROM $3`, [change.bucketId, txn.id, change.priorBucket]);
           } else {
             await replaceSplits(txn.id, [{ bucketId: change.bucketId, amountMinor: Math.abs(txn.amountMinor), role: txn.amountMinor < 0 ? "expense" : "income" }]);
           }
@@ -807,8 +816,9 @@ export function createApp(db: Database) {
       return {
         imported: imported.length,
         unreviewed: imported.filter(txn => txn.reviewStatus === "needs_review").length,
-        eligible: candidates.length,
-        remaining: candidates.length - changes.length,
+        eligible: candidates.filter(t=>!t.splits[0]?.bucketId).length + changes.filter(t=>t.priorBucket).length,
+        remaining: candidates.filter(t=>!t.splits[0]?.bucketId).length - changes.filter(t=>!t.priorBucket).length,
+        impacts: [...changes.reduce((map,row)=>{const key=JSON.stringify([row.currency,row.priorBucket,row.bucketId]); const old=map.get(key)??{currency:row.currency,from:row.priorBucket,to:row.bucketId,totalMinor:0,count:0};old.count++;old.totalMinor+=row.amountMinor;map.set(key,old);return map;},new Map<string,{currency:string;from:string|null;to:string;totalMinor:number;count:number}>()).values()],
         proposed: changes.length,
         applied: body.confirm ? changes.length : 0,
         token,
@@ -1454,7 +1464,7 @@ export function createApp(db: Database) {
       const bucketId = c.req.query("bucketId") || undefined;
       if (accountId && (!loaded.visibleAccountIds.has(accountId) || !loaded.input.accounts.some(a=>a.id===accountId))) throw new ApiError(404, "Account not available");
       if (bucketId && bucketId !== "uncategorized" && !loaded.input.buckets.some(b=>b.id===bucketId)) throw new ApiError(404, "Category not available");
-      const filters = { accountId, bucketId, group:c.req.query("group"), merchant:c.req.query("merchant"), merchantGroup:c.req.query("merchantGroup"), tag:c.req.query("tag"), q:c.req.query("q") };
+      const filters = { accountId, bucketId, group:c.req.query("group"), merchant:c.req.query("merchant"), merchantGroup:c.req.query("merchantGroup"), review:c.req.query("review"), tag:c.req.query("tag"), q:c.req.query("q") };
       if (kind === "spending-year") {
         const year = z.coerce.number().int().min(1900).max(2200).parse(c.req.query("year") ?? loaded.input.asOf.slice(0,4));
         const grouping = z.enum(["common","exact"]).parse(c.req.query("merchantGrouping") ?? "common");
@@ -1533,13 +1543,11 @@ export function createApp(db: Database) {
     return new Response(new Uint8Array(textPdf("Budget HQ PRO report", lines)), { headers: { "content-type": "application/pdf" } });
   });
 
-  app.get("/api/households/:hid/backup", async (c) => {
-    const me = await actor(c);
-    const member = await requireMember(db, me.id, c.req.param("hid"));
-    const accounts = (await db.query(`SELECT * FROM accounts WHERE household_id = $1`, [member.householdId])).filter((account) => canSeeAccount(me.id, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null }));
-    const ids = new Set(accounts.map((account) => String(account.id)));
+  async function backupFor(me:Actor,member:Awaited<ReturnType<typeof requireMember>>) {
     const spaces = await visibleSpaces(me.id, member.householdId);
     const spaceIds = new Set(spaces.map((space) => String(space.id)));
+    const accounts = (await db.query(`SELECT * FROM accounts WHERE household_id = $1`, [member.householdId])).filter((account) => spaceIds.has(String(account.space_id)) && canSeeAccount(me.id, { visibility: String(account.visibility), owner_user_id: str(account.owner_user_id) ?? null }));
+    const ids = new Set(accounts.map((account) => String(account.id)));
     const transactions = (await db.query(`SELECT * FROM transactions WHERE household_id = $1 AND deleted = 0`, [member.householdId])).filter((txn) => ids.has(String(txn.account_id)) && (!txn.counter_account_id || ids.has(String(txn.counter_account_id))));
     const txnIds = transactions.map((txn) => String(txn.id));
     const splits = txnIds.length ? await db.query(`SELECT * FROM splits WHERE transaction_id IN (${txnIds.map((_, index) => `$${index + 1}`).join(",")})`, txnIds) : [];
@@ -1549,11 +1557,15 @@ export function createApp(db: Database) {
     const assignments = (await db.query(`SELECT * FROM assignments WHERE household_id = $1`, [member.householdId])).filter((row) => bucketIds.has(String(row.bucket_id)));
     const goals = (await db.query(`SELECT * FROM goals WHERE household_id = $1`, [member.householdId])).filter((goal) => spaceIds.has(String(goal.space_id)));
     const schedules = (await db.query(`SELECT * FROM schedules WHERE household_id = $1`, [member.householdId])).filter((row) => spaceIds.has(String(row.space_id)) && (!row.account_id || ids.has(String(row.account_id))));
-    return c.json({
-      version: 2, exportedAt: nowIso(), currency: member.currency, householdId: member.householdId,
-      spaces, accounts, buckets, transactions, splits, tags, assignments, goals, schedules,
-      note: "Private accounts you cannot see are omitted. Restoring this file adds missing rows into the household you choose. It does not copy them into a different household's existing ids.",
-    });
+    const core={spaces,accounts,buckets,transactions,splits,tags,assignments,goals,schedules};
+    const rows=scopeLinks({...core,...await recoveryData(db,member.householdId,me.id,core)});
+    return rows;
+  }
+  app.get("/api/households/:hid/backup",async c=>{
+    const me=await actor(c),member=await requireMember(db,me.id,c.req.param("hid"));
+    const rows=await db.tx(()=>backupFor(me,member));
+    return c.json({version:3,exportedAt:nowIso(),householdId:member.householdId,currency:member.currency,...rows,
+      note:"Includes statement evidence, catch-up terms, merchant corrections and visible inventory with accessible files and values. Private records you cannot access are omitted."});
   });
 
   app.post("/api/households/:hid/restore", async (c) => {
@@ -1561,10 +1573,30 @@ export function createApp(db: Database) {
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertAdmin(member);
     const body = z.object({ mode: z.enum(["preview", "add-missing"]), backup: z.unknown() }).parse(await c.req.json());
+    return await db.tx(async()=>{
+    if(body.mode==="add-missing")await lockHousehold(db,member.householdId);
     const owners = await ownerMaps(db);
     let plan;
     try {
-      plan = planRestore(body.backup, member.householdId, owners);
+      const file=body.backup as Record<string,unknown>|null;
+      if(file?.version===3){
+        if(file.householdId!==member.householdId){
+          const [source]=await db.query("SELECT id FROM households WHERE id=$1",[file.householdId]);
+          if(source && !(await db.query("SELECT 1 FROM memberships WHERE household_id=$1 AND user_id=$2",[file.householdId,me.id])).length)throw Error("This backup belongs to a different household.");
+        }
+        const visible=await backupFor(me,member);
+        const portable=prepareRecovery(file,member.householdId,me.id,visible,owners);
+        const addedBytes=portable.extra.physical_asset_documents.reduce((total,row)=>total+Number(row.size_bytes),0);
+        if(addedBytes){
+          const [usage]=await db.query("SELECT COALESCE(SUM(size_bytes),0) AS total FROM physical_asset_documents WHERE household_id=$1",[member.householdId]);
+          if(addedBytes+Number(usage.total)>100_000_000)throw Error("The restored files would exceed this household’s 100 MB inventory storage limit.");
+        }
+        plan=planRestore(portable.core,member.householdId,owners);
+        Object.assign(plan.inserts,portable.extra);
+        if(portable.skipped)plan.skipped.push(...Array(portable.skipped).fill("existing"));
+        if(Object.values(portable.extra).some(r=>r.length))plan.warnings=[];
+        if(portable.copy)plan.warnings.push("Copied records get new household IDs. Personal records are assigned to the importing member.");
+      }else plan = planRestore(body.backup, member.householdId, owners);
     } catch (error) {
       throw new ApiError(400, error instanceof Error ? error.message : "That backup could not be read.");
     }
@@ -1578,25 +1610,39 @@ export function createApp(db: Database) {
       });
     }
     try {
-    await db.tx(async () => {
       for (const space of plan.inserts.spaces) await insertRow(db, "spaces", space, ["id", "household_id", "name", "kind", "owner_user_id", "business_type", "currency", "created_at"]);
       for (const bucket of plan.inserts.buckets) await insertRow(db, "buckets", bucket, ["id", "household_id", "space_id", "name", "group_name", "kind", "flex_role", "envelope_style", "rollover", "rollover_cap_minor", "icon", "archived", "hidden", "display_order", "target_json", "system_role", "linked_account_id", "purpose", "due_day", "created_at"]);
       for (const account of plan.inserts.accounts) await insertRow(db, "accounts", account, ["id", "household_id", "space_id", "name", "kind", "currency", "on_budget", "visibility", "owner_user_id", "hidden", "archived", "exclude_from_net_worth", "institution", "mask", "credit_limit_minor", "apr_bps", "minimum_payment_minor", "linked_account_id", "display_order", "created_at"]);
-      for (const txn of plan.inserts.transactions) await insertRow(db, "transactions", txn, ["id", "household_id", "space_id", "date", "account_id", "counter_account_id", "amount_minor", "currency", "type", "payee", "original_description", "bank_status", "review_status", "cleared", "reconciled", "locked", "category_locked", "flag", "notes", "check_number", "owner_user_id", "business_space_id", "project", "tax_code", "schedule_id", "refund_of_id", "import_batch_id", "provider_transaction_id", "client_op_id", "fx_json", "exclude_from_reports", "version", "deleted", "created_at", "updated_at"]);
+      for (const txn of plan.inserts.transactions) await insertRow(db, "transactions", txn, ["id", "household_id", "space_id", "date", "account_id", "counter_account_id", "amount_minor", "currency", "type", "payee", "original_description", "bank_status", "review_status", "cleared", "reconciled", "locked", "category_locked", "category_estimate_basis", "flag", "notes", "check_number", "owner_user_id", "business_space_id", "project", "tax_code", "schedule_id", "refund_of_id", "import_batch_id", "provider_transaction_id", "client_op_id", "fx_json", "exclude_from_reports", "version", "deleted", "created_at", "updated_at"]);
       for (const split of plan.inserts.splits) await insertRow(db, "splits", split, ["id", "transaction_id", "bucket_id", "amount_minor", "role", "memo", "owner_user_id", "business_space_id", "project", "tax_code"]);
       for (const tag of plan.inserts.tags) await insertRow(db, "transaction_tags", tag, ["transaction_id", "tag"]);
       for (const assignment of plan.inserts.assignments) await insertRow(db, "assignments", assignment, ["id", "household_id", "space_id", "bucket_id", "period_key", "amount_minor"]);
       for (const goal of plan.inserts.goals) await insertRow(db, "goals", goal, ["id", "household_id", "space_id", "bucket_id", "name", "target_minor", "target_date", "priority", "purpose", "archived", "notes"]);
       for (const schedule of plan.inserts.schedules) await insertRow(db, "schedules", schedule, ["id", "household_id", "space_id", "name", "cadence", "custom_days", "next_date", "amount_minor", "amount_max_minor", "direction", "account_id", "bucket_id", "type", "payee", "owner_user_id", "paused", "confirmed", "skipped_dates"]);
-      await audit(db, member.householdId, me.id, "restore", `Added missing rows from a backup`);
-    });
+      for(const [table,columns] of Object.entries(recoveryTables)) for(const row of plan.inserts[table]??[]){
+        await insertRow(db,table,row,columns.join(" ").trim().split(" "));
+      }
+      await audit(db, member.householdId, me.id, "restore", "Added missing rows from a backup");
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(400, "The backup could not be applied. Nothing was changed.");
     }
     return c.json({ ok: true, added: Object.fromEntries(Object.entries(plan.inserts).map(([name, rows]) => [name, rows.length])), skipped: plan.skipped.length, warnings: plan.warnings });
+    });
   });
 
+  app.post("/api/households/:hid/import/statement-pdf",async c=>{
+    const me=await actor(c),hid=c.req.param("hid");
+    assertWrite(await requireMember(db,me.id,hid));
+    const body=z.object({accountId:z.string(),year:z.number().int().min(1900).max(2200),data:z.string().max(10666668)}).parse(await c.req.json());
+    await mustAccount(me.id,hid,body.accountId);
+    const bytes=Buffer.from(body.data,"base64");
+    if(bytes.subarray(0,5).toString()!=="%PDF-") throw new ApiError(400,"Choose a bank statement PDF.");
+    try {
+      const document=await readBillDocument(bytes,"statement.pdf",undefined,40);
+      return c.json(statementDraft(document.pageTexts??[document.text],body.year));
+    } catch(err){throw new ApiError(400,err instanceof Error?err.message:"Could not read statement.");}
+  });
   app.post("/api/households/:hid/import/preview", async (c) => {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
@@ -2790,9 +2836,11 @@ export function createApp(db: Database) {
       })));
       draft = applied.transaction;
     }
+    let estimateBasis:string|null=null;
     if (categorization && canEstimateImportedCategory(draft)) {
       const result = categorization.estimate(draft, categorization.bankCategory);
       if (result) {
+        estimateBasis=result.basis;
         draft.splits = [{ bucketId: result.bucketId, amountMinor: Math.abs(draft.amountMinor), role: draft.amountMinor < 0 ? "expense" : "income" }];
         draft.tags = [...new Set([...(draft.tags ?? []), "category-estimate"])];
       }
@@ -2845,6 +2893,7 @@ export function createApp(db: Database) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$25)`,
         [draft.id, householdId, String(account.space_id), draft.date, draft.accountId, draft.counterAccountId ?? null, draft.amountMinor, draft.currency, draft.type, draft.payee, draft.originalDescription ?? null, draft.bankStatus, draft.reviewStatus, draft.flag ?? null, draft.notes ?? null, draft.checkNumber ?? null, draft.ownerUserId ?? null, draft.businessSpaceId ?? null, draft.scheduleId ?? null, draft.refundOfId ?? null, draft.providerTransactionId ?? null, draft.clientOpId ?? null, draft.importBatchId ?? null, draft.categoryLockedByUser ? 1 : 0, nowIso()],
       );
+      if(estimateBasis)await db.query("UPDATE transactions SET category_estimate_basis=$1 WHERE id=$2",[estimateBasis,draft.id]);
       await replaceSplits(draft.id!, draft.splits);
       await replaceTags(draft.id!, draft.tags ?? []);
       await correctFutureImport(db, draft);

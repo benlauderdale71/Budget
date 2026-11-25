@@ -39,6 +39,8 @@ function PlanForm({accountId,currency,saved}:{accountId:string;currency:string;s
   const s=useSession(), access=useAccess(), terms=saved.terms;
   const [version,setVersion]=useState(saved.version),[regular,setRegular]=useState(!!terms?.regular);
   const [agreements,setAgreements]=useState((terms?.agreements??[]).map((p,i)=>({...p,key:i})));
+  const [bills,setBills]=useState((terms?.additionalBills??[]).map((b,i)=>({...b,key:i,agreements:b.agreements.map((p,j)=>({...p,key:j}))})));
+  const [billKey,setBillKey]=useState(bills.length);
   const [nextKey,setNextKey]=useState(agreements.length);
   const [result,setResult]=useState<Projection|null>(null),[error,setError]=useState(""),[busy,setBusy]=useState(false),[savedMessage,setSavedMessage]=useState("");
   const fmt=(minor:number|undefined)=>minor===undefined?"":minorToInput(minor,currency);
@@ -51,7 +53,13 @@ function PlanForm({accountId,currency,saved}:{accountId:string;currency:string;s
     setBusy(true);invalidate();
     try {
       const plan:CatchUpTerms={name:field("name"),asOf:field("asOf"),days:Number(field("days")),pastDueMinor:amount("pastDue"),bufferMinor:amount("buffer"),essentialsPerPayMinor:amount("essentials"),
-        regular:regular?{date:field("regularDate"),amountMinor:amount("regularAmount")}:null,
+        additionalBills:bills.map(b=>{
+          const prefix="bill"+b.key+"-";
+          const regularDate=field(prefix+"regularDate"), regularAmount=field(prefix+"regularAmount");
+          if(Boolean(regularDate)!==Boolean(regularAmount)) throw new Error("Enter both a regular date and payment for "+field(prefix+"name"));
+          return {name:field(prefix+"name"),pastDueMinor:amount(prefix+"debt"),regular:regularDate?{date:regularDate,amountMinor:amount(prefix+"regularAmount")}:null,
+            agreements:b.agreements.map(p=>({date:field(prefix+"date"+p.key),amountMinor:amount(prefix+"amt"+p.key)}))};
+        }), regular:regular?{date:field("regularDate"),amountMinor:amount("regularAmount")}:null,
         agreements:agreements.map(p=>({date:field("date"+p.key),amountMinor:amount("amount"+p.key)}))};
       const r=await api<Projection>(scoped(s.householdId,"/catch-up",s.spaceId),{method:"POST",body:JSON.stringify({accountId,terms:plan,version,save})});
       setResult(r);setVersion(r.version);if(save)setSavedMessage("Plan saved for this account.");
@@ -71,6 +79,14 @@ function PlanForm({accountId,currency,saved}:{accountId:string;currency:string;s
     {agreements.map((p,i)=><div className="row" key={p.key}><Field label={"Installment "+(i+1)+" date"}><input required type="date" name={"date"+p.key} defaultValue={p.date}/></Field><Field label="Amount"><input required inputMode="decimal" name={"amount"+p.key} defaultValue={p.amountMinor?fmt(p.amountMinor):""}/></Field>
     <button type="button" className="btn-quiet" onClick={()=>{invalidate();setAgreements(agreements.filter(a=>a.key!==p.key));}}>Remove</button></div>)}
     <button type="button" className="btn-secondary" onClick={()=>{invalidate();setAgreements([...agreements,{key:nextKey,date:"",amountMinor:0}]);setNextKey(nextKey+1);}}>Add agreed installment</button>
+    <h3>Other past-due bills</h3><p>Promised payments take priority. Extra money goes to bills in the order shown. The cash buffer and essentials are reserved once.</p>
+    {bills.map((b,index)=>{const prefix="bill"+b.key+"-";return <fieldset key={b.key}><legend>Bill {index+2}</legend>
+      <Field label="Creditor"><input required name={prefix+"name"} defaultValue={b.name}/></Field><Field label="Past due"><input required name={prefix+"debt"} inputMode="decimal" defaultValue={b.pastDueMinor?fmt(b.pastDueMinor):""}/></Field>
+      <Field label="Additional regular due date"><input type="date" name={prefix+"regularDate"} defaultValue={b.regular?.date}/></Field><Field label="Additional regular payment"><input name={prefix+"regularAmount"} defaultValue={fmt(b.regular?.amountMinor)}/></Field>
+      {b.agreements.map(p=><div className="row" key={p.key}><Field label="Promised date"><input type="date" name={prefix+"date"+p.key} required defaultValue={p.date}/></Field><Field label="Promised amount"><input name={prefix+"amt"+p.key} required defaultValue={p.amountMinor?fmt(p.amountMinor):""}/></Field><button type="button" onClick={()=>{invalidate();setBills(bills.map(row=>row===b?{...b,agreements:b.agreements.filter(a=>a!==p)}:row));}}>Remove installment</button></div>)}
+      <button type="button" onClick={()=>{invalidate();setBills(bills.map(row=>row===b?{...b,agreements:[...b.agreements,{key:Math.max(-1,...b.agreements.map(a=>a.key))+1,date:"",amountMinor:0}]}:row));}}>Add installment for this bill</button>
+      <button type="button" onClick={()=>{invalidate();setBills(bills.filter(row=>row!==b));}}>Remove bill</button></fieldset>;})}
+    <button type="button" onClick={()=>{invalidate();setBills([...bills,{key:billKey,name:"",pastDueMinor:0,regular:null,agreements:[]}]);setBillKey(billKey+1);}}>Add another past-due bill</button>
     <div className="row"><button className="btn" type="submit" disabled={s.offline}>Calculate plan</button>{access.canWrite && <button className="btn-secondary" type="submit" value="save" disabled={s.offline}>Save and calculate</button>}</div>
   </fieldset></form>
   {error && <ErrorNote message={error}/>} {savedMessage && <p role="status">{savedMessage}</p>}
@@ -78,9 +94,10 @@ function PlanForm({accountId,currency,saved}:{accountId:string;currency:string;s
     <p>Starting balance <Money minor={result.startingMinor}/> · Lowest projected balance <Money minor={result.lowestMinor}/> on {result.lowestDate}.</p>
     {result.firstShortfall && <Notice kind="bad">The planned payments would put this account below zero on {result.firstShortfall}.</Notice>}
     <p>{result.payoffDate?"Projected catch-up date "+result.payoffDate:"No funded payoff date in this forecast."} Remaining after planned payments through {result.end}: <Money minor={result.remainingMinor}/>.</p>
+    {result.creditors.map((b,i)=><p key={i}><strong>{b.name}</strong> · Extra payments <Money minor={b.extraMinor}/> · Remaining after planned payments <Money minor={b.remainingMinor}/>{b.firstUnfundedDate && <> · Unfunded <Money minor={b.unfundedMinor}/> starting {b.firstUnfundedDate}</>}</p>)}
     {!result.rows.some(r=>r.payMinor) && <Notice>No expected paychecks for this account within these dates.</Notice>}
     <div className="table-wrap"><table><thead><tr>{["Date","Expected pay","Bills","Essentials","Agreed","Extra catch-up","Account balance","Past due left"].map(t=><th key={t}>{t}</th>)}</tr></thead><tbody>
-    {result.rows.map(r=><tr key={r.date}><td>{r.date}</td>{[r.payMinor,r.billsMinor,r.essentialsMinor,r.agreedMinor,r.extraMinor,r.balanceMinor,r.remainingMinor].map((v,i)=><td key={i}><Money minor={v}/></td>)}</tr>)}</tbody></table></div>
+    {result.rows.map(r=><tr key={r.date}><td>{r.date}{r.payments.map((p,i)=><small key={i}>{p.name} · <Money minor={p.agreed+p.extra}/></small>)}</td>{[r.payMinor,r.billsMinor,r.essentialsMinor,r.agreedMinor,r.extraMinor,r.balanceMinor,r.remainingMinor].map((v,i)=><td key={i}><Money minor={v}/></td>)}</tr>)}</tbody></table></div>
     <p className="muted">Extra payments use expected income and reserve the expenses entered through {result.end}. Saving a plan does not send payments.</p>
   </section>}</>;
 }

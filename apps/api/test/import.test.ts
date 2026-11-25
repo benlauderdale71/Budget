@@ -117,6 +117,15 @@ describe("guided import", () => {
     expect(await db.query("SELECT * FROM splits WHERE transaction_id IN ($1, $2)", [ambiguous, older])).toEqual([]);
     const after = await json(await api.request(reportPath, { headers: auth(home.token) }));
     expect(after.body.summary).toMatchObject({ netMinor: 2200, count: 3, needsReviewCount: 3, uncategorizedCount: 1 });
+    const fuel=await post("/buckets",{spaceId:home.spaceId,name:"Auto fuel",group:"Transport",kind:"expense"});
+    expect(fuel.status).toBe(201);
+    await db.query("UPDATE transactions SET payee='SAMS CLUB #6789 FUEL' WHERE id=$1",[unknown]);
+    const improved=await post(reassess,options);
+    expect(improved.body.impacts).toContainEqual({currency:"USD",from:fallBack,to:fuel.body.id,totalMinor:700,count:1});
+    expect((await post(reassess,{...options,confirm:improved.body.token})).body.applied).toBe(1);
+    await db.query("UPDATE transactions SET category_locked=1 WHERE id=$1",[unknown]);
+    expect((await post(reassess,options)).body.proposed).toBe(0);
+    expect((await json(await api.request(reportPath,{headers:auth(home.token)}))).body.summary.netMinor).toBe(2200);
   });
 
   it("requires an explicit transfer decision and does not count transfers as spending", async () => {

@@ -6,18 +6,18 @@ import { Worker } from "node:worker_threads";
 import sharp from "sharp";
 import { billHeader, billImportDate, parseCsv, type BillImportGrid } from "@budgetcents/domain";
 
-export interface BillDocumentRead { grids: BillImportGrid[]; text: string; format: string; warnings: string[]; pages: number }
+export interface BillDocumentRead { grids: BillImportGrid[]; text: string; format: string; warnings: string[]; pages: number; pageTexts?:string[] }
 type Word = { x: number; y: number; w: number; h: number; text: string };
 
 let activeReaders = 0;
-export async function readBillDocument(bytes: Buffer, filename: string, header?: (s:string)=>string|undefined): Promise<BillDocumentRead> {
+export async function readBillDocument(bytes: Buffer, filename: string, header?: (s:string)=>string|undefined, maxPages=8): Promise<BillDocumentRead> {
   if (activeReaders >= 2) throw new Error("The document reader is busy. Please try again shortly.");
   activeReaders++;
-  try { return await readDocument(bytes, filename, header); }
+  try { return await readDocument(bytes, filename, header,maxPages); }
   finally { activeReaders--; }
 }
 
-async function readDocument(bytes: Buffer, filename: string, header?: (s:string)=>string|undefined): Promise<BillDocumentRead> {
+async function readDocument(bytes: Buffer, filename: string, header?: (s:string)=>string|undefined,maxPages=8): Promise<BillDocumentRead> {
   if (!bytes.length || bytes.length > 8_000_000) throw new Error("Choose a file no larger than 8 MB.");
   const ext = filename.toLowerCase().split(".").pop();
   if (ext === "csv") {
@@ -43,11 +43,13 @@ async function readDocument(bytes: Buffer, filename: string, header?: (s:string)
       const path = join(dir, "document.pdf"); await writeFile(path, bytes);
       const info = await run(process.env.BUDGETCENTS_PDFINFO || "pdfinfo", [path]);
       const count = Number(info.match(/Pages:\s+(\d+)/)?.[1]);
-      if (!count || count > 8) throw new Error("PDF uploads support up to 8 pages. Split larger documents before uploading.");
+      if (!count || count > maxPages) throw new Error("PDF uploads support up to "+maxPages+" pages. Split larger documents before uploading.");
       const grids: BillImportGrid[] = [], texts: string[] = [];
+      const bankStatement=maxPages>8;
+      const imagePages=bankStatement ? new Set((await run("pdfimages",["-list",path])).split("\n").flatMap(line=>{const page=/^\s*(\d+)\s+\d+\s+image\b/.exec(line);return page?[Number(page[1])]:[];})) : new Set<number>();
       for (let page = 1; page <= count; page++) {
         const text = await run(process.env.BUDGETCENTS_PDFTOTEXT || "pdftotext", ["-layout", "-f", String(page), "-l", String(page), path, "-"]);
-        if ((text.match(/[a-z]/gi)?.length ?? 0) >= 20) {
+        if ((text.match(/[a-z]/gi)?.length ?? 0) >= 20 && !(imagePages.has(page) && !/^\s*(?:\d{1,2}[/-]\d{1,2}|\d{4}-\d{2}-\d{2})\b/m.test(text))) {
           texts.push(text);
           grids.push(header ? { name:`PDF page ${page}`,rows:text.split(/\r?\n/).map(line=>line.trim().split(/\s{2,}/)) } : wordsToGrid(textWords(text), `PDF page ${page}`, false));
         }
@@ -55,10 +57,10 @@ async function readDocument(bytes: Buffer, filename: string, header?: (s:string)
           const prefix = join(dir, `scan-${page}`);
           await run(process.env.BUDGETCENTS_PDFTOPPM || "pdftoppm", ["-f", String(page), "-l", String(page), "-singlefile", "-png", "-scale-to", "2600", path, prefix]);
           const read = await image(await readFile(`${prefix}.png`), dir, `PDF page ${page}`, header);
-          texts.push(read.text); grids.push(read.grid);
+          texts.push(bankStatement?read.layout:read.text); grids.push(read.grid);
         }
       }
-      return { grids, text: texts.join("\n\n"), format: "pdf", pages: count, warnings: ["Every PDF page was read. Check extracted amounts and dates against the original."] };
+      return { grids, pageTexts:texts, text: texts.join("\n\n"), format: "pdf", pages: count, warnings: ["Every PDF page was read. Check extracted amounts and dates against the original."] };
     }
     // Sharp validates image signatures and pixel limits, regardless of the supplied name.
     if (!["png", "jpg", "jpeg", "webp"].includes(ext ?? "")) throw new Error("Use PNG, JPG, WebP, PDF, CSV, XLS or XLSX.");
@@ -86,7 +88,7 @@ function excel(bytes: Buffer): Promise<BillImportGrid[]> {
   });
 }
 
-async function image(bytes: Buffer, dir: string, name: string, header?: (s:string)=>string|undefined): Promise<{grid: BillImportGrid; text: string}> {
+async function image(bytes: Buffer, dir: string, name: string, header?: (s:string)=>string|undefined): Promise<{grid: BillImportGrid; text: string; layout:string}> {
   const { data, info } = await sharp(bytes, { limitInputPixels: 12_000_000 }).rotate().flatten({ background: "#fff" }).grayscale().raw().toBuffer({ resolveWithObject: true });
   const w = info.width, h = info.height;
   if (w < 40 || h < 40 || w > 8000 || h > 8000) throw new Error("Use an image at least 40 pixels wide and no larger than 12 megapixels.");
@@ -138,7 +140,15 @@ async function image(bytes: Buffer, dir: string, name: string, header?: (s:strin
       grid.rows[r][0]=billImportDate(value,"2000-01").date?value:dates.rows[r][0];
     }
   }
-  return { grid, text: grid.rows.map((row)=>row.join("\t")).join("\n") };
+  const lines:Word[][]=[];
+  const widths=words.filter(w=>w.text.length>=2).map(w=>w.w/w.text.length).sort((a,b)=>a-b);
+  const width=Math.max(1,widths[Math.floor(widths.length/2)]??8);
+  for(const w of [...words].sort((a,b)=>a.y-b.y||a.x-b.x)){
+    const last=lines.at(-1);
+    if(last && Math.abs((last[0].y+last[0].h/2)-(w.y+w.h/2))<Math.max(last[0].h,w.h)*.6)last.push(w);else lines.push([w]);
+  }
+  const layout=lines.map(line=>line.sort((a,b)=>a.x-b.x).reduce((str,w)=>str.padEnd(Math.max(str.length+(str?1:0),Math.round(w.x/width)))+w.text,"")).join("\n");
+  return { grid, layout, text: grid.rows.map((row)=>row.join("\t")).join("\n") };
 }
 
 function cluster(values: number[]): number[] {

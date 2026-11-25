@@ -13,6 +13,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -161,7 +162,8 @@ fun FeatureScreen(
             }
           }
         }
-        "Statement coverage", "Catch-up plan", "Merchant corrections" -> HouseholdTool(page, api, hid, dash, privacy)
+        "Household backup" -> key(hid){HouseholdRecovery(api,hid,dash?.optJSONObject("household")?.optString("role").orEmpty())}
+        "Import category estimates", "Statement coverage", "Catch-up plan", "Merchant corrections" -> HouseholdTool(page, api, hid, dash, privacy)
         "reports" -> {
             HouseholdAnnualSpending(api, hid, dash?.optString("spaceId").orEmpty(), privacy)
             ReportScreen(api, hid, privacy, onError, onOpenTransactions)
@@ -2111,18 +2113,19 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
     Text("Account")
     for (index in 0 until accounts.length()) {
         val account = accounts.getJSONObject(index)
-        TextButton(onClick = { accountId = account.optString("id") }) {
+        TextButton(onClick = { if(accountId!=account.optString("id")) { preview=null; batchId=""; if(format=="pdf")text="" }; accountId = account.optString("id") }) {
             Text(if (account.optString("id") == accountId) "Selected · ${account.optString("name")}" else account.optString("name"))
         }
     }
-    OutlinedTextField(text, { text = it }, label = { Text("CSV, OFX, or QIF") }, modifier = Modifier.fillMaxWidth())
+    key(hid,accountId) { StatementPdf(api,hid,accountId){draft -> format="pdf"; profile=""; text=draft; preview=null; includeMatches=false} }
+    OutlinedTextField(text, { text = it; preview=null }, label = { Text(if(format=="pdf") "Editable statement rows" else "CSV, OFX, or QIF") }, modifier = Modifier.fillMaxWidth())
     TextButton(onClick = { createMissing = !createMissing }) { Text(if (createMissing) "Create missing categories" else "Do not create categories") }
     TextButton(onClick = { includeMatches = !includeMatches }) { Text(if (includeMatches) "Possible matches will be imported" else "Possible matches stay out") }
     Button(onClick = {
         if (accountId.isBlank()) onError("Choose an account.")
         else scope.launch {
             runIo(onError) {
-                val body = JSONObject().put("spaceId", dash?.optString("spaceId")).put("format", format).put("text", text)
+                val body = JSONObject().put("spaceId", dash?.optString("spaceId")).put("accountId",accountId).put("format",if(format=="pdf") "csv" else format).put("text", text)
                 if (profile.isNotBlank()) body.put("profile", profile)
                 val next = api.request("POST", "/api/households/$hid/import/preview", body)
                 preview = next

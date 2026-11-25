@@ -10,9 +10,10 @@ import { paycheckPlan } from "./income.js";
 const date = z.string().refine(isIsoDate, "Enter a valid calendar date.");
 const nonnegative = z.number().int().min(0).max(1e13);
 const payment = z.object({date, amountMinor:nonnegative.positive()});
+const additionalBill=z.object({name:z.string().trim().min(1).max(100),pastDueMinor:nonnegative.positive(),regular:payment.nullable(),agreements:z.array(payment).max(100)});
 const termsSchema = z.object({name:z.string().trim().min(1).max(100), asOf:date, days:z.number().int().min(1).max(366),
   pastDueMinor:nonnegative.positive(), bufferMinor:nonnegative, essentialsPerPayMinor:nonnegative,
-  regular:payment.nullable(), agreements:z.array(payment).max(100)});
+  regular:payment.nullable(), agreements:z.array(payment).max(100),additionalBills:z.array(additionalBill).max(50).optional()});
 type Batch = {id:string; account_id:string; bucket_id:string; merchant_key:string; future:number; undone:number; created_at:string};
 
 function accountIn(loaded: Loaded, accountId: string) {
@@ -24,10 +25,11 @@ function accountIn(loaded: Loaded, accountId: string) {
 export async function coverageFor(db:Database, loaded:Loaded, year:number, accountId?:string) {
   if (accountId) accountIn(loaded,accountId);
   const ids = loaded.input.accounts.filter(a => loaded.visibleAccountIds.has(a.id) && (!accountId || accountId===a.id)).map(a=>a.id);
-  const periods = ids.length ? await db.query<{account_id:string;start_date:string;end_date:string;closing_minor:number}>(
+  const periods = ids.length ? await db.query<{account_id:string;start_date:string;end_date:string;closing_minor:number;deposits_minor:number|null;withdrawals_minor:number|null;transaction_count:number|null}>(
     "SELECT * FROM statement_periods WHERE account_id=ANY($1::text[]) AND start_date <= $2 AND end_date >= $3",
     [ids,`${year}-12-31`,`${year}-01-01`]) : [];
-  return statementCoverage({...loaded.input, transactions:loaded.balanceTransactions},year,periods.map(p=>({accountId:p.account_id,start:p.start_date,end:p.end_date,closingMinor:p.closing_minor})),accountId);
+  const dates=await db.query<{account_id:string;opened:string|null;closed:string|null}>("SELECT * FROM account_lifetimes WHERE account_id=ANY($1::text[])",[ids]);
+  return statementCoverage({...loaded.input, transactions:loaded.balanceTransactions},year,periods.map(p=>({accountId:p.account_id,start:p.start_date,end:p.end_date,closingMinor:p.closing_minor,depositsMinor:p.deposits_minor,withdrawalsMinor:p.withdrawals_minor,transactionCount:p.transaction_count})),accountId,Object.fromEntries(dates.map(d=>[d.account_id,d])));
 }
 
 function editable(t: Transaction) {
@@ -78,19 +80,36 @@ export function mountHouseholdTools(app:Hono, db:Database, actor:(c:Context)=>Pr
     const year=z.coerce.number().int().min(1900).max(2200).parse(c.req.query("year") ?? loaded.input.asOf.slice(0,4));
     return c.json(await coverageFor(db,loaded,year,c.req.query("accountId")));
   });
+  app.post(base+"/account-lifetime",async c=>{
+    const b=z.object({accountId:z.string(),opened:date.nullable(),closed:date.nullable(),previous:z.object({opened:date.nullable(),closed:date.nullable()})}).parse(await c.req.json());
+    return c.json(await db.tx(async()=>{
+      const {loaded,hid}=await context(c,true);
+      await lockHousehold(db,hid);
+      accountIn(loaded,b.accountId);
+      if (b.opened && b.closed && b.opened>b.closed) throw new ApiError(400,"Closing date precedes opening date.");
+      if(loaded.balanceTransactions.some(t=>!t.deleted && t.bankStatus==="posted" && (t.accountId===b.accountId || t.counterAccountId===b.accountId) && ((b.opened && t.date<b.opened)||(b.closed && t.date>b.closed)))) throw new ApiError(400,"These dates exclude an existing posted transaction.");
+      const [old]=await db.query("SELECT opened,closed FROM account_lifetimes WHERE account_id=$1",[b.accountId]);
+      if ((old?.opened??null)!==b.previous.opened || (old?.closed??null)!==b.previous.closed) throw new ApiError(409,"Account dates changed. Reload before saving.");
+      await db.query("INSERT INTO account_lifetimes(account_id,opened,closed) VALUES($1,$2,$3) ON CONFLICT(account_id) DO UPDATE SET opened=excluded.opened,closed=excluded.closed",[b.accountId,b.opened,b.closed]);
+      return {saved:true};
+    }));
+  });
+  const evidence={depositsMinor:nonnegative.nullish(),withdrawalsMinor:nonnegative.nullish(),transactionCount:z.number().int().min(0).max(10000000).nullish()};
   app.post(base+"/statement-coverage",async c=>{
     const body=z.object({accountId:z.string(),start:date,end:date,closingMinor:z.number().safe().int(),
-      previous:z.object({start:date,closingMinor:z.number().safe().int()}).nullable()}).parse(await c.req.json());
+      ...evidence,previous:z.object({start:date,closingMinor:z.number().safe().int(),...evidence}).nullable()}).parse(await c.req.json());
     return c.json(await db.tx(async()=>{
       const {loaded,me,hid}=await context(c,true);
       const a=accountIn(loaded,body.accountId);
+      await lockHousehold(db,hid);
       if (body.end<body.start || body.end>loaded.input.asOf) throw new ApiError(400,"Use a statement period ending on or before today.");
-      const [old]=await db.query("SELECT start_date,closing_minor FROM statement_periods WHERE account_id=$1 AND end_date=$2",[a.id,body.end]);
-      if (old?.start_date===body.start && old?.closing_minor===body.closingMinor) return {saved:true};
-      if ((old?.start_date ?? null)!==(body.previous?.start ?? null) || (old?.closing_minor ?? null)!==(body.previous?.closingMinor ?? null))
+      const [old]=await db.query("SELECT * FROM statement_periods WHERE account_id=$1 AND end_date=$2",[a.id,body.end]);
+      const sameEvidence=(values:typeof body.previous)=> (old?.deposits_minor??null)===(values?.depositsMinor??null) && (old?.withdrawals_minor??null)===(values?.withdrawalsMinor??null) && (old?.transaction_count??null)===(values?.transactionCount??null);
+      if (old?.start_date===body.start && old?.closing_minor===body.closingMinor && sameEvidence(body)) return {saved:true};
+      if ((old?.start_date ?? null)!==(body.previous?.start ?? null) || (old?.closing_minor ?? null)!==(body.previous?.closingMinor ?? null) || !sameEvidence(body.previous))
         throw new ApiError(409,"Reload the statement before replacing its dates or balance.");
-      await db.query("INSERT INTO statement_periods(account_id,start_date,end_date,closing_minor) VALUES($1,$2,$3,$4) ON CONFLICT(account_id,end_date) DO UPDATE SET start_date=excluded.start_date,closing_minor=excluded.closing_minor",
-        [a.id,body.start,body.end,body.closingMinor]);
+      await db.query("INSERT INTO statement_periods(account_id,start_date,end_date,closing_minor,deposits_minor,withdrawals_minor,transaction_count) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(account_id,end_date) DO UPDATE SET start_date=excluded.start_date,closing_minor=excluded.closing_minor,deposits_minor=excluded.deposits_minor,withdrawals_minor=excluded.withdrawals_minor,transaction_count=excluded.transaction_count",
+        [a.id,body.start,body.end,body.closingMinor,body.depositsMinor??null,body.withdrawalsMinor??null,body.transactionCount??null]);
       await audit(db,hid,me.id,"statement.recorded","Recorded statement period and closing balance","account",a.id);
       return {saved:true};
     }));
@@ -106,9 +125,11 @@ export function mountHouseholdTools(app:Hono, db:Database, actor:(c:Context)=>Pr
     const body=z.object({accountId:z.string(),terms:termsSchema,save:z.boolean().default(false),version:z.number().int().min(0).default(0)}).parse(await c.req.json());
     const {terms}=body;
     const end=addDays(terms.asOf,terms.days-1);
-    if ([...terms.agreements,...(terms.regular?[terms.regular]:[])].some(p=>p.date<terms.asOf || p.date>end))
+    for(const bill of [terms,...(terms.additionalBills??[])]) {
+    if ([...bill.agreements,...(bill.regular?[bill.regular]:[])].some(p=>p.date<terms.asOf || p.date>end))
       throw new ApiError(400,"Every payment must fall inside the forecast dates.");
-    if (terms.agreements.reduce((sum,p)=>sum+p.amountMinor,0)>terms.pastDueMinor) throw new ApiError(400,"Agreed catch-up payments exceed the past-due balance.");
+    if (bill.agreements.reduce((sum,p)=>sum+p.amountMinor,0)>bill.pastDueMinor) throw new ApiError(400,"Agreed payments exceed the past-due balance for "+bill.name);
+    }
     return c.json(await db.tx(async()=>{
       const {me,hid,loaded}=await context(c,body.save);
       const a=accountIn(loaded,body.accountId);
