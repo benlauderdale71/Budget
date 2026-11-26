@@ -1,6 +1,7 @@
 package com.budgetcents.app.ui
 
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -50,7 +51,7 @@ internal fun SignIn(
 ) {
     var mode by rememberSaveable(start, linkToken) { mutableStateOf(when (start) {
         "reset" -> if (linkToken.isNullOrBlank()) "forgot" else "reset"
-        "verify", "invite" -> start
+        "verify" -> start
         else -> "login"
     }) }
     var email by rememberSaveable { mutableStateOf("") }
@@ -99,19 +100,22 @@ internal fun SignIn(
     }
     fun submit(action: String = mode, callback: Uri? = null) {
         if (busy) return
-        if (action != "browser") useServer()
         feedback = ""; failed = false
         busy = true
         scope.launch {
             try {
                 val address = email.trim()
                 when (action) {
-                    "login", "register", "invite", "demo", "browser" -> {
+                    "login" -> {
+                        val website = Intent(Intent.ACTION_VIEW, store.beginWebsiteSignIn()).addCategory(Intent.CATEGORY_BROWSABLE)
+                        activity.startActivity(website)
+                    }
+                    "serverLogin", "register", "invite", "demo", "browser" -> {
                         val result = withContext(Dispatchers.IO) {
                             when (action) {
                                 "demo" -> api.demo()
                                 "browser" -> api.request("POST", "/api/auth/android/exchange", store.websiteProof(requireNotNull(callback)), auth = false)
-                                "login" -> api.login(address, password, code.trim().ifBlank { null })
+                                "serverLogin" -> api.login(address, password, code.trim().ifBlank { null })
                                 else -> {
                                     require(password.length >= 10) { "Use at least 10 characters." }
                                     val body = JSONObject().put("email", address).put("password", password).put("displayName", name.trim())
@@ -127,8 +131,11 @@ internal fun SignIn(
                             val user = result.getJSONObject("user")
                             val token = result.getString("token")
                             val homes = withContext(Dispatchers.IO) { api.households(token) }.getJSONArray("households")
-                            store.saveSession(token, user.getString("id"), user.optString("theme", store.theme), homes.optJSONObject(0)?.getString("id"))
-                            onSignedIn(action == "register" || (action in setOf("login", "browser") && user.optString("onboardingStep", "done") != "done"))
+                            val householdIds = List(homes.length()) { homes.getJSONObject(it).getString("id") }
+                            val preferred = callback?.getQueryParameter("household")
+                            store.saveSession(token, user.getString("id"), user.optString("theme", store.theme),
+                                preferred?.takeIf { it in householdIds } ?: householdIds.firstOrNull())
+                            onSignedIn(action == "register" || (action in setOf("serverLogin", "browser") && user.optString("onboardingStep", "done") != "done"))
                         }
                     }
                     "forgot" -> {
@@ -159,8 +166,11 @@ internal fun SignIn(
                 throw cancelled
             } catch (error: Exception) {
                 failed = true
-                feedback = if (error is IOException) "Could not reach $activeServer. Check your connection and try again."
-                           else error.message ?: "Could not complete the request."
+                feedback = when (error) {
+                    is ActivityNotFoundException -> "Install a browser to sign in to Budget HQ Pro."
+                    is IOException -> "Could not reach $activeServer. Check your connection and try again."
+                    else -> error.message ?: "Could not complete the request."
+                }
             } finally {
                 busy = false
             }
@@ -173,8 +183,8 @@ internal fun SignIn(
             submit("browser", browserReturn)
         }
     }
-    val needsEmail = mode in setOf("login", "register", "invite", "forgot")
-    val needsPassword = mode in setOf("login", "register", "invite", "reset")
+    val needsEmail = mode in setOf("serverLogin", "register", "invite", "forgot")
+    val needsPassword = mode in setOf("serverLogin", "register", "invite", "reset")
     val ready = !busy && (!needsEmail || email.isNotBlank()) && (!needsPassword || password.isNotEmpty()) &&
         (mode !in setOf("reset", "verify") || tokenText.isNotBlank()) && (mode != "reset" || confirm.isNotEmpty()) && (!mfa || code.isNotBlank())
     val onDone = KeyboardActions(onDone = { if (ready) submit() })
@@ -188,7 +198,9 @@ internal fun SignIn(
                 "verify" -> "Enter the verification token from your email."
                 "invite" -> "Create an account to join an existing household. Then open your invitation to accept it."
                 "register" -> "Create your Budget HQ Pro household."
-                else -> "Sign in with the same email and password you use on the website."
+                "serverLogin" -> "Sign in to ${Uri.parse(activeServer).host ?: activeServer}."
+                else -> if (start == "invite" || !store.pendingInvite.isNullOrBlank()) "Sign in to review your invitation. If you need an account, choose Join a household on the website."
+                        else "Continue on ${Uri.parse(activeServer).host ?: activeServer} with the account you use for your budget."
             })
             if (mode == "register" || mode == "invite") {
                 OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), enabled = !busy, singleLine = true, label = { Text("Your name") })
@@ -205,23 +217,15 @@ internal fun SignIn(
                 keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done), keyboardActions = onDone)
             if (feedback.isNotBlank()) Text(feedback, color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
             Button(onClick = { submit() }, modifier = Modifier.fillMaxWidth(), enabled = ready) { Text(if (busy) "Please wait…" else primaryLabel) }
-            if (mode == "login") {
-                TextButton(onClick = {
-                    try {
-                        useServer()
-                        activity.startActivity(Intent(Intent.ACTION_VIEW, store.beginWebsiteSignIn()).addCategory(Intent.CATEGORY_BROWSABLE))
-                    } catch (error: Exception) {
-                        failed = true
-                        feedback = error.message ?: "Could not open the browser."
-                    }
-                }, enabled = !busy) { Text("Use website sign-in") }
+            if (mode == "serverLogin") {
                 TextButton(onClick = { select("forgot") }, enabled = !busy) { Text("Forgot password?") }
                 TextButton(onClick = { select("register") }, enabled = !busy) { Text("Create a household") }
                 TextButton(onClick = { select("invite") }, enabled = !busy) { Text("Join a household") }
                 TextButton(onClick = { select("verify") }, enabled = !busy) { Text("Verify email") }
                 if (flags?.optBoolean("demoLogin") == true) TextButton(onClick = { submit("demo") }, enabled = !busy) { Text("Open the sample household") }
-            } else {
-                if (mode == "forgot") TextButton(onClick = { select("reset") }, enabled = !busy) { Text("I have a reset token") }
+            }
+            if (mode == "forgot") TextButton(onClick = { select("reset") }, enabled = !busy) { Text("I have a reset token") }
+            if (mode != "login") {
                 TextButton(onClick = { select("login") }, enabled = !busy) { Text("Back to sign in") }
             }
             if (flags?.optBoolean("devMail") == true) TextButton(onClick = { submit("mail") }, enabled = !busy && email.isNotBlank()) { Text("Show development mail") }
@@ -229,7 +233,10 @@ internal fun SignIn(
             if (serverOptions) {
                 OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), enabled = !busy, singleLine = true, label = { Text("Server") },
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Uri))
-                TextButton(onClick = { useServer(); serverOptions = false }, enabled = !busy) { Text("Use server") }
+                TextButton(onClick = { useServer(); select("login"); serverOptions = false }, enabled = !busy) { Text("Use server") }
+                if (mode == "login" && activeServer != Store.DEFAULT_SERVER && server == activeServer) {
+                    TextButton(onClick = { select("serverLogin"); serverOptions = false }, enabled = !busy) { Text("Sign in directly to this server") }
+                }
             }
         }
     }

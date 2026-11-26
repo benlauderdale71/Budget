@@ -1,8 +1,11 @@
 package com.budgetcents.app.ui
 
 import android.app.NotificationManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -158,10 +161,12 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
     var activityIds by remember { mutableStateOf<String?>(null) }
     var activityLabel by remember { mutableStateOf("") }
     var themeName by remember { mutableStateOf(store.theme) }
-    var inviteToken by remember {
-        val incoming = if (start == "invite") linkToken else null
-        if (!incoming.isNullOrBlank()) store.pendingInvite = incoming
-        mutableStateOf(if (!incoming.isNullOrBlank()) incoming else store.pendingInvite)
+    var inviteToken by remember { mutableStateOf(store.pendingInvite) }
+    LaunchedEffect(start, linkToken) {
+        if (start == "invite" && !linkToken.isNullOrBlank()) {
+            store.pendingInvite = linkToken
+            inviteToken = linkToken
+        }
     }
     val dark = when (themeName) {
         "dark" -> true
@@ -752,6 +757,13 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
     val context = LocalContext.current
     var biometric by remember { mutableStateOf(store.biometric) }
     var privacy by remember { mutableStateOf(store.privacy) }
+    TextButton(onClick = {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(store.baseUrl)).addCategory(Intent.CATEGORY_BROWSABLE))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "Install a browser to open the website.", Toast.LENGTH_LONG).show()
+        }
+    }) { Text("Open Budget HQ Pro website") }
     Text("Waiting to sync: ${store.pendingForCurrentUser().size}")
     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
         Text("Biometric unlock", Modifier.weight(1f)); Switch(biometric, { biometric = it; store.biometric = it })
