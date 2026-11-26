@@ -22,7 +22,7 @@ export function AndroidSignIn() {
   }, [location.search, session.user?.id]);
 
   if (!validProof.test(challenge) || !validProof.test(state) || !["test", "regular"].includes(app ?? "")) {
-    return <main className="content legal"><h1>Open Budget HQ Pro on your phone</h1><p>Choose <strong>Use website sign-in</strong> in the Android app to start.</p></main>;
+    return <main className="content legal"><h1>Open Budget HQ Pro on your phone</h1><p>Tap <strong>Sign in</strong> in the Android app to continue with your web account.</p></main>;
   }
   if (!session.ready) return <p className="state">Opening your account…</p>;
   if (!session.user) return <Navigate replace to={`/login?next=${encodeURIComponent(location.pathname + location.search)}`} />;
@@ -36,7 +36,9 @@ export function AndroidSignIn() {
         method: "POST", body: JSON.stringify({ state, challenge }),
       }, { queue: false });
       const scheme = app === "test" ? "com.budgetcents.app.test" : "com.budgetcents.app";
-      const uri = `${scheme}://auth/return?${new URLSearchParams({ code: result.code, state })}`;
+      const query = new URLSearchParams({ code: result.code, state });
+      if (session.householdId) query.set("household", session.householdId);
+      const uri = `${scheme}://auth/return?${query}`;
       setCallback(uri);
       window.location.assign(uri);
     } catch (e) {

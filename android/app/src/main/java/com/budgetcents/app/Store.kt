@@ -23,8 +23,12 @@ class Store(private val context: Context) {
         )
     }
 
+    companion object {
+        const val DEFAULT_SERVER = "https://budgethqpro.com"
+    }
+
     var baseUrl: String
-        get() = prefs.getString("base", null)?.takeIf { it.isNotBlank() } ?: "https://budgethqpro.com"
+        get() = prefs.getString("base", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_SERVER
         set(value) { prefs.edit().putString("base", value.trim().trimEnd('/')).apply() }
     var token: String?
         get() = prefs.getString("token", null)
