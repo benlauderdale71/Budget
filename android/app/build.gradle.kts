@@ -4,9 +4,36 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val repositoryDir = rootProject.projectDir.parentFile
+val webDir = repositoryDir.resolve("apps/web")
+val npmCommand = if (System.getProperty("os.name").startsWith("Windows")) "npm.cmd" else "npm"
+val webDependencies = tasks.register<Exec>("installBudgetWebDependencies") {
+    workingDir(repositoryDir)
+    onlyIf { !repositoryDir.resolve("node_modules/vite/package.json").isFile }
+    commandLine(npmCommand, "ci")
+}
+val webBuild = tasks.register<Exec>("buildBudgetWeb") {
+    dependsOn(webDependencies)
+    workingDir(repositoryDir)
+    inputs.files(fileTree(webDir) { exclude("dist/**", "node_modules/**", "test/**") },
+        repositoryDir.resolve("packages/domain/src"), repositoryDir.resolve("packages/domain/catalogs"),
+        repositoryDir.resolve("package-lock.json"))
+    outputs.dir(webDir.resolve("dist"))
+    commandLine(npmCommand, "run", "build", "--workspace", "@budgetcents/web")
+}
+val suiteAssets = layout.buildDirectory.dir("generated/budgetAssets")
+val packSuite = tasks.register<Sync>("packageBudgetSuite") {
+    dependsOn(webBuild)
+    into(suiteAssets)
+    from(webDir.resolve("dist")) { into("suite"); exclude("sw.js") }
+    from(repositoryDir.resolve("packages/domain/catalogs/resale-catalogs.json"))
+}
+tasks.named("preBuild") { dependsOn(packSuite) }
+
 android {
     namespace = "com.budgetcents.app"
     compileSdk = 36
+    sourceSets.getByName("main").assets.srcDir(suiteAssets)
 
     defaultConfig {
         applicationId = "com.budgetcents.app"
@@ -14,8 +41,8 @@ android {
         resValue("string", "shortcut_target_package", "com.budgetcents.app")
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.1.4"
+        versionCode = 7
+        versionName = "1.2.0"
         for (name in listOf("FIREBASE_PROJECT_ID", "FIREBASE_APP_ID", "FIREBASE_API_KEY", "FIREBASE_SENDER_ID")) {
             val value = (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"")
             buildConfigField("String", name, "\"$value\"")

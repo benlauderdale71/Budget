@@ -3034,7 +3034,7 @@ export function createApp(db: Database) {
   mountIncome(app, db, incomeHooks());
   mountBillImport(app, db, { actor, assertSpace, mustAccount, createBill: (me, hid, raw) => createBill(db, me, hid, raw, incomeHooks()) });
   mountHouseholdTools(app, db, actor);
-  mountPhysicalAssets(app, db, actor);
+  mountPhysicalAssets(app, db, actor, limit);
   mountLoans(app, db, {
     actor,
     assertSpace,

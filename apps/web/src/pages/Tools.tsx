@@ -10,45 +10,20 @@ import { scoped, useAccess, useSession } from "../session.js";
 import type { Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
-const moreLinks = [
-  ["/statement-coverage", "Statement coverage", "Find gaps and compare closing balances"],
-  ["/catch-up", "Paycheck catch-up", "Plan installments and see the lowest projected balance"],
-  ["/physical-assets", "Physical assets", "Organize belongings, import records, and track values with sources"],
-  ["/spending", "Spending report", "Detailed categories, merchants, trends, and every purchase"],
-  ["/forecast", "Forecast", "Cash projection and paycheck coverage"],
-  ["/receipts", "Receipts", "Read a receipt, then confirm it"],
-  ["/paychecks", "Paychecks", "Expected income that is not cash yet"],
-  ["/calendar", "Calendar", "Paychecks, bills, and due dates"],
-  ["/bills", "Bills", "Recurring bills and subscriptions"],
-  ["/debts", "Debts", "Saved extra-payment and refinance plans"],
-  ["/goals", "Goals", "Envelopes with a target"],
-  ["/alerts", "Alerts", "Bills, balances, and goals you choose to watch"],
-  ["/reports", "Reports", "Spending, savings rate, exports"],
-  ["/investments", "Investments", "Holdings and manual prices"],
-  ["/stocks-crypto/", "Stocks & Crypto", "Market Pulse research, analysis, watchlists, and paper trading"],
-  ["/retirement", "Retirement", "A seeded model, not a promise"],
-  ["/assistant", "Assistant", "Answers from ledger facts"],
-  ["/household", "Sharing", "People, roles, and spaces"],
-  ["/rules", "Rules", "Payee rules that do not override a lock"],
-  ["/import", "Import", "Preview a file, then confirm"],
-  ["/providers", "Connections", "What is live and what is not"],
-  ["/cases", "Requests", "Cancellation notes, with no biller contacted"],
-  ["/credit", "Credit", "A score you type, not a bureau report"],
-  ["/learn", "Learn", "Short original lessons"],
-  ["/help", "Help", "Search guidance written for Budget HQ PRO"],
-  ["/checklists", "Checklists", "Tax and estate lists, not legal documents"],
-  ["/setup", "Setup", "Resume or review household setup"],
-  ["/settings", "Settings", "Security, export, and deletion"],
-];
+import { suiteGroups } from "../suite-navigation.js";
+import { isDeviceSuite, openDeviceTools } from "../device-suite.js";
 
 export function More() {
-  return (
-    <Page title="More" lede="The same household is behind every tool.">
-      <div className="more-grid">
-        {moreLinks.map(([to, title, body]) => <Link key={to} to={to} reloadDocument={to === "/stocks-crypto/"} className="card"><h2>{title}</h2><p className="muted">{body}</p></Link>)}
-      </div>
-    </Page>
-  );
+  const [query,setQuery]=useState("");
+  const terms=query.trim().toLowerCase().split(/\s+/);
+  const groups=suiteGroups.map(g=>({...g,tools:g.tools.filter(t=>terms.every(q=>[g.name,...t].join(" ").toLowerCase().includes(q)))})).filter(g=>g.tools.length);
+  return <Page title="All tools">
+    <Field label="Find a tool"><input className="tool-search" type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search tools, reports or settings"/></Field>
+    {groups.map(g=><section className="tool-group" key={g.name}><h2>{g.name}</h2><div className="tool-list">
+      {g.tools.map(([to,title,description])=><Link key={to} to={to} reloadDocument={to==="/stocks-crypto/"}><span><strong>{title}</strong><small>{description}</small></span><span aria-hidden="true">›</span></Link>)}</div></section>)}
+    {isDeviceSuite() && terms.every(q=>"android device tools widgets biometric offline".includes(q)) && <section className="tool-group"><h2>On this phone</h2><button type="button" className="btn-secondary" onClick={openDeviceTools}>Device tools &amp; offline dashboard</button></section>}
+    {!groups.length && <p role="status">No matching tools. Try a different search.</p>}
+  </Page>;
 }
 
 export function Assistant() {

@@ -6,6 +6,7 @@ import { isIsoDate, minorFactor, toCsv } from "@budgetcents/domain";
 import { id, nowIso, sha256 } from "./crypto.js";
 import type { Database } from "./db.js";
 import { ApiError, assertWrite, audit, lockHousehold, requireMember, type Actor } from "./finance.js";
+import { readAssetCatalog } from "./asset-catalog.js";
 import { ASSET_CATEGORIES, readAssetFile } from "./asset-import.js";
 
 const text = (max: number) => z.string().trim().max(max).default("");
@@ -34,7 +35,7 @@ type Row = { id: string; household_id: string; owner_user_id: string; payload_js
 type Document = { id:string; household_id:string; owner_user_id:string; filename:string; data_base64:string; fingerprint:string; created_at:string };
 type Draft = {id:string; household_id:string; user_id:string; document_id:string; preview_json:string; result_json:string|null; confirm_hash:string|null; expires_at:string};
 
-export function mountPhysicalAssets(app: Hono, db: Database, actor: (c: Context) => Promise<Actor>) {
+export function mountPhysicalAssets(app: Hono, db: Database, actor: (c: Context) => Promise<Actor>, limit: (key: string, maximum: number) => void) {
   const base = "/api/households/:hid/physical-assets";
   app.use(`${base}/*`, bodyLimit({maxSize:9_000_000,onError:c=>c.json({error:"Choose a file no larger than 8 MB."},413)}));
   app.use(base, bodyLimit({maxSize:100_000,onError:c=>c.json({error:"This asset record is too large."},413)}));
@@ -44,6 +45,12 @@ export function mountPhysicalAssets(app: Hono, db: Database, actor: (c: Context)
     if (write) assertWrite(membership);
     return {me,hid,membership};
   }
+  app.get(`${base}/catalog`, async c => {
+    const {me} = await member(c);
+    limit("asset-catalog:" + me.id, 60);
+    c.header("Cache-Control", "no-store");
+    return c.json(await readAssetCatalog(c.req.query("source") ?? "", (c.req.query("q") ?? "").trim()));
+  });
   function visible(row: Row, userId: string) { return row.owner_user_id===userId || JSON.parse(row.payload_json).visibility==="shared"; }
   async function visibleImportKeys(hid: string, userId: string, fingerprint: string) {
     const records = await db.query<{source_key: string}>(`SELECT source_key FROM physical_assets

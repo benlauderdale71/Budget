@@ -25,9 +25,11 @@ Without `DATABASE_URL`, BudgetCents uses an embedded Postgres-compatible databas
 
 Receipt reading runs on the API with Tesseract and Poppler. Install `tesseract-ocr`, `tesseract-ocr-eng`, and `poppler-utils` on that host. The browser and Android upload the file and review the draft. See [docs/RECEIPTS.md](docs/RECEIPTS.md).
 
+Inventory price research uses active resale listings, U.S. fleet auction sales, and the FHFA quarterly state house price index. Each estimate keeps its date and source. Refresh the bundled public auction and property reference data with `python3 scripts/refresh-asset-reference.py`.
+
 ## Android
 
-The Android client is a native app in `android/`, application id `com.budgetcents.app`, target SDK 36. It talks to the same API. On an emulator, set the server to `http://10.0.2.2:8787`.
+The Android client is a native app in `android/`, application id `com.budgetcents.app`, target SDK 36. It packages the website’s responsive screens and uses the same account and household API. Assets opens the inventory and Markets opens Stocks & Crypto. All tools includes the Android offline dashboard and device settings. Building the APK also builds the web workspace and requires Node 22 or later. On an emulator, set the server to `http://10.0.2.2:8787`.
 
 ```bash
 cd android

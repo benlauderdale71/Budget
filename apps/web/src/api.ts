@@ -1,3 +1,4 @@
+import { deviceDownload, endDeviceSession, sessionToken } from "./device-suite.js";
 import { partitionQueue, withStableOpId, type QueuedOp } from "./queue.js";
 
 export class ApiError extends Error {
@@ -34,6 +35,7 @@ export function setQueueOwner(userId: string | null) {
 }
 
 export function clearLocalSession() {
+  endDeviceSession();
   localStorage.removeItem("budgetcents.token");
   localStorage.removeItem("budgetcents.household");
   localStorage.removeItem("budgetcents.profile");
@@ -65,7 +67,7 @@ export function queuedCount(): number {
 }
 
 export async function flushQueue(): Promise<{ sent: number; rejected: string }> {
-  const token = localStorage.getItem("budgetcents.token");
+  const token = sessionToken();
   const ownerId = currentOwner();
   const queue = readQueue();
   if (!token || !ownerId) return { sent: 0, rejected: "" };
@@ -88,7 +90,7 @@ export async function flushQueue(): Promise<{ sent: number; rejected: string }> 
 }
 
 export async function api<T>(path: string, init: RequestInit = {}, options: { queue?: boolean } = {}): Promise<T> {
-  const token = localStorage.getItem("budgetcents.token");
+  const token = sessionToken();
   const method = (init.method ?? "GET").toUpperCase();
   const stamped = typeof init.body === "string" ? withStableOpId(path, method, init.body, () => crypto.randomUUID()) : { body: undefined as string | undefined };
   const body = typeof init.body === "string" ? stamped.body : init.body;
@@ -136,7 +138,8 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
 }
 
 export async function downloadFile(path: string, filename: string) {
-  const token = localStorage.getItem("budgetcents.token");
+  if(deviceDownload(path, filename)) return;
+  const token = sessionToken();
   const response = await fetch(path, { headers: token ? { authorization: `Bearer ${token}` } : {} });
   if (!response.ok) throw new ApiError(response.status, "The file could not be downloaded.");
   const blob = await response.blob();

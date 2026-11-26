@@ -1,3 +1,4 @@
+import { deviceHousehold, deviceOwner, sessionToken } from "./device-suite.js";
 import { allows } from "@budgetcents/domain/access";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
@@ -90,6 +91,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return;
     }
     setHouseholdId(next);
+    deviceHousehold(next);
     const storedSpace = localStorage.getItem(`budgetcents.space.${next}`) ?? undefined;
     localStorage.setItem("budgetcents.household", next);
     setSpaceId(storedSpace);
@@ -101,7 +103,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   function restoreProfile() {
     const cached = readProfile();
-    if (!cached) return false;
+    if (!cached || (deviceOwner() && cached.user.id!==deviceOwner())) return false;
     setUser(cached.user);
     setHouseholds(cached.households);
     setHouseholdId(cached.householdId);
@@ -136,7 +138,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     window.addEventListener("offline", onOff);
     window.addEventListener("online", onOn);
     window.addEventListener("budgetcents-queue", onQueue);
-    const token = localStorage.getItem("budgetcents.token");
+    const token = sessionToken();
     if (!token) setReady(true);
     else {
       refresh().catch((error: unknown) => {
@@ -219,6 +221,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setIncoming("");
       localStorage.setItem("budgetcents.household", id);
       setHouseholdId(id);
+      deviceHousehold(id);
       setSpaceId(localStorage.getItem(`budgetcents.space.${id}`) ?? undefined);
       setTick((item) => item + 1);
     },
