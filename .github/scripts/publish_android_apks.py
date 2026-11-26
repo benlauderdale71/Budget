@@ -58,15 +58,17 @@ def describe(apk, tools):
     badging = subprocess.check_output([tools / "aapt", "dump", "badging", apk], text=True)
     manifest = dict(arg.split("=", 1) for arg in shlex.split(badging.splitlines()[0])[1:])
     package, code, version = (manifest[key] for key in ("name", "versionCode", "versionName"))
-    if package not in {"com.budgetcents.app", "com.budgetcents.app.test"}:
+    if package not in {"com.budgetcents.app", "com.budgetcents.app.test", "com.budgetcents.app.preview"}:
         raise ValueError(f"{apk} has an unexpected application ID: {package}")
-    side_by_side = package.endswith(".test")
+    side_by_side = package.endswith((".test", ".preview"))
     test = (side_by_side or "application-debuggable" in badging.splitlines()
             or apk.name.lower().endswith(("-test.apk", "-devrelease.apk", "-debug.apk")))
     tag = f"android-{'test-' if test else ''}build-{int(code)}"
     title = f"Budget HQ Pro {version} for Android (build {code})" + (" – Test" if test else "")
     notes = "Download the Android APK under **Assets**."
-    if side_by_side:
+    if package.endswith(".preview"):
+        notes += " Install **Budget HQ PRO Preview** alongside the previous Test build. Sign in with your existing Budget HQ Pro account."
+    elif side_by_side:
         notes += " This test build installs alongside Budget HQ Pro as **Budget HQ PRO Test**."
     with apk.open("rb") as stream:
         digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()

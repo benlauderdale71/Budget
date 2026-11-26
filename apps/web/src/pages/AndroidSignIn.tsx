@@ -11,6 +11,9 @@ export function AndroidSignIn() {
   const challenge = params.get("challenge") ?? "";
   const state = params.get("state") ?? "";
   const app = params.get("app");
+  const scheme = app === "regular" ? "com.budgetcents.app" :
+    app === "test" ? "com.budgetcents.app.test" :
+    app === "preview" ? "com.budgetcents.app.preview" : null;
   const validProof = /^[A-Za-z0-9_-]{43}$/;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -21,7 +24,7 @@ export function AndroidSignIn() {
     setError("");
   }, [location.search, session.user?.id]);
 
-  if (!validProof.test(challenge) || !validProof.test(state) || !["test", "regular"].includes(app ?? "")) {
+  if (!validProof.test(challenge) || !validProof.test(state) || !scheme) {
     return <main className="content legal"><h1>Open Budget HQ Pro on your phone</h1><p>Tap <strong>Sign in</strong> in the Android app to continue with your web account.</p></main>;
   }
   if (!session.ready) return <p className="state">Opening your account…</p>;
@@ -35,7 +38,6 @@ export function AndroidSignIn() {
       const result = await api<{code: string}>("/api/auth/android/authorize", {
         method: "POST", body: JSON.stringify({ state, challenge }),
       }, { queue: false });
-      const scheme = app === "test" ? "com.budgetcents.app.test" : "com.budgetcents.app";
       const query = new URLSearchParams({ code: result.code, state });
       if (session.householdId) query.set("household", session.householdId);
       const uri = `${scheme}://auth/return?${query}`;
