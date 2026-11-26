@@ -11,7 +11,8 @@
     "./lots": "./src/lots.ts",
     "./bill-import": "./src/bill-import.ts",
     "./importers": "./src/importers.ts",
-    "./dates": "./src/dates.ts"
+    "./dates": "./src/dates.ts",
+    "./asset-identity": "./src/asset-identity.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -19,7 +19,7 @@ export function searchDescription(asset: {name:string;brand:string;model:string}
   return [...new Map((asset.model ? [asset.brand,asset.model,...(asset.name.match(/\b(?:19|20)\d{2}\b/g) ?? []),...(asset.brand ? [] : [asset.name])] : [asset.brand,asset.name])
     .join(" ").trim().split(/\s+/).filter(Boolean).map(word=>[word.toLowerCase(),word])).values()].join(" ").slice(0,120);
 }
-function relevant(query:string, title:string, vendor:string) {
+export function comparableListing(query:string, title:string, vendor:string) {
   const terms=words(query).filter(s=>!unimportant.has(s)), item=words(title), available=new Set([...item,...words(vendor)]);
   if (!terms.length || !terms.every(t=>available.has(t))) return false;
   if (item.some(t=>extras.has(t) && !terms.includes(t))) return false;
@@ -35,7 +35,8 @@ function catalogMatches(source:Source, raw:unknown, term:string, currency:string
     if (!Array.isArray(raw)) throw new Error("Catalog unavailable");
     return (raw as WooItem[]).flatMap(p=>{
       const url=sourceLink(p.permalink,source.host), n=Number(p.prices?.price);
-      if (!url || !p.is_in_stock || p.prices?.currency_code!==currency || p.prices.currency_minor_unit!==exponent(currency) || p.prices.price_range || !Number.isSafeInteger(n) || n<=0 || n>999999999999 || !relevant(term,p.name,"")) return [];
+      if (condition !== "unknown" && !words(p.name).includes(condition)) return [];
+    if (!url || !p.is_in_stock || p.prices?.currency_code!==currency || p.prices.currency_minor_unit!==exponent(currency) || p.prices.price_range || !Number.isSafeInteger(n) || n<=0 || n>999999999999 || !comparableListing(term,p.name,"")) return [];
       return [{name:p.name.replace(/&amp;/g,"&"),source:source.name,url,price:n,low:n,high:n}];
     });
   }
@@ -43,10 +44,10 @@ function catalogMatches(source:Source, raw:unknown, term:string, currency:string
   if (!Array.isArray(items)) throw new Error("Catalog unavailable");
   return items.flatMap(p=>{
     const url=sourceLink(p.onlineStoreUrl,source.host);
-    if (!url || !p.availableForSale || !relevant(term,p.title,p.vendor)) return [];
+    if (!url || !p.availableForSale || !comparableListing(term,p.title,p.vendor)) return [];
     const variants=(p.variants?.nodes ?? []).filter(v=>v.availableForSale && v.price?.currencyCode===currency);
     const conditionMatches=variants.filter(v=>condition!=="unknown" && words(v.title).includes(condition));
-    const prices=(conditionMatches.length?conditionMatches:variants).map(v=>{try { return parseAmount(v.price.amount,currency); } catch { return 0; }})
+    const prices=(condition==="unknown"?variants:conditionMatches).map(v=>{try { return parseAmount(v.price.amount,currency); } catch { return 0; }})
       .filter(n=>n>0 && n<=999999999999).sort((a,b)=>a-b);
     return prices.length?[{name:p.title,source:source.name,url,price:median(prices),low:prices[0],high:prices[prices.length-1]}]:[];
   });
@@ -59,7 +60,7 @@ export async function researchAsset(term:string, category:string, condition:stri
   const matches=[...new Map(reached.flatMap(r=>r.value).map(m=>[m.url,m])).values()].sort((a,b)=>a.price-b.price);
   const low=matches.length?Math.min(...matches.map(m=>m.low)):0, high=matches.length?Math.max(...matches.map(m=>m.high)):0;
   let estimate:AssetEstimate|null=null;
-  if (matches.length) {
+  if (matches.length >= 2 && high <= low * 2) {
     const amountMinor=median(matches.map(m=>m.price));
     const primary=matches.reduce((a,b)=>Math.abs(a.price-amountMinor)<=Math.abs(b.price-amountMinor)?a:b);
     estimate={amountMinor,asOf:todayISO(),sourceType:"asking_price",sourceName:matches.length===1?primary.source:`Median of ${matches.length} resale listings`,sourceUrl:primary.url,

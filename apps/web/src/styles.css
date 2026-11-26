@@ -378,6 +378,12 @@ td.num, th.num { text-align: right; }
 .asset-card .row { justify-content: space-between; flex-wrap: wrap; }
 .asset-title { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
 .asset-value { font-size: 1.5rem; font-weight: 700; }
+.asset-attributes { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); }
+.asset-attributes dt { color: var(--muted); }
+.asset-attributes dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+.asset-photo-region { position: relative; width: fit-content; max-width: 100%; margin: 12px auto; }
+.asset-photo-region .asset-photo { width: auto; max-width: 100%; max-height: 280px; margin: 0; }
+.asset-photo-region span { position: absolute; border: 3px solid #00bd9d; box-shadow: 0 0 0 1px #132e2c; pointer-events: none; }
 .asset-photo { display: block; width: 100%; max-height: 320px; object-fit: contain; border-radius: 12px; background: var(--surface); margin-block: 12px; }
 .asset-tags, .asset-searches { display: flex; gap: 8px; flex-wrap: wrap; }
 .asset-searches { margin: 12px 0; }

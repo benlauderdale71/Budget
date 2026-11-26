@@ -1,9 +1,17 @@
 import { isIsoDate, parseCsv, multiplyDecimalByMinor, minorFactor } from "@budgetcents/domain";
 import { readBillDocument } from "./bill-document-reader.js";
+import { inventoryCategories, profileForCategory, assetProfileKeys, type AssetIdentity, type PhotoRegion } from "@budgetcents/domain/asset-identity";
 
-export const ASSET_CATEGORIES = ["Vehicles", "Real estate", "Electronics", "Furniture", "Appliances", "Tools & equipment", "Jewelry & watches", "Collectibles & art", "Sports & outdoors", "Other"];
+export const ASSET_CATEGORIES = inventoryCategories;
 export function assetCategory(name: string): string {
   for (const [pattern, category] of [
+    [/\b(atv|utv|quad|four wheeler|4 wheeler|side by side)\b/i, "ATVs & powersports"],
+    [/\b(boat|watercraft|pontoon)\b/i, "Boats"],
+    [/\b(motorcycle|motorbike)\b/i, "Motorcycles"],
+    [/\b(banknote|paper money)\b/i, "Banknotes"],
+    [/\b(coin|mintmark)\b/i, "Coins"],
+    [/\b(sports card|trading card)\b/i, "Sports cards"],
+    [/\b(camera|lens)\b/i, "Cameras & lenses"],
     [/\b(car|truck|suv|ford|chevrolet|toyota|honda|motorcycle|trailer|boat|vehicle|expedition)\b/i, "Vehicles"],
     [/\b(house|property|land|condo|real estate)\b/i, "Real estate"],
     [/\b(laptop|computer|phone|ipad|tablet|camera|television|tv|console|monitor|macbook)\b/i, "Electronics"],
@@ -16,7 +24,9 @@ export function assetCategory(name: string): string {
   ] as const) if (pattern.test(name)) return category;
   return "Other";
 }
-export interface AssetCandidate {
+export interface AssetCandidate extends AssetIdentity {
+  region?: PhotoRegion;
+  identification?: { strength: string; observation: string; questions: string[] };
   key: string; name: string; category: string; location: string; brand: string; model: string;
   serialNumber: string; condition: string; quantity: number; notes: string; purchaseDate: string;
   purchaseMinor: number | null; estimateMinor: number | null; sourceName: string; sourceUrl: string;
@@ -25,6 +35,7 @@ export interface AssetCandidate {
 const aliases: Record<string, string> = {
   name: "name", asset: "name", assetname: "name", item: "name", itemname: "name", description: "name", product: "name",
   category: "category", type: "category", location: "location", room: "location", storedat: "location",
+  profile: "profile", attributes: "attributes",
   brand: "brand", manufacturer: "brand", make: "brand", model: "model", modelnumber: "model",
   serial: "serialNumber", serialnumber: "serialNumber", vin: "serialNumber", condition: "condition",
   quantity: "quantity", qty: "quantity", count: "quantity", notes: "notes", tags: "tags",
@@ -59,12 +70,23 @@ export function assetRows(rows: string[][], currency: string, prefix = "0"): Ass
     for (const key of ["purchaseDate", "asOf"]) if (data[key] && !isIsoDate(data[key])) { issues.push(`Check ${key}: ${data[key]}. Use YYYY-MM-DD.`); data[key] = ""; }
     const condition = ["new", "excellent", "good", "fair", "poor", "unknown"].includes(data.condition?.toLowerCase()) ? data.condition.toLowerCase() : "unknown";
     if (data.condition && condition === "unknown") issues.push(`Check condition: ${data.condition}`);
-    return [{ key: `${prefix}:${index}`, name: (data.name || "").slice(0,160), category: (data.category || assetCategory([data.name, data.brand, data.model].join(" "))).slice(0,80),
+    const category = (data.category || assetCategory([data.name, data.brand, data.model].join(" "))).slice(0,80);
+    const profile = assetProfileKeys.find(value => value === data.profile) ?? profileForCategory(category);
+    let attributes: AssetIdentity["attributes"] = [];
+    if (data.attributes) {
+      try {
+        const raw: unknown = JSON.parse(data.attributes);
+        if (!Array.isArray(raw) || raw.length > 32 || raw.some(item => typeof item?.label !== "string" || !item.label.trim() || item.label.length > 60 || typeof item.value !== "string" || !item.value.trim() || item.value.length > 200) ||
+          new Set(raw.map(item => item.label.trim().toLowerCase())).size !== raw.length) throw new Error();
+        attributes = raw.map(({label,value}) => ({label:label.trim(),value:value.trim()}));
+      } catch { issues.push("Check the custom details in this row."); }
+    }
+    return [{ key: `${prefix}:${index}`, name: (data.name || "").slice(0,160), category, profile, attributes,
       location: (data.location || "").slice(0,120), brand: (data.brand || "").slice(0,100), model: (data.model || "").slice(0,100),
       serialNumber: (data.serialNumber || "").slice(0,160), condition, quantity: Number.isInteger(quantity) && quantity > 0 && quantity <= 10000 ? quantity : 1,
       purchaseDate: data.purchaseDate || "", purchaseMinor: amount(data.purchase, "purchase price"), estimateMinor: amount(data.estimate, "estimated unit value"),
       sourceName: (data.sourceName || "Imported value — review source").slice(0,200), sourceUrl: (data.sourceUrl || "").slice(0,2000), asOf: data.asOf || "",
-      sourceType: ["manual", "sold_comparable", "asking_price", "appraisal", "replacement_cost"].includes(data.sourceType) ? data.sourceType : "manual",
+      sourceType: ["manual", "sold_comparable", "asking_price", "appraisal", "replacement_cost", "price_guide"].includes(data.sourceType) ? data.sourceType : "manual",
       notes: (data.notes || "").slice(0,4000), tags: (data.tags || "").split(/[,;|]/).map(s => s.trim()).filter(Boolean).slice(0,20), issues,
       sourceCells: headers.map((column, i) => ({ column, value: cells[i] || "" })),
     }];
@@ -82,7 +104,7 @@ export async function readAssetFile(bytes: Buffer, filename: string, currency: s
       const parsed = JSON.parse(text), records = Array.isArray(parsed) ? parsed : parsed.assets;
       if (!Array.isArray(records) || records.some(r => !r || typeof r !== "object" || Array.isArray(r))) throw new Error("Use a JSON array of asset objects or an object containing an assets array.");
       const headers = [...new Set(records.flatMap(r => Object.keys(r)))];
-      grids = [{ name: "JSON", rows: [headers, ...records.map(record => headers.map(key => clean(Array.isArray(record[key]) ? record[key].join(", ") : record[key])))] }];
+      grids = [{ name: "JSON", rows: [headers, ...records.map(record => headers.map(key => key === "attributes" && Array.isArray(record[key]) ? JSON.stringify(record[key]) : clean(Array.isArray(record[key]) ? record[key].join(", ") : record[key])))] }];
     } else if (ext === "tsv" || text.split(/\r?\n/)[0].includes("\t")) grids = [{name:"Text",rows:text.split(/\r?\n/).map(line=>line.split("\t"))}];
     else if (text.split(/\r?\n/)[0].includes(",")) grids = [{name:"Text",rows:parseCsv(text)}];
     else grids = [{name:"Text",rows:[["Name"],...text.split(/\r?\n/).filter(s=>s.trim()).map(s=>[s.replace(/^[-*•]\s*/, "")])]}];
