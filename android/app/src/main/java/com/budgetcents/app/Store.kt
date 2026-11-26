@@ -2,10 +2,14 @@ package com.budgetcents.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
+import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.security.SecureRandom
 
 class Store(private val context: Context) {
     private val prefs: SharedPreferences = run {
@@ -113,6 +117,41 @@ class Store(private val context: Context) {
 
     fun clearCache() {
         prefs.edit().remove("cacheUser").remove("cacheHousehold").remove("cacheJson").remove("cacheAt").remove("widgetFacts").remove("summary").apply()
+    }
+
+    fun beginWebsiteSignIn(): Uri {
+        val server = Uri.parse(baseUrl)
+        require(server.scheme == "https" || (server.scheme == "http" && server.host in setOf("localhost", "127.0.0.1", "10.0.2.2"))) {
+            "Website sign-in requires HTTPS or a local test server."
+        }
+        val flags = Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+        val random = SecureRandom()
+        fun nonce() = Base64.encodeToString(ByteArray(32).also(random::nextBytes), flags)
+        val state = nonce()
+        val verifier = nonce()
+        val challenge = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)), flags)
+        prefs.edit().putString("browserState", state).putString("browserVerifier", verifier)
+            .putString("browserOrigin", baseUrl).putLong("browserStartedAt", System.currentTimeMillis()).apply()
+        return server.buildUpon().appendPath("android").appendPath("sign-in")
+            .appendQueryParameter("state", state).appendQueryParameter("challenge", challenge)
+            .appendQueryParameter("app", if (context.packageName.endsWith(".test")) "test" else "regular").build()
+    }
+
+    fun websiteProof(callback: Uri): JSONObject {
+        val state = callback.getQueryParameter("state")
+        val code = callback.getQueryParameter("code")
+        require(!state.isNullOrBlank() && !code.isNullOrBlank() && state == prefs.getString("browserState", null)
+            && baseUrl == prefs.getString("browserOrigin", null)
+            && System.currentTimeMillis() - prefs.getLong("browserStartedAt", 0) in 0L..900_000L) {
+            "Start website sign-in again from this phone."
+        }
+        return JSONObject().put("state", state).put("code", code).put("verifier", prefs.getString("browserVerifier", null))
+    }
+
+    fun saveSession(token: String, userId: String, theme: String, householdId: String?) {
+        prefs.edit().putString("token", token).putString("userId", userId)
+            .putString("theme", theme).putString("household", householdId)
+            .remove("browserVerifier").remove("browserState").remove("browserOrigin").remove("browserStartedAt").apply()
     }
 
     fun clearSession() {

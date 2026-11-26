@@ -16,7 +16,7 @@ class BudgetApi(private val store: Store) {
         return request("POST", "/api/auth/login", body, auth = false)
     }
     fun demo() = request("POST", "/api/auth/demo", JSONObject(), auth = false)
-    fun households() = request("GET", "/api/households")
+    fun households(sessionToken: String? = null) = request("GET", "/api/households", sessionToken = sessionToken)
     fun dashboard(householdId: String) = request("GET", "/api/households/$householdId/dashboard")
     fun transactions(householdId: String) = request("GET", "/api/households/$householdId/transactions?limit=100")
     fun createTransaction(householdId: String, body: JSONObject) = request("POST", "/api/households/$householdId/transactions", body)
@@ -56,13 +56,13 @@ class BudgetApi(private val store: Store) {
     private val base get() = store.baseUrl
     fun assign(householdId: String, body: JSONObject) = request("POST", "/api/households/$householdId/assignments", body)
 
-    fun request(method: String, path: String, body: JSONObject? = null, auth: Boolean = true): JSONObject {
+    fun request(method: String, path: String, body: JSONObject? = null, auth: Boolean = true, sessionToken: String? = null): JSONObject {
         val connection = (URL(store.baseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 12000
             readTimeout = if (path.endsWith("/import/statement-pdf")) 240_000 else 20_000
             setRequestProperty("accept", "application/json")
-            if (auth) setRequestProperty("authorization", "Bearer ${store.token}")
+            if (auth) setRequestProperty("authorization", "Bearer ${sessionToken ?: store.token}")
             if (body != null) {
                 doOutput = true
                 setRequestProperty("content-type", "application/json")

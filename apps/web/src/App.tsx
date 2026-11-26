@@ -3,6 +3,7 @@ import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom"
 import { useAccess, useSession } from "./session.js";
 import { DevMail, ResetPassword, VerifyEmail } from "./pages/AccountAccess.js";
 import { Auth } from "./pages/Auth.js";
+import { AndroidSignIn } from "./pages/AndroidSignIn.js";
 import { Invite } from "./pages/Invite.js";
 import { Setup } from "./pages/Setup.js";
 import { Alerts } from "./pages/Alerts.js";
@@ -140,6 +141,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<Auth />} />
+      <Route path="/android/sign-in" element={<AndroidSignIn />} />
       <Route path="/verify" element={<VerifyEmail />} />
       <Route path="/reset" element={<ResetPassword />} />
       <Route path="/dev/mail" element={<DevMail />} />

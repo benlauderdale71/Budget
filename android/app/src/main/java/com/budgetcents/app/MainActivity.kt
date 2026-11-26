@@ -20,6 +20,8 @@ import com.budgetcents.app.ui.BudgetApp
 class MainActivity : FragmentActivity() {
     val navigation = mutableStateOf("home")
     val recordId = mutableStateOf<String?>(null)
+    private val accountLinkToken = mutableStateOf<String?>(null)
+    val browserReturn = mutableStateOf<Uri?>(null)
     var receiptBytes: ByteArray? = null
     var onReceipt: ((ByteArray) -> Unit)? = null
     var onFile: ((ByteArray) -> Unit)? = null
@@ -51,7 +53,9 @@ class MainActivity : FragmentActivity() {
         ensureChannel()
         navigation.value = savedInstanceState?.getString("navigation") ?: startHost(intent)
         recordId.value = savedInstanceState?.getString("recordId") ?: recordId(intent)
-        setContent { BudgetApp(this, navigation.value, linkToken(intent), recordId.value) }
+        accountLinkToken.value = linkToken(intent)
+        browserReturn.value = browserCallback(intent)
+        setContent { BudgetApp(this, navigation.value, accountLinkToken.value, recordId.value) }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -65,6 +69,12 @@ class MainActivity : FragmentActivity() {
         setIntent(intent)
         navigation.value = startHost(intent)
         recordId.value = recordId(intent)
+        accountLinkToken.value = linkToken(intent)
+        browserReturn.value = browserCallback(intent)
+    }
+
+    private fun browserCallback(intent: Intent?) = intent?.data?.takeIf {
+        it.scheme == packageName && it.host == "auth" && it.path == "/return"
     }
 
     private fun startHost(intent: Intent?): String {

@@ -26,6 +26,7 @@ import { recoveryData, prepareRecovery, recoveryTables, scopeLinks } from "./rec
 import { planRestore } from "./restore.js";
 import { acceptInvitation, changeMemberRole, createInvitation, leaveHousehold, listAccess, previewInvitation, reissueInvitation, removeMember, revokeInvitation, setMemberLimit, transferOwnership, visibleAudit } from "./sharing.js";
 import { hashPassword, id, localDate, newMfaSecret, nowIso, randomToken, sha256, verifyPassword, verifyTotp } from "./crypto.js";
+import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { num, str } from "./db.js";
 import {
@@ -290,6 +291,47 @@ export function createApp(db: Database) {
     }
     await audit(db, null, String(user.id), "login", "Signed in");
     return c.json({ token: await startSession(String(user.id), c.req.header("user-agent") ?? "web"), user: await publicUser(String(user.id)) });
+  });
+
+  const mobileProof = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+  app.post("/api/auth/android/authorize", async (c) => {
+    const { state, challenge } = z.object({ state: mobileProof, challenge: mobileProof }).parse(await c.req.json());
+    const now = nowIso();
+    const browser = await db.query(
+      `SELECT s.id FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2 AND u.deleted_at IS NULL`,
+      [bearerHash(c), now],
+    );
+    if (!browser.length) throw new ApiError(401, "Sign in on the website to connect the Android app.");
+    limit(`android-authorize:${browser[0].id}`, 15);
+    const code = randomToken();
+    await db.tx(async () => {
+      await db.query("DELETE FROM android_login_codes WHERE expires_at <= $1", [now]);
+      await db.query(
+        `INSERT INTO android_login_codes (code_hash, browser_session_id, challenge, state, expires_at)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [sha256(code), browser[0].id, challenge, state, new Date(Date.now() + 120_000).toISOString()],
+      );
+    });
+    return c.json({ code });
+  });
+
+  app.post("/api/auth/android/exchange", async (c) => {
+    const { code, verifier, state } = z.object({ code: mobileProof, verifier: mobileProof, state: mobileProof }).parse(await c.req.json());
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const result = await db.tx(async () => {
+      const claimed = await db.query(
+        `DELETE FROM android_login_codes c USING sessions s, users u
+         WHERE c.code_hash = $1 AND c.challenge = $2 AND c.state = $3 AND c.expires_at > $4
+           AND s.id = c.browser_session_id AND u.id = s.user_id AND s.expires_at > $4 AND s.revoked_at IS NULL AND u.deleted_at IS NULL
+         RETURNING s.user_id`,
+        [sha256(code), challenge, state, nowIso()],
+      );
+      if (!claimed.length) throw new ApiError(401, "This phone sign-in link expired or was already used. Open website sign-in again.");
+      const userId = String(claimed[0].user_id);
+      return { token: await startSession(userId, "Budget HQ Pro for Android"), user: await publicUser(userId) };
+    });
+    return c.json(result);
   });
 
   app.post("/api/auth/demo", async (c) => {

@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   revoked_at text
 );
 
+CREATE TABLE IF NOT EXISTS android_login_codes (
+  code_hash text PRIMARY KEY,
+  browser_session_id text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  challenge text NOT NULL,
+  state text NOT NULL,
+  expires_at text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS android_login_expiry ON android_login_codes(expires_at);
+
 CREATE TABLE IF NOT EXISTS households (
   id text PRIMARY KEY,
   name text NOT NULL,
