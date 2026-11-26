@@ -153,14 +153,18 @@ internal fun SuiteWorkspace(activity:MainActivity, store:Store, initialPath:Stri
         }
     }
     val supported=remember {
-        val version=WebView.getCurrentWebViewPackage()?.versionName?.substringBefore('.')?.toIntOrNull()
+        val version = runCatching { WebView.getCurrentWebViewPackage()?.versionName?.substringBefore('.')?.toIntOrNull() }.getOrNull()
         val valid=(origin.scheme=="https" || (origin.scheme=="http" && origin.host in setOf("localhost","127.0.0.1","10.0.2.2"))) && origin.userInfo==null && origin.path.orEmpty().trim('/').isEmpty()
-        valid && (version==null || version>=107)
+        valid && version != null && version >= 107
     }
     if (!supported) {
         Column(Modifier.safeDrawingPadding().padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-            BudgetBrand();Text("Open the full suite in your browser or update Android System WebView to use it here.")
-            Button(onClick={external(activity,origin)}){Text("Open Budget HQ Pro")};TextButton(onClick=onTools){Text("Device tools & offline dashboard")}
+            BudgetBrand()
+            Text("Open Budget HQ Pro in your browser or enable an up-to-date Android System WebView to use it here.")
+            Button(onClick={ external(activity, origin.buildUpon().path("/physical-assets").build()) }) { Text("Open inventory in browser") }
+            OutlinedButton(onClick={ external(activity, origin.buildUpon().path("/stocks-crypto/").build()) }) { Text("Open Stocks & Crypto in browser") }
+            TextButton(onClick={ external(activity, origin.buildUpon().path("/more").build()) }) { Text("Open all website tools") }
+            TextButton(onClick=onTools) { Text("Device tools & offline dashboard") }
         }
         return
     }

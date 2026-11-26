@@ -41,8 +41,8 @@ android {
         resValue("string", "shortcut_target_package", "com.budgetcents.app")
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.2.0"
+        versionCode = 8
+        versionName = "1.2.1"
         for (name in listOf("FIREBASE_PROJECT_ID", "FIREBASE_APP_ID", "FIREBASE_API_KEY", "FIREBASE_SENDER_ID")) {
             val value = (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"")
             buildConfigField("String", name, "\"$value\"")
