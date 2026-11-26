@@ -9,6 +9,7 @@ data/
 coverage/
 .DS_Store
 *.apk
+!downloads/android/**/*.apk
 *.aab
 *.keystore
 *.jks

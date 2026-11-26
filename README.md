@@ -1,5 +1,7 @@
 # Budget HQ PRO
 
+**[Releases · Download the Android APK](https://github.com/benlauderdale71/Budget/releases)**
+
 Budget HQ PRO is a household finance app for the browser and Android. Categories, zero-based assignments, envelopes, and flex spending are views of one ledger. Transfers, credit-card payments, and savings allocations do not become income or a second expense.
 
 The web app also includes a [physical asset inventory](docs/PHYSICAL_ASSETS.md): belongings, categories, locations, file import with review, private documents, and dated estimates with research links and sources.
@@ -33,7 +35,9 @@ cd android
 ./gradlew assembleRelease bundleRelease
 ```
 
-Release signing uses `~/budgetcents-release.jks` unless `BUDGETCENTS_KEYSTORE` is set. That file is a local development key. It is not the Google Play upload key, and it is not in git. The APK and AAB are gitignored. See [docs/PLAY.md](docs/PLAY.md).
+Production builds require the four signing variables listed in [docs/PLAY.md](docs/PLAY.md). For a side-by-side test build, run `./gradlew assembleDevRelease -PsideBySideTest=true` with the development keystore.
+
+To publish a signed APK, add it under `downloads/android/` and merge it into `main`. GitHub verifies the signature and publishes the APK under **Assets** on the [Releases page](https://github.com/benlauderdale71/Budget/releases). Use a new Android `versionCode` for each new build. Side-by-side test builds are marked as prereleases. Use a filename ending in `-test.apk` for a development build that uses the regular app ID.
 
 ## What is and is not live
 
