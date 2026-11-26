@@ -4,8 +4,11 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.view.ContextThemeWrapper
 import android.webkit.*
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -16,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.budgetcents.app.MainActivity
@@ -97,7 +101,10 @@ private fun saveExport(context:Context, store:Store, source:Export, destination:
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-internal fun SuiteWorkspace(activity:MainActivity, store:Store, initialPath:String, onTools:()->Unit, onSignedOut:()->Unit, onHousehold:(String)->Unit) {
+internal fun SuiteWorkspace(
+    activity: MainActivity, store: Store, initialPath: String, appearance: String, dark: Boolean,
+    onAppearance: (String) -> Unit, onTools: () -> Unit, onSignedOut: () -> Unit, onHousehold: (String) -> Unit,
+) {
     val origin=remember(store.baseUrl) { Uri.parse(store.baseUrl) }
     val owner=store.userId.orEmpty()
     val scope=rememberCoroutineScope()
@@ -116,6 +123,14 @@ internal fun SuiteWorkspace(activity:MainActivity, store:Store, initialPath:Stri
     val signedOut by rememberUpdatedState(onSignedOut)
     val showTools by rememberUpdatedState(onTools)
     val chooseHouse by rememberUpdatedState(onHousehold)
+    val changeAppearance by rememberUpdatedState(onAppearance)
+    val currentAppearance by rememberUpdatedState(
+        JSONObject().put("kind", "budget-device-appearance").put("mode", appearance).put("dark", dark),
+    )
+    val background = MaterialTheme.colorScheme.background.toArgb()
+    LaunchedEffect(appearance, dark) {
+        hostPort[0]?.postMessage(WebMessage(currentAppearance.toString()))
+    }
     fun message(text:String) = Toast.makeText(activity,text,Toast.LENGTH_LONG).show()
     val pick=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val files = if (result.resultCode == Activity.RESULT_OK) {
@@ -165,6 +180,7 @@ internal fun SuiteWorkspace(activity:MainActivity, store:Store, initialPath:Stri
             OutlinedButton(onClick={ external(activity, origin.buildUpon().path("/stocks-crypto/").build()) }) { Text("Open Stocks & Crypto in browser") }
             TextButton(onClick={ external(activity, origin.buildUpon().path("/more").build()) }) { Text("Open all website tools") }
             TextButton(onClick=onTools) { Text("Device tools & offline dashboard") }
+            AppearanceButton(onAppearance)
         }
         return
     }
@@ -213,40 +229,58 @@ internal fun SuiteWorkspace(activity:MainActivity, store:Store, initialPath:Stri
                                         }
                                         "print"->{val printer=activity.getSystemService(Context.PRINT_SERVICE) as android.print.PrintManager;printer.print("Budget HQ Pro",v.createPrintDocumentAdapter("Budget HQ Pro"),null)}
                                         "download","saveText"->export(data)
+                                        "appearance" -> changeAppearance(data.optString("mode"))
                                     }
                                 }
                             })
                             val active=store.token?:return
                             val session=JSONObject().put("kind","budget-device-session").put("token",active).put("user",owner).put("household",store.householdId)
+                                .put("appearance", currentAppearance)
                             v.postWebMessage(WebMessage(session.toString(),arrayOf(ports[1])),origin)
                         }
                         override fun onReceivedError(v:WebView,r:WebResourceRequest,e:WebResourceError) { if(r.isForMainFrame)issue="The mobile workspace could not open." }
                     }
                     loadUrl(origin.toString()+savedPath)
-                }},modifier=Modifier.fillMaxSize(),onRelease={v->hostPort[0]?.close();hostPort[0]=null;suite[0]=null;v.stopLoading();v.destroy()})
+                }},modifier=Modifier.fillMaxSize(),update={ it.setBackgroundColor(background) },onRelease={v->hostPort[0]?.close();hostPort[0]=null;suite[0]=null;v.stopLoading();v.destroy()})
             }
             market?.let { address->
+                var marketLocation by rememberSaveable(address) { mutableStateOf(address) }
                 Surface(Modifier.fillMaxSize()) { Column {
                     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween) {
                         TextButton(onClick={market=null}){Text("‹  Budget HQ Pro")}
                         TextButton(onClick={charts[0]?.reload()}){Text("Refresh markets")}
                     }
-                    AndroidView(factory={ctx->WebView(ctx).apply{
-                        charts[0]=this;marketBack=false;configure(this)
-                        // Market Pulse authenticates with the site's HttpOnly market cookie and receives no device message port.
-                        webViewClient=object:WebViewClient(){
-                            override fun shouldOverrideUrlLoading(v:WebView,r:WebResourceRequest):Boolean {
-                                if(!r.isForMainFrame)return false
-                                if(!r.url.sameOrigin(origin)){external(activity,r.url);return true}
-                                if(r.url.isMarket())return false
-                                market=null
-                                if(r.url.path=="/login")message("Markets could not connect to your account. Open Markets to retry.")
-                                else if(!r.url.path.orEmpty().startsWith("/api/"))suite[0]?.loadUrl(r.url.toString())
-                                return true
+                    key(dark) {
+                        AndroidView(factory={ ctx ->
+                            val config = Configuration(ctx.resources.configuration)
+                            val nightMode = if (dark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+                            config.uiMode = (config.uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or nightMode
+                            val style = if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar
+                            val themedContext = ContextThemeWrapper(ctx, style).apply { applyOverrideConfiguration(config) }
+                            WebView(themedContext).apply {
+                                charts[0]=this;marketBack=false;configure(this)
+                                if (Build.VERSION.SDK_INT >= 33) settings.setAlgorithmicDarkeningAllowed(dark)
+                                // Market Pulse authenticates with the site's HttpOnly market cookie and receives no device message port.
+                                webViewClient=object:WebViewClient(){
+                                    override fun shouldOverrideUrlLoading(v:WebView,r:WebResourceRequest):Boolean {
+                                        if(!r.isForMainFrame)return false
+                                        if(!r.url.sameOrigin(origin)){external(activity,r.url);return true}
+                                        if(r.url.isMarket())return false
+                                        market=null
+                                        if(r.url.path=="/login")message("Markets could not connect to your account. Open Markets to retry.")
+                                        else if(!r.url.path.orEmpty().startsWith("/api/"))suite[0]?.loadUrl(r.url.toString())
+                                        return true
+                                    }
+                                    override fun doUpdateVisitedHistory(v:WebView,url:String,reload:Boolean) {
+                                        marketBack = v.canGoBack()
+                                        val visited = Uri.parse(url)
+                                        if (visited.sameOrigin(origin) && visited.isMarket()) marketLocation = url
+                                    }
+                                }
+                                loadUrl(marketLocation)
                             }
-                            override fun doUpdateVisitedHistory(v:WebView,url:String,reload:Boolean){marketBack=v.canGoBack()}
-                        };loadUrl(address)
-                    }},modifier=Modifier.fillMaxSize(),onRelease={v->charts[0]=null;v.stopLoading();v.destroy()})
+                        },modifier=Modifier.fillMaxSize(),update={ it.setBackgroundColor(background) },onRelease={v->charts[0]=null;v.stopLoading();v.destroy()})
+                    }
                 }}
             }
         }

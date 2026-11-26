@@ -47,6 +47,7 @@ import java.net.URLEncoder
 @Composable
 internal fun SignIn(
     store: Store, api: BudgetApi, activity: MainActivity, start: String, linkToken: String?, notice: String,
+    onAppearance: (String) -> Unit,
     onSignedIn: (opensSetup: Boolean) -> Unit,
 ) {
     var mode by rememberSaveable(start, linkToken) { mutableStateOf(when (start) {
@@ -229,6 +230,7 @@ internal fun SignIn(
                 TextButton(onClick = { select("login") }, enabled = !busy) { Text("Back to sign in") }
             }
             if (flags?.optBoolean("devMail") == true) TextButton(onClick = { submit("mail") }, enabled = !busy && email.isNotBlank()) { Text("Show development mail") }
+            AppearanceButton(onAppearance)
             TextButton(onClick = { serverOptions = !serverOptions }, enabled = !busy) { Text("Server settings") }
             if (serverOptions) {
                 OutlinedTextField(server, { server = it }, Modifier.fillMaxWidth(), enabled = !busy, singleLine = true, label = { Text("Server") },

@@ -1,3 +1,5 @@
+import type { AppearanceMode } from "./appearance.js";
+
 export interface User {
   id: string;
   email: string;
@@ -7,7 +9,7 @@ export interface User {
   locale: string;
   timeZone: string;
   weekStart: number;
-  theme: "light" | "dark" | "system";
+  theme: AppearanceMode;
   privacyMode: boolean;
   aiEnabled: boolean;
   payCadence: string;
