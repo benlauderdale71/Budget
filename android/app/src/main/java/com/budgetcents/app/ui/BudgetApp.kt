@@ -4,6 +4,8 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,6 +13,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -37,10 +41,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -64,6 +72,18 @@ import java.util.UUID
 private val Teal = Color(0xFF0C6B63)
 private val Ink = Color(0xFF152033)
 private val Tabs = listOf("Home", "Plan", "Activity", "Wealth", "More")
+
+@Composable
+private fun BudgetBrand() {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Image(
+            painter = painterResource(R.drawable.ic_brand_art),
+            contentDescription = null,
+            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(colorResource(R.color.brand_icon_background))
+        )
+        Text("Budget HQ PRO", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -261,7 +281,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         }
         if (locked) {
             Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Budget HQ PRO", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+                BudgetBrand()
                 Text("Unlock this device to see the household.")
                 if (linkNote.isNotBlank()) Text(linkNote)
                 Button(onClick = { activity.unlock({ locked = false; reload() }, { error = it }) }) { Text("Unlock") }
@@ -450,7 +470,7 @@ private fun SignIn(
     var mail by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("Budget HQ PRO", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+        BudgetBrand()
         if (notice.isNotBlank()) Text(notice)
         Text("Sign in with your Budget HQ PRO web account.", color = Ink)
         var serverOptions by remember { mutableStateOf(false) }

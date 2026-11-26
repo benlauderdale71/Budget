@@ -10,10 +10,12 @@ android {
 
     defaultConfig {
         applicationId = "com.budgetcents.app"
+        manifestPlaceholders["launcherLabel"] = "@string/app_name"
+        resValue("string", "shortcut_target_package", "com.budgetcents.app")
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "1.1.2"
         for (name in listOf("FIREBASE_PROJECT_ID", "FIREBASE_APP_ID", "FIREBASE_API_KEY", "FIREBASE_SENDER_ID")) {
             val value = (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"")
             buildConfigField("String", name, "\"$value\"")
@@ -54,6 +56,11 @@ android {
             initWith(getByName("release"))
             signingConfig = signingConfigs.getByName("development")
             matchingFallbacks += listOf("release")
+            if (providers.gradleProperty("sideBySideTest").orNull == "true") {
+                applicationIdSuffix = ".test"
+                manifestPlaceholders["launcherLabel"] = "Budget HQ PRO Test"
+                resValue("string", "shortcut_target_package", "com.budgetcents.app.test")
+            }
         }
     }
 
