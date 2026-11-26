@@ -1,7 +1,12 @@
-export const ASSET_CATEGORIES = ["Vehicles", "Real estate", "Electronics", "Furniture", "Appliances", "Tools & equipment", "Jewelry & watches", "Collectibles & art", "Sports & outdoors", "Other"];
-export const SOURCE_TYPES = { manual: "Personal estimate", sold_comparable: "Sold comparable", asking_price: "Asking price", appraisal: "Appraisal", replacement_cost: "Replacement cost" };
-export interface AssetEstimate { id?:string; amountMinor:number; asOf:string; sourceName:string; sourceUrl:string; sourceType:keyof typeof SOURCE_TYPES; notes:string; recordedAt?:string }
-export interface PhysicalAsset {
+import { inventoryCategories, type AssetIdentity } from "@budgetcents/domain/asset-identity";
+
+export const ASSET_CATEGORIES = inventoryCategories;
+export type SaleEvidence = { title:string; url:string; asOf:string; currency:string; amountMinor:number; convertedMinor:number; rate:number; rateDate:string };
+export type EstimateEvidence = { currency:string; lowMinor:number; highMinor:number; sales:SaleEvidence[] };
+export const SOURCE_TYPES = { manual: "Personal estimate", sold_comparable: "Sold comparable", asking_price: "Asking price", appraisal: "Appraisal", replacement_cost: "Replacement cost", price_guide:"Specialist price guide" };
+export interface AssetEstimate { id?:string; amountMinor:number; asOf:string; sourceName:string; sourceUrl:string; sourceType:keyof typeof SOURCE_TYPES; notes:string; recordedAt?:string; evidence?:EstimateEvidence }
+export interface PhysicalAsset extends AssetIdentity {
+  cropDocumentId?:string;
   id:string; name:string; category:string; location:string; brand:string; model:string; serialNumber:string;
   condition:string; quantity:number; tags:string[]; notes:string; purchaseDate:string; purchaseMinor:number|null;
   visibility:"shared"|"private"; archived:boolean; version:number; canChangeVisibility:boolean;
