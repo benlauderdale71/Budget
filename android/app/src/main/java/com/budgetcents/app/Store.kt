@@ -55,8 +55,8 @@ class Store(private val context: Context) {
         get() = prefs.getString("remoteDevice", null)
         set(value) { prefs.edit().putString("remoteDevice", value).apply() }
     var theme: String
-        get() = prefs.getString("theme", "system") ?: "system"
-        set(value) { prefs.edit().putString("theme", value).apply() }
+        get() = prefs.getString("deviceAppearance", null) ?: prefs.getString("theme", "system") ?: "system"
+        set(value) { prefs.edit().putString("deviceAppearance", value).apply() }
     var pendingInvite: String?
         get() = prefs.getString("invite", null)
         set(value) {

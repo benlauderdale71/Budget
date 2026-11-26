@@ -5,6 +5,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
@@ -30,13 +31,16 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -49,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
@@ -56,6 +61,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
+import androidx.core.view.WindowCompat
 import com.budgetcents.app.ApiException
 import com.budgetcents.app.BudgetApi
 import com.budgetcents.app.hasText
@@ -177,6 +183,11 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         "light" -> false
         else -> isSystemInDarkTheme()
     }
+    fun changeAppearance(mode: String) {
+        if (!isAppearanceMode(mode) || themeName == mode) return
+        store.theme = mode
+        themeName = mode
+    }
     val wide = LocalConfiguration.current.screenWidthDp >= 840
 
     fun reload() {
@@ -243,14 +254,28 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         }
     }
 
-    MaterialTheme(colorScheme = if (dark) {
+    val colors = if (dark) {
         darkColorScheme(primary = Color(0xFF8FD0C8), onPrimary = Color(0xFF00332F), background = Color(0xFF101614), surface = Color(0xFF1A2422))
     } else {
         lightColorScheme(primary = Teal, onPrimary = Color.White, background = Color(0xFFF3F6F4), surface = Color.White)
-    }) {
+    }
+    SideEffect {
+        val window = activity.window
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+        }
+        if (Build.VERSION.SDK_INT < 35) {
+            @Suppress("DEPRECATION")
+            window.statusBarColor = colors.background.toArgb()
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = colors.background.toArgb()
+        }
+    }
+    val content: @Composable () -> Unit = content@{
         if (token == null) {
             val notice = signInNotice.ifBlank { if (recordId.isNullOrBlank()) "" else "Sign in to open this record." }
-            SignIn(store, api, activity, start, linkToken, notice) { opensSetup ->
+            SignIn(store, api, activity, start, linkToken, notice, ::changeAppearance) { opensSetup ->
                 token = store.token
                 signInNotice = ""
                 themeName = store.theme
@@ -267,7 +292,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                     openSetup = false
                 }
             }
-            return@MaterialTheme
+            return@content
         }
         if (store.householdId.isNullOrBlank()) {
             Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -285,7 +310,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                 }
                 if (error.isNotBlank()) Text(error)
             }
-            return@MaterialTheme
+            return@content
         }
         LaunchedEffect(linkToken) {
             if (start == "verify" && !linkToken.isNullOrBlank()) {
@@ -314,16 +339,16 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                 Button(onClick = { activity.unlock({ locked = false; reload() }, { error = it }) }) { Text("Unlock") }
                 if (error.isNotBlank()) Text(error)
             }
-            return@MaterialTheme
+            return@content
         }
         LaunchedEffect(token) { reload() }
         if (!deviceTools) {
             key(store.baseUrl,store.userId,token) {
-                SuiteWorkspace(activity,store,suiteStart,{ deviceTools=true;page=null;tab=4 },{
+                SuiteWorkspace(activity,store,suiteStart,themeName,dark,::changeAppearance,{ deviceTools=true;page=null;tab=4 },{
                     store.clearSession();refreshWidgets(context);token=null;dash=null;txns=null;page=null;activityIds=null;activityLabel="";suiteStart="/"
                 },{ id->store.householdId=id;store.clearCache();dash=null;txns=null;reload() })
             }
-            return@MaterialTheme
+            return@content
         }
         BackHandler(enabled = page != null) { page = null }
         Scaffold(bottomBar = {
@@ -378,10 +403,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                     } else if (page != null) {
                         FeatureScreen(page!!, api, store, dash, store.privacy, { page = null }, { reload() }, { error = it }, { error = ""; status = it }, {
                             store.clearSession(); refreshWidgets(context); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
-                        }, { name ->
-                            themeName = name
-                            store.theme = name
-                        }, activity, onOpenPage = { page = it }) { ids, label ->
+                        }, ::changeAppearance, activity, onOpenPage = { page = it }) { ids, label ->
                             activityIds = ids
                             activityLabel = label
                             page = null
@@ -464,19 +486,17 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                             }
                         }
                         3 -> WealthTab(dash, store.privacy) { page = it }
-                        else -> MoreTab(store, { name ->
-                            themeName = name
-                            store.theme = name
-                            scope.launch {
-                                runCatching { withContext(Dispatchers.IO) { api.request("PATCH", "/api/me", JSONObject().put("theme", name)) } }
-                                    .onFailure { error = it.message ?: "Theme saved on this phone. The account was not updated." }
-                            }
-                        }, { page = it }, { reload() }) {
+                        else -> MoreTab(store, ::changeAppearance, { page = it }, { reload() }) {
                             store.clearSession(); refreshWidgets(context); token = null; dash = null; txns = null; page = null; activityIds = null; activityLabel = ""
                         }
                     }
                 }
             }
+        }
+    }
+    MaterialTheme(colorScheme = colors) {
+        CompositionLocalProvider(LocalPhoneAppearance provides themeName) {
+            Surface(Modifier.fillMaxSize(), color = colors.background, content = content)
         }
     }
 }
@@ -786,12 +806,7 @@ private fun MoreTab(store: Store, onTheme: (String) -> Unit, open: (String) -> U
     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
         Text("Hide amounts", Modifier.weight(1f)); Switch(privacy, { privacy = it; store.privacy = it; reload() })
     }
-    Text("Theme")
-    Row {
-        listOf("system", "light", "dark").forEach { choice ->
-            TextButton(onClick = { onTheme(choice) }) { Text(if (store.theme == choice) choice.replaceFirstChar { it.titlecase() } else choice) }
-        }
-    }
+    AppearanceButton(onTheme)
     listOf(
         "setup" to "Setup",
         "accounts" to "Accounts",

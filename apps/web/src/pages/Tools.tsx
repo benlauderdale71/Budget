@@ -1,5 +1,5 @@
 import { BankStatementPdf } from "./BankStatementPdf.js";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CsvSourceDetails, type SourceCell } from "../CsvSourceDetails.js";
 import { Link } from "react-router-dom";
 import { BankConnection } from "./BankConnection.js";
@@ -11,7 +11,8 @@ import type { Dashboard, Txn } from "../types.js";
 import { ErrorNote, Field, Loading, Money, Notice, Page, useFormError, useLoad } from "../ui.js";
 
 import { suiteGroups } from "../suite-navigation.js";
-import { isDeviceSuite, openDeviceTools } from "../device-suite.js";
+import { isAppearanceMode } from "../appearance.js";
+import { deviceAppearance, isDeviceSuite, openDeviceTools, setDeviceAppearance, subscribeDeviceAppearance } from "../device-suite.js";
 
 export function More() {
   const [query,setQuery]=useState("");
@@ -706,6 +707,44 @@ export function Checklists() {
   );
 }
 
+function AppearanceSettings() {
+  const { user, patchMe } = useSession();
+  const phoneAppearance = useSyncExternalStore(subscribeDeviceAppearance, deviceAppearance);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function select(mode: string) {
+    if (!isAppearanceMode(mode)) return;
+    if (phoneAppearance) {
+      setDeviceAppearance(mode);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await patchMe({ theme: mode });
+    } catch {
+      setError("Could not save your appearance preference. Try again when connected.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Appearance</h2>
+      <Field label="Theme">
+        <select value={phoneAppearance?.mode ?? user?.theme ?? "system"} disabled={saving} onChange={event => void select(event.target.value)}>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="system">{phoneAppearance ? "Match phone" : "Match device"}</option>
+        </select>
+      </Field>
+      {error && <Notice kind="bad">{error}</Notice>}
+    </section>
+  );
+}
+
 export function Settings() {
   const session = useSession();
   const sessions = useLoad(() => api<{ sessions: { id: string; device_label: string | null; created_at: string; revoked_at: string | null; current: boolean }[] }>("/api/auth/sessions"), [session.tick]);
@@ -718,13 +757,13 @@ export function Settings() {
   if (!session.user) return null;
   return (
     <Page title="Settings" lede="Sign-in, privacy, export, and deletion. Mail stays in the local outbox until SMTP is configured.">
-      <form className="card" onSubmit={(event) => form.run(event, async () => {
+      <AppearanceSettings />
+      <form className="card" style={{ marginTop: 16 }} onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
-        await session.patchMe({ displayName: data.get("displayName"), theme: data.get("theme"), aiEnabled: data.get("ai") === "on", labelMode: data.get("labelMode") });
+        await session.patchMe({ displayName: data.get("displayName"), aiEnabled: data.get("ai") === "on", labelMode: data.get("labelMode") });
         setSaved("Settings saved.");
       })}>
         <Field label="Name"><input name="displayName" defaultValue={session.user.displayName} /></Field>
-        <Field label="Theme"><select name="theme" defaultValue={session.user.theme}><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></Field>
         <Field label="Labels"><select name="labelMode" defaultValue={session.user.labelMode}><option value="categories">Categories</option><option value="envelopes">Envelopes</option></select></Field>
         <label className="field"><span><input type="checkbox" name="ai" defaultChecked={session.user.aiEnabled} /> Assistant can answer from ledger facts</span></label>
         {saved ? <Notice>{saved}</Notice> : null}

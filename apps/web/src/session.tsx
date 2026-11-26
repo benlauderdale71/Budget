@@ -1,6 +1,7 @@
-import { deviceHousehold, deviceOwner, sessionToken } from "./device-suite.js";
+import { deviceAppearance, deviceHousehold, deviceOwner, sessionToken, subscribeDeviceAppearance } from "./device-suite.js";
 import { allows } from "@budgetcents/domain/access";
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { followAppearance } from "./appearance.js";
 import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import { clearDashboardCaches } from "./offline-cache.js";
 import type { HouseholdRow, User } from "./types.js";
@@ -46,11 +47,6 @@ function readProfile(): { user: User; households: HouseholdRow[]; householdId: s
   }
 }
 
-function applyTheme(theme: string) {
-  const dark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-}
-
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -69,13 +65,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const refreshRef = useRef<(preferHouseholdId?: string) => Promise<void>>(async () => undefined);
   userIdRef.current = user?.id ?? null;
 
+  const phoneAppearance = useSyncExternalStore(subscribeDeviceAppearance, deviceAppearance);
+  const accountTheme = user?.theme ?? "system";
+  useLayoutEffect(() => {
+    const apply = (dark: boolean) => { document.documentElement.dataset.theme = dark ? "dark" : "light"; };
+    if (phoneAppearance) {
+      apply(phoneAppearance.dark);
+      return;
+    }
+    return followAppearance(accountTheme, apply);
+  }, [accountTheme, phoneAppearance]);
+
   async function refresh(preferHouseholdId?: string) {
     const data = await api<{ user: User; households: HouseholdRow[] }>("/api/me");
     await api("/api/auth/market-session", { method: "POST" }, { queue: false }).catch(() => undefined);
     setUser(data.user);
     setHouseholds(data.households);
     setQueueOwner(data.user.id);
-    applyTheme(data.user.theme);
     const flushed = await flushQueue();
     setQueued(queuedCount());
     setSyncError(flushed.rejected);
@@ -109,7 +115,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setHouseholdId(cached.householdId);
     setSpaceId(cached.spaceId);
     setQueueOwner(cached.user.id);
-    applyTheme(cached.user.theme);
     return true;
   }
 
@@ -237,7 +242,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       const data = await api<{ user: User }>("/api/me", { method: "PATCH", body: JSON.stringify(body) });
       if (sessionGen.current !== gen || userIdRef.current !== owner || !owner || data.user.id !== owner) return false;
       setUser(data.user);
-      applyTheme(data.user.theme);
       writeProfile(data.user, households, householdId, spaceId);
       return true;
     },

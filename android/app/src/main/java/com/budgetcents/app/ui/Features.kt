@@ -230,7 +230,7 @@ fun FeatureScreen(
         }
         "setup" -> SetupScreen(api, hid, onError, onStatus)
         "receipts" -> ReceiptScreen(api, store, dash, privacy, activity, hid, onError, onStatus, onChanged)
-        "security" -> SecurityScreen(api, store, onTheme, onError, onSignedOut)
+        "security" -> SecurityScreen(api, onTheme, onError, onSignedOut)
         "learn" -> RemoteScreen("learn", { api.request("GET", "/api/lessons") }) { data ->
             val lessons = data.optJSONArray("lessons") ?: JSONArray()
             for (index in 0 until lessons.length()) {
@@ -2219,22 +2219,14 @@ private fun ImportScreen(api: BudgetApi, hid: String, dash: JSONObject?, privacy
 }
 
 @Composable
-private fun SecurityScreen(api: BudgetApi, store: Store, onTheme: (String) -> Unit, onError: (String) -> Unit, onDeleted: () -> Unit) {
+private fun SecurityScreen(api: BudgetApi, onTheme: (String) -> Unit, onError: (String) -> Unit, onDeleted: () -> Unit) {
     val scope = rememberCoroutineScope()
     var password by remember { mutableStateOf("") }
     var secret by remember { mutableStateOf("") }
     var authenticatorCode by remember { mutableStateOf("") }
     var recovery by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    Text("Theme follows this device and your account.")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf("system", "light", "dark").forEach { choice ->
-            TextButton(onClick = {
-                onTheme(choice)
-                scope.launch { runIo(onError) { api.request("PATCH", "/api/me", JSONObject().put("theme", choice)) } }
-            }) { Text(choice.replaceFirstChar { it.titlecase() }) }
-        }
-    }
+    AppearanceButton(onTheme)
     RemoteScreen("sessions", { api.request("GET", "/api/auth/sessions") }) { data ->
         val sessions = data.optJSONArray("sessions") ?: JSONArray()
         for (index in 0 until sessions.length()) {
