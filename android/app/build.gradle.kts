@@ -5,6 +5,9 @@ plugins {
 }
 
 val repositoryDir = rootProject.projectDir.parentFile
+val previewBuild = providers.gradleProperty("sideBySidePreview").orNull == "true"
+val unsignedPreview = providers.gradleProperty("unsignedPreview").orNull == "true"
+require(!unsignedPreview || previewBuild) { "Unsigned output is only available for the preview app." }
 val webDir = repositoryDir.resolve("apps/web")
 val npmCommand = if (System.getProperty("os.name").startsWith("Windows")) "npm.cmd" else "npm"
 val webDependencies = tasks.register<Exec>("installBudgetWebDependencies") {
@@ -41,8 +44,8 @@ android {
         resValue("string", "shortcut_target_package", "com.budgetcents.app")
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.2.1"
+        versionCode = 9
+        versionName = "1.3.0"
         for (name in listOf("FIREBASE_PROJECT_ID", "FIREBASE_APP_ID", "FIREBASE_API_KEY", "FIREBASE_SENDER_ID")) {
             val value = (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"")
             buildConfigField("String", name, "\"$value\"")
@@ -81,9 +84,13 @@ android {
         }
         create("devRelease") {
             initWith(getByName("release"))
-            signingConfig = signingConfigs.getByName("development")
+            signingConfig = if (unsignedPreview) null else signingConfigs.getByName("development")
             matchingFallbacks += listOf("release")
-            if (providers.gradleProperty("sideBySideTest").orNull == "true") {
+            if (previewBuild) {
+                applicationIdSuffix = ".preview"
+                manifestPlaceholders["launcherLabel"] = "Budget HQ PRO Preview"
+                resValue("string", "shortcut_target_package", "com.budgetcents.app.preview")
+            } else if (providers.gradleProperty("sideBySideTest").orNull == "true") {
                 applicationIdSuffix = ".test"
                 manifestPlaceholders["launcherLabel"] = "Budget HQ PRO Test"
                 resValue("string", "shortcut_target_package", "com.budgetcents.app.test")
