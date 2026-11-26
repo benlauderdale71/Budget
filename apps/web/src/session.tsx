@@ -96,7 +96,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("budgetcents.household", next);
     setSpaceId(storedSpace);
     writeProfile(data.user, data.households, next, storedSpace);
-    api("/api/devices", { method: "POST", body: JSON.stringify({ name: "Web browser", platform: "web" }) }).catch(() => undefined);
+    if (!deviceOwner()) api("/api/devices", { method: "POST", body: JSON.stringify({ name: "Web browser", platform: "web" }) }).catch(() => undefined);
   }
 
   refreshRef.current = refresh;

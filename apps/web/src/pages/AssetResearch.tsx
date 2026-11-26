@@ -21,9 +21,14 @@ export function AssetResearch({description,category,condition,purchased,purchase
     const request=++sequence.current;
     setWorking(true);setError("");setResult(null);onEstimate(null);
     try {
-      const found=await researchAsset(query.trim(),category,condition,currency,(source,term)=>{
+      const found=await researchAsset(query.trim(),category,condition,currency,async (source,term)=>{
         const params=new URLSearchParams({source,q:term});
-        if (isDeviceSuite()) return fetch(`/_device/catalog?${params}`,{credentials:"omit"}).then(async r=>{if(!r.ok)throw Error("Catalog unavailable");return r.json();});
+        if (isDeviceSuite()) {
+          try {
+            const response = await fetch(`/_device/catalog?${params}`, {credentials:"omit"});
+            if (response.ok) return await response.json();
+          } catch { /* A phone network can block a retailer. Try the household API. */ }
+        }
         return api(scoped(householdId,`/physical-assets/catalog?${params}`));
       });
       if(request!==sequence.current) return;
