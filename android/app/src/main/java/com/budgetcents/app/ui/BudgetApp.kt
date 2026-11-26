@@ -50,7 +50,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationCompat
 import com.budgetcents.app.ApiException
@@ -74,7 +73,7 @@ private val Ink = Color(0xFF152033)
 private val Tabs = listOf("Home", "Plan", "Activity", "Wealth", "More")
 
 @Composable
-private fun BudgetBrand() {
+internal fun BudgetBrand() {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Image(
             painter = painterResource(R.drawable.ic_brand_art),
@@ -107,6 +106,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         }
     }
     var openSetup by remember { mutableStateOf(start == "setup") }
+    var signInNotice by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var dash by remember { mutableStateOf<JSONObject?>(null) }
@@ -172,6 +172,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
 
     fun reload() {
         val hid = store.householdId ?: return
+        val loadingToken = token ?: return
         scope.launch {
             error = ""
             status = ""
@@ -187,6 +188,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                         api.request("GET", "/api/households/$hid/transactions?ids=$encoded&limit=200")
                     }
                 }
+                if (token != loadingToken || hid != store.householdId) return@launch
                 dash = loaded
                 txns = activityRows
                 val guidance = loaded.getJSONObject("guidance")
@@ -201,7 +203,22 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                 if (flush.rejected.isNotBlank()) error = flush.rejected
                 else if (flush.sent > 0) status = "Synced ${flush.sent}. Balances were refreshed."
             } catch (caught: Exception) {
-                if (caught is ApiException && (caught.status == 401 || caught.status == 403)) store.clearCache()
+                if (token != loadingToken || hid != store.householdId) return@launch
+                if (caught is ApiException && caught.status == 401) {
+                    store.clearSession()
+                    refreshWidgets(context)
+                    dash = null
+                    txns = null
+                    page = null
+                    tab = tabIndex("home")
+                    activityIds = null
+                    activityLabel = ""
+                    locked = false
+                    token = null
+                    signInNotice = "Your session ended. Sign in again to open your household."
+                    return@launch
+                }
+                if (caught is ApiException && caught.status == 403) store.clearCache()
                 else if (caught is java.io.IOException) {
                     val saved = store.cachedDashboard()
                     if (saved != null) {
@@ -223,21 +240,20 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         lightColorScheme(primary = Teal, onPrimary = Color.White, background = Color(0xFFF3F6F4), surface = Color.White)
     }) {
         if (token == null) {
-            SignIn(store, api, error, start, linkToken, if (recordId.isNullOrBlank()) "" else "Sign in to open this record.", { openSetup = true }) { message ->
-                if (message != null) error = message else {
-                    token = store.token
-                    themeName = store.theme
-                    error = ""
-                    inviteToken = store.pendingInvite
-                    if (!store.pendingInvite.isNullOrBlank()) {
-                        page = "invite"
-                        openSetup = false
-                    } else if (openSetup) {
-                        page = "setup"
-                        tab = 4
-                        openSetup = false
-                    }
-                    reload()
+            val notice = signInNotice.ifBlank { if (recordId.isNullOrBlank()) "" else "Sign in to open this record." }
+            SignIn(store, api, start, linkToken, notice) { opensSetup ->
+                token = store.token
+                signInNotice = ""
+                themeName = store.theme
+                error = ""
+                inviteToken = store.pendingInvite
+                if (!inviteToken.isNullOrBlank()) {
+                    page = "invite"
+                    openSetup = false
+                } else if (openSetup || opensSetup) {
+                    page = "setup"
+                    tab = 4
+                    openSetup = false
                 }
             }
             return@MaterialTheme
@@ -444,178 +460,6 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
         }
     }
 }
-
-@Composable
-private fun SignIn(
-    store: Store,
-    api: BudgetApi,
-    error: String,
-    start: String,
-    linkToken: String?,
-    notice: String,
-    onRegistered: () -> Unit,
-    done: (String?) -> Unit,
-) {
-    var base by remember { mutableStateOf(store.baseUrl) }
-    var mode by remember { mutableStateOf(if (start == "reset" || start == "verify" || start == "invite") start else "login") }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var confirm by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-    var household by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var tokenText by remember { mutableStateOf(linkToken ?: "") }
-    var mfa by remember { mutableStateOf(false) }
-    var note by remember { mutableStateOf("") }
-    var mail by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        BudgetBrand()
-        if (notice.isNotBlank()) Text(notice)
-        Text("Sign in with your Budget HQ PRO web account.", color = Ink)
-        var serverOptions by remember { mutableStateOf(false) }
-        TextButton(onClick = { serverOptions = !serverOptions }) { Text("Server settings") }
-        if (serverOptions) OutlinedTextField(base, { base = it }, label = { Text("Server") }, modifier = Modifier.fillMaxWidth())
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("login" to "Sign in", "invite" to "Join a household", "register" to "Create household", "reset" to "Reset password", "verify" to "Verify email").forEach { (id, label) ->
-                TextButton(onClick = { mode = id; note = "" }) { Text(label) }
-            }
-        }
-        if (mode == "register" || mode == "invite") {
-            OutlinedTextField(name, { name = it }, label = { Text("Your name") }, modifier = Modifier.fillMaxWidth())
-            if (mode == "invite") Text("This account joins an existing household. It does not create a new one. Accept the invitation after you verify your email.")
-            else OutlinedTextField(household, { household = it }, label = { Text("Household name") }, modifier = Modifier.fillMaxWidth())
-        }
-        if (mode != "verify") OutlinedTextField(email, { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
-        if (mode == "login" || mode == "register" || mode == "reset" || mode == "invite") {
-            OutlinedTextField(password, { password = it }, label = { Text(if (mode == "reset") "New password" else "Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-        }
-        if (mode == "reset") {
-            OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirm password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(tokenText, { tokenText = it }, label = { Text("Reset token") }, modifier = Modifier.fillMaxWidth())
-            Text("The reset request does not say whether the email exists. Open the link, or paste its token. SMTP delivery is not active.")
-        }
-        if (mode == "verify") {
-            OutlinedTextField(tokenText, { tokenText = it }, label = { Text("Verification token") }, modifier = Modifier.fillMaxWidth())
-            Text("An unverified account can keep setting up. Invitations stay closed until this link is used.")
-        }
-        if (mfa) OutlinedTextField(code, { code = it }, label = { Text("Authentication code") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-        if (error.isNotBlank()) Text(error)
-        if (note.isNotBlank()) Text(note)
-        if (mail.isNotBlank()) Text(mail)
-        Button(onClick = {
-            store.baseUrl = base
-            scope.launch {
-                try {
-                    when (mode) {
-                        "register", "invite" -> {
-                            if (password.length < 10) { note = "Use at least 10 characters."; return@launch }
-                            val body = JSONObject()
-                                .put("email", email.trim())
-                                .put("password", password)
-                                .put("displayName", name.trim())
-                            if (mode == "register") body.put("householdName", household.trim())
-                            val result = withContext(Dispatchers.IO) { api.request("POST", "/api/auth/register", body, auth = false) }
-                            adoptSession(api, store, result)
-                            if (store.pendingInvite.isNullOrBlank()) onRegistered()
-                            done(null)
-                        }
-                        "reset" -> {
-                            if (tokenText.isBlank()) {
-                                val result = withContext(Dispatchers.IO) {
-                                    api.request("POST", "/api/auth/forgot", JSONObject().put("email", email.trim()), auth = false)
-                                }
-                                note = result.optString("message")
-                                return@launch
-                            }
-                            if (password != confirm) { note = "Enter the same password in both fields."; return@launch }
-                            if (password.length < 10) { note = "Use at least 10 characters."; return@launch }
-                            withContext(Dispatchers.IO) {
-                                api.request("POST", "/api/auth/reset", JSONObject().put("token", tokenText.trim()).put("password", password), auth = false)
-                            }
-                            note = "Password updated. Sign in with the new one."
-                            mode = "login"
-                            password = ""
-                            confirm = ""
-                        }
-                        "verify" -> {
-                            val result = withContext(Dispatchers.IO) {
-                                api.request("POST", "/api/auth/verify-email", JSONObject().put("token", tokenText.trim()), auth = false)
-                            }
-                            note = if (!store.pendingInvite.isNullOrBlank()) "Email verified. The invitation stays pending until you accept it." else "Email verified. Sign in to continue from ${result.optString("onboardingStep", "the saved step")}."
-                        }
-                        else -> {
-                            val result = withContext(Dispatchers.IO) { api.login(email.trim(), password, code.ifBlank { null }) }
-                            if (result.optBoolean("mfaRequired")) {
-                                mfa = true
-                                note = "Enter the code from your authenticator or a recovery code."
-                                return@launch
-                            }
-                            adoptSession(api, store, result)
-                            val step = result.optJSONObject("user")?.optString("onboardingStep")
-                            if (step != "done") onRegistered()
-                            done(null)
-                        }
-                    }
-                } catch (caught: Exception) {
-                    done(caught.message ?: "Could not sign in.")
-                }
-            }
-        }, modifier = Modifier.fillMaxWidth()) { Text(if (mode == "register") "Create household" else if (mode == "invite") "Create account" else if (mode == "reset") "Continue" else if (mode == "verify") "Verify email" else "Sign in") }
-        TextButton(onClick = {
-            store.baseUrl = base
-            scope.launch {
-                try {
-                    val result = withContext(Dispatchers.IO) {
-                        api.request("GET", "/api/dev/outbox?email=${java.net.URLEncoder.encode(email.trim(), "UTF-8")}", auth = false)
-                    }
-                    val messages = result.optJSONArray("messages") ?: org.json.JSONArray()
-                    mail = (0 until messages.length()).joinToString("\n\n") { messages.getJSONObject(it).optString("body") }.ifBlank { "No message is waiting for that address." }
-                    note = result.optString("note")
-                } catch (caught: Exception) {
-                    mail = ""
-                    note = if (caught is ApiException && caught.status == 404) "Development mail is off." else caught.message ?: "Could not read development mail."
-                }
-            }
-        }) { Text("Show development mail") }
-        TextButton(onClick = {
-            store.baseUrl = base
-            scope.launch { sign(api, store, done) { api.demo() } }
-        }) { Text("Open the sample household") }
-        Text("Development mail is the local outbox. It is not SMTP delivery. Deleting the app does not delete the server account.")
-    }
-}
-
-private suspend fun adoptSession(api: BudgetApi, store: Store, result: JSONObject) {
-    store.token = result.getString("token")
-    val user = result.optJSONObject("user")
-    if (user != null) {
-        store.userId = user.getString("id")
-        store.theme = user.optString("theme", store.theme)
-    }
-    val homes = withContext(Dispatchers.IO) { api.households() }
-    val list = homes.optJSONArray("households")
-    store.householdId = if (list == null || list.length() == 0) null else list.getJSONObject(0).optString("id").ifBlank { null }
-}
-
-private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, call: () -> JSONObject) {
-    try {
-        val result = withContext(Dispatchers.IO) { call() }
-        store.token = result.getString("token")
-        val user = result.optJSONObject("user")
-        if (user != null) {
-            store.userId = user.getString("id")
-            store.theme = user.optString("theme", store.theme)
-        }
-        val homes = withContext(Dispatchers.IO) { api.households() }
-        val list = homes.optJSONArray("households")
-        store.householdId = if (list == null || list.length() == 0) null else list.getJSONObject(0).optString("id").ifBlank { null }
-        done(null)
-    } catch (caught: Exception) {
-        done(caught.message ?: "Could not sign in.")
-    }
-}
-
 
 @Composable
 private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssign: (String, Long) -> Unit, onMove: (String, String, Long) -> Unit) {

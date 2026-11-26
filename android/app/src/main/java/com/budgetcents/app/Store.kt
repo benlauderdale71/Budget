@@ -115,6 +115,11 @@ class Store(private val context: Context) {
         prefs.edit().remove("cacheUser").remove("cacheHousehold").remove("cacheJson").remove("cacheAt").remove("widgetFacts").remove("summary").apply()
     }
 
+    fun saveSession(token: String, userId: String, theme: String, householdId: String?) {
+        prefs.edit().putString("token", token).putString("userId", userId)
+            .putString("theme", theme).putString("household", householdId).apply()
+    }
+
     fun clearSession() {
         RemotePush.disable(context, this)
         clearCache()
