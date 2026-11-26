@@ -136,9 +136,14 @@ class Store(private val context: Context) {
         val challenge = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)), flags)
         prefs.edit().putString("browserState", state).putString("browserVerifier", verifier)
             .putString("browserOrigin", baseUrl).putLong("browserStartedAt", System.currentTimeMillis()).apply()
+        val channel = when (context.packageName) {
+            "com.budgetcents.app.test" -> "test"
+            "com.budgetcents.app.preview" -> "preview"
+            else -> "regular"
+        }
         return server.buildUpon().appendPath("android").appendPath("sign-in")
             .appendQueryParameter("state", state).appendQueryParameter("challenge", challenge)
-            .appendQueryParameter("app", if (context.packageName.endsWith(".test")) "test" else "regular").build()
+            .appendQueryParameter("app", channel).build()
     }
 
     fun websiteProof(callback: Uri): JSONObject {
