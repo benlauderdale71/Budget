@@ -241,7 +241,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
     }) {
         if (token == null) {
             val notice = signInNotice.ifBlank { if (recordId.isNullOrBlank()) "" else "Sign in to open this record." }
-            SignIn(store, api, start, linkToken, notice) { opensSetup ->
+            SignIn(store, api, activity, start, linkToken, notice) { opensSetup ->
                 token = store.token
                 signInNotice = ""
                 themeName = store.theme

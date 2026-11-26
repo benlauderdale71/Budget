@@ -1,5 +1,7 @@
 package com.budgetcents.app.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +33,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.budgetcents.app.BudgetApi
+import com.budgetcents.app.MainActivity
 import com.budgetcents.app.Store
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +45,7 @@ import java.net.URLEncoder
 
 @Composable
 internal fun SignIn(
-    store: Store, api: BudgetApi, start: String, linkToken: String?, notice: String,
+    store: Store, api: BudgetApi, activity: MainActivity, start: String, linkToken: String?, notice: String,
     onSignedIn: (opensSetup: Boolean) -> Unit,
 ) {
     var mode by rememberSaveable(start, linkToken) { mutableStateOf(when (start) {
@@ -94,19 +97,20 @@ internal fun SignIn(
         "verify" -> "Verify email"
         else -> "Sign in"
     }
-    fun submit(action: String = mode) {
+    fun submit(action: String = mode, callback: Uri? = null) {
         if (busy) return
-        useServer()
+        if (action != "browser") useServer()
         feedback = ""; failed = false
         busy = true
         scope.launch {
             try {
                 val address = email.trim()
                 when (action) {
-                    "login", "register", "invite", "demo" -> {
+                    "login", "register", "invite", "demo", "browser" -> {
                         val result = withContext(Dispatchers.IO) {
                             when (action) {
                                 "demo" -> api.demo()
+                                "browser" -> api.request("POST", "/api/auth/android/exchange", store.websiteProof(requireNotNull(callback)), auth = false)
                                 "login" -> api.login(address, password, code.trim().ifBlank { null })
                                 else -> {
                                     require(password.length >= 10) { "Use at least 10 characters." }
@@ -124,7 +128,7 @@ internal fun SignIn(
                             val token = result.getString("token")
                             val homes = withContext(Dispatchers.IO) { api.households(token) }.getJSONArray("households")
                             store.saveSession(token, user.getString("id"), user.optString("theme", store.theme), homes.optJSONObject(0)?.getString("id"))
-                            onSignedIn(action == "register" || (action == "login" && user.optString("onboardingStep", "done") != "done"))
+                            onSignedIn(action == "register" || (action in setOf("login", "browser") && user.optString("onboardingStep", "done") != "done"))
                         }
                     }
                     "forgot" -> {
@@ -162,6 +166,13 @@ internal fun SignIn(
             }
         }
     }
+    val browserReturn = activity.browserReturn.value
+    LaunchedEffect(browserReturn, busy) {
+        if (browserReturn != null && !busy) {
+            activity.browserReturn.value = null
+            submit("browser", browserReturn)
+        }
+    }
     val needsEmail = mode in setOf("login", "register", "invite", "forgot")
     val needsPassword = mode in setOf("login", "register", "invite", "reset")
     val ready = !busy && (!needsEmail || email.isNotBlank()) && (!needsPassword || password.isNotEmpty()) &&
@@ -195,6 +206,15 @@ internal fun SignIn(
             if (feedback.isNotBlank()) Text(feedback, color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
             Button(onClick = { submit() }, modifier = Modifier.fillMaxWidth(), enabled = ready) { Text(if (busy) "Please wait…" else primaryLabel) }
             if (mode == "login") {
+                TextButton(onClick = {
+                    try {
+                        useServer()
+                        activity.startActivity(Intent(Intent.ACTION_VIEW, store.beginWebsiteSignIn()).addCategory(Intent.CATEGORY_BROWSABLE))
+                    } catch (error: Exception) {
+                        failed = true
+                        feedback = error.message ?: "Could not open the browser."
+                    }
+                }, enabled = !busy) { Text("Use website sign-in") }
                 TextButton(onClick = { select("forgot") }, enabled = !busy) { Text("Forgot password?") }
                 TextButton(onClick = { select("register") }, enabled = !busy) { Text("Create a household") }
                 TextButton(onClick = { select("invite") }, enabled = !busy) { Text("Join a household") }
