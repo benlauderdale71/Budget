@@ -1,3 +1,4 @@
+import { sessionToken } from "../device-suite.js";
 import { useEffect, useId, useRef, useState } from "react";
 import { MerchantCorrections } from "./MerchantCorrections.js";
 import { ImportCategorization } from "./ImportCategorization.js";
@@ -291,7 +292,7 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
           const body = new FormData();
           body.set("file", file);
           body.set("transactionId", created.id!);
-          const token = localStorage.getItem("budgetcents.token");
+          const token = sessionToken();
           const response = await fetch(scoped(session.householdId, "/attachments"), { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body });
           if (!response.ok) throw new Error("The transaction was saved. The receipt was not accepted.");
         }

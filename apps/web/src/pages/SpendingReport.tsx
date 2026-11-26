@@ -1,3 +1,4 @@
+import { printPage } from "../device-suite.js";
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import type { DetailedSpendingReport, SpendingBreakdown, SpendingFilters, SpendingLine } from "@budgetcents/domain";
@@ -37,7 +38,7 @@ function SpendingReportBody() {
   const household=session.households.find(h=>h.id===session.householdId);
   return <div className="spending-report"><Page title="Spending report" lede="See where your money went, compare periods, and inspect every category and purchase." actions={<div className="row report-no-print">
     <button className="btn-secondary" disabled={!data||!data.lines.length||hidden||session.offline||exporting} onClick={async()=>{setExporting(true);setError("");try{await downloadFile(scoped(session.householdId,`/reports/spending-detail?${query}&format=csv`,session.spaceId),`spending-${data!.from}-to-${data!.to}.csv`);}catch(e){setError(e instanceof Error?e.message:"Could not export report.");}finally{setExporting(false);}}}>{exporting?"Exporting…":"Export full CSV"}</button>
-    <button className="btn-secondary" disabled={!data} onClick={()=>window.print()}>Print / save PDF</button>
+    <button className="btn-secondary" disabled={!data} onClick={printPage}>Print / save PDF</button>
   </div>}>
     {error?<ErrorNote message={error}/>:null}
     {session.offline?<Notice>This report may use previously loaded data while you are offline. Connect to refresh or export.</Notice>:null}

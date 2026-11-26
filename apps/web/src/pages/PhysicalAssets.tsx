@@ -1,12 +1,19 @@
+import { sessionToken, saveTextFile } from "../device-suite.js";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, downloadFile } from "../api.js";
-import { minorToInput, parseAmount } from "../format.js";
+import { minorToInput, parseAmount, todayISO } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
 import { Modal as Dialog, ErrorNote, Field, Loading, Money, Notice, Page, useLoad } from "../ui.js";
-import { ASSET_CATEGORIES, SOURCE_TYPES, inventorySummary, valueSearchLinks, type PhysicalAsset, type AssetEstimate } from "../asset-tools.js";
+import { ASSET_CATEGORIES, SOURCE_TYPES, inventorySummary, type PhysicalAsset, type AssetEstimate } from "../asset-tools.js";
 
+import { AssetResearch } from "./AssetResearch.js";
+import { priceIndexSource } from "../asset-reference.js";
+import { searchDescription } from "../asset-valuation.js";
 const ACCEPT=".png,.jpg,.jpeg,.webp,.pdf,.csv,.xls,.xlsx,.tsv,.txt,.json";
-const today=()=>new Date().toLocaleDateString("en-CA");
+const today=todayISO;
+function estimateBasis(estimate: AssetEstimate) {
+  return estimate.sourceType === "manual" && estimate.sourceName === priceIndexSource ? "State price index" : SOURCE_TYPES[estimate.sourceType];
+}
 const emptyAsset=():PhysicalAsset=>({id:"",name:"",category:"Other",location:"",brand:"",model:"",serialNumber:"",condition:"unknown",quantity:1,tags:[],notes:"",purchaseDate:"",purchaseMinor:null,visibility:"private",archived:false,version:1,canChangeVisibility:true,estimate:null,estimates:[],documents:[]});
 function useAction() {
   const [busy,setBusy]=useState(false),[error,setError]=useState("");const lock=useRef(false);
@@ -22,13 +29,15 @@ function AssetFields({asset,categories}: {asset:PhysicalAsset;categories:string[
     <Field label="Quantity"><input name="quantity" type="number" required min={1} max={10000} defaultValue={asset.quantity}/></Field>
     <Field label="Brand / make"><input name="brand" maxLength={100} defaultValue={asset.brand}/></Field>
     <Field label="Model"><input name="model" maxLength={100} defaultValue={asset.model}/></Field>
-    <Field label="Serial number / VIN"><input name="serialNumber" maxLength={160} defaultValue={asset.serialNumber}/></Field>
     <Field label="Condition"><select name="condition" defaultValue={asset.condition}>{["unknown","new","excellent","good","fair","poor"].map(s=><option key={s}>{s}</option>)}</select></Field>
+    <Field label="Who can see this asset?"><select name="visibility" defaultValue={asset.visibility} disabled={!asset.canChangeVisibility}><option value="private">Only me</option><option value="shared">Household members</option></select></Field>
+    <details className="asset-extra"><summary>Purchase details, serial number and notes</summary><div className="asset-fields">
+    <Field label="Serial number / VIN"><input name="serialNumber" maxLength={160} defaultValue={asset.serialNumber}/></Field>
     <Field label={`Purchase price per item (${currency})`}><input name="purchase" inputMode="decimal" defaultValue={asset.purchaseMinor===null?"":minorToInput(asset.purchaseMinor,currency)}/></Field>
     <Field label="Purchase date"><input name="purchaseDate" type="date" defaultValue={asset.purchaseDate}/></Field>
     <Field label="Tags (comma separated)"><input name="tags" defaultValue={asset.tags.join(", ")} placeholder="Insured, warranty, heirloom…"/></Field>
-    <Field label="Who can see this asset?"><select name="visibility" defaultValue={asset.visibility} disabled={!asset.canChangeVisibility}><option value="private">Only me</option><option value="shared">Household members</option></select></Field>
     <Field label="Notes"><textarea name="notes" maxLength={4000} defaultValue={asset.notes}/></Field>
+    </div></details>
   </div>;
 }
 function assetForm(data:FormData,asset:PhysicalAsset,currency:string) {
@@ -39,7 +48,7 @@ function EstimateFields({estimate}: {estimate?:AssetEstimate|null}) {
   return <div className="asset-fields">
     <Field label={`Estimated value per item (${currency})`}><input name="value" inputMode="decimal" required defaultValue={estimate?minorToInput(estimate.amountMinor,currency):""}/></Field>
     <Field label="Value as of"><input name="asOf" type="date" required defaultValue={estimate?.asOf||today()}/></Field>
-    <Field label="Source name"><input name="sourceName" maxLength={200} required defaultValue={estimate?.sourceName||""} placeholder="e.g. eBay sold listing or Smith Appraisals"/></Field>
+    <Field label="Source name"><input name="sourceName" maxLength={200} required defaultValue={estimate?.sourceName||"Personal estimate"} placeholder="e.g. eBay sold listing or Smith Appraisals"/></Field>
     <Field label="Source link (optional)"><input name="sourceUrl" type="url" maxLength={2000} defaultValue={estimate?.sourceUrl||""} placeholder="https://…"/></Field>
     <Field label="Value basis"><select name="sourceType" defaultValue={estimate?.sourceType||"manual"}>{Object.entries(SOURCE_TYPES).map(([key,label])=><option value={key} key={key}>{label}</option>)}</select></Field>
     <Field label="Estimate notes"><textarea name="estimateNotes" maxLength={4000} defaultValue={estimate?.notes||""} placeholder="Comparable condition, mileage, size, sale date…"/></Field>
@@ -80,19 +89,57 @@ function Inventory() {
   </Page>;
 }
 function AssetEditor({asset,categories,close,saved}:{asset:PhysicalAsset;categories:string[];close:()=>void;saved:()=>void}) {
-  const session=useSession(),action=useAction();const [withEstimate,setWithEstimate]=useState(false);
-  return <Dialog title={asset.id?"Edit asset":"Add physical asset"} onClose={close}><form onSubmit={e=>{const form=e.currentTarget;void action.run(async()=>{const data=new FormData(form),body=assetForm(data,asset,session.currency);await api(scoped(session.householdId,`/physical-assets${asset.id?`/${asset.id}`:""}`),{method:asset.id?"PUT":"POST",body:JSON.stringify({...body,...(!asset.id&&withEstimate?{estimate:estimateForm(data,session.currency)}:{})})});saved();},e);}}><AssetFields asset={asset} categories={categories}/>{!asset.id&&<><label className="row"><input type="checkbox" checked={withEstimate} onChange={e=>setWithEstimate(e.target.checked)}/>Add an estimated value now</label>{withEstimate&&<EstimateFields/>}</>}{action.error&&<Notice kind="bad">{action.error}</Notice>}<button className="btn" disabled={action.busy}>{action.busy?"Saving…":"Save asset"}</button></form></Dialog>;
+  const session=useSession(),action=useAction();
+  const [mode,setMode]=useState("none"),[researched,setResearched]=useState<AssetEstimate|null>(null);
+  const [identity,setIdentity]=useState({name:asset.name,brand:asset.brand,model:asset.model,category:asset.category,condition:asset.condition});
+  const [purchase,setPurchase]=useState({date:asset.purchaseDate,amount:asset.purchaseMinor});
+  const identityKey=JSON.stringify([identity,purchase]);
+  return <Dialog title={asset.id?"Edit asset":"Add physical asset"} onClose={close}><form onChange={e=>{
+    const field: EventTarget = e.target;
+    if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement)) return;
+    const name=field.name;
+    if (name==="purchaseDate" || name==="purchase") {
+      const value=field.value;
+      if (name==="purchaseDate") setPurchase(current=>({...current,date:value}));
+      else {
+        let amount:number|null=null;
+        try { if(value) amount=parseAmount(value,session.currency); } catch { /* edited amount is incomplete */ }
+        setPurchase(current=>({...current,amount}));
+      }
+      setResearched(null);
+    }
+    if (["name","brand","model","category","condition"].includes(name)) {
+      const value=field.value;
+      setIdentity(current=>({...current,[name]:value}));setResearched(null);
+    }
+  }} onSubmit={e=>{const form=e.currentTarget;void action.run(async()=>{
+    const data=new FormData(form),body=assetForm(data,asset,session.currency);
+    const estimate=mode==="manual"?estimateForm(data,session.currency):mode==="research"?researched:null;
+    await api(scoped(session.householdId,`/physical-assets${asset.id?`/${asset.id}`:""}`),{method:asset.id?"PUT":"POST",body:JSON.stringify({...body,...(!asset.id&&estimate?{estimate}:{})})});saved();
+  },e);}}>
+    <AssetFields asset={asset} categories={categories}/>
+    {!asset.id&&<fieldset className="asset-value-choice"><legend>Current value</legend>
+      <div className="chips">{[["none","Add later"],["manual","Enter value"],["research","Look up value"]].map(([v,label])=><button className="chip" type="button" key={v} aria-pressed={v===mode} onClick={()=>{setMode(v);setResearched(null);}}>{label}</button>)}</div>
+      {mode==="manual"&&<EstimateFields/>}
+      {mode==="research"&&<AssetResearch key={identityKey} purchased={purchase.date} purchaseMinor={purchase.amount} description={searchDescription(identity)} category={identity.category} condition={identity.condition} onEstimate={setResearched}/>}
+    </fieldset>}
+    {action.error&&<Notice kind="bad">{action.error}</Notice>}<button className="btn" disabled={action.busy}>{action.busy?"Saving…":researched?"Save asset and estimate":"Save asset"}</button>
+  </form></Dialog>;
 }
 function AssetDetails({initial,close,edit}:{initial:PhysicalAsset;close:()=>void;edit:(a:PhysicalAsset)=>void}) {
-  const session=useSession(),access=useAccess(),action=useAction();const [asset,setAsset]=useState(initial),[query,setQuery]=useState([initial.brand,initial.model,initial.name].filter(Boolean).join(" ")),[valuing,setValuing]=useState(false);
+  const session=useSession(),access=useAccess(),action=useAction();const [asset,setAsset]=useState(initial),[researched,setResearched]=useState<AssetEstimate|null>(null),[valuing,setValuing]=useState(false);
   const base=scoped(session.householdId,`/physical-assets/${asset.id}`);
   const update=(a:PhysicalAsset)=>{setAsset(a);session.bump();};
   return <Dialog title={asset.name} onClose={close}><p>{asset.category} · {asset.location||"No location"} · {asset.visibility==="private"?"Only you":"Shared with household"}</p><p>{[asset.brand,asset.model].filter(Boolean).join(" ")} · {asset.condition} · Quantity {asset.quantity}</p>{asset.serialNumber&&<p>Serial / VIN: {asset.serialNumber}</p>}{asset.purchaseDate&&<p>Purchased {asset.purchaseDate}</p>}{asset.purchaseMinor!==null&&<p>Purchase price per item: <Money minor={asset.purchaseMinor}/></p>}{asset.notes&&<p className="asset-notes">{asset.notes}</p>}
-    <div className="card"><h3>Latest dated estimate</h3>{asset.estimate?<><p className="figure"><Money minor={asset.estimate.amountMinor*asset.quantity}/></p><p><Money minor={asset.estimate.amountMinor}/> per item · {asset.estimate.asOf} · {SOURCE_TYPES[asset.estimate.sourceType]}</p><Source estimate={asset.estimate}/></>:<p>No value has been recorded.</p>}</div>
-    <h3>Find a value</h3><Field label="Search description"><input value={query} maxLength={500} onChange={e=>setQuery(e.target.value)}/></Field><p className="muted">Searches open another site with this description only. Compare model, condition and location. Asking prices are not completed sale prices.</p><div className="row asset-searches">{valueSearchLinks(query,asset.category).map(link=><a className="btn-secondary" href={link.url} target="_blank" rel="noopener noreferrer" key={link.name}>{link.name}</a>)}</div>
-    {access.canWrite&&<button className="btn" onClick={()=>setValuing(v=>!v)}>{valuing?"Cancel estimate":"Record a value & source"}</button>}
+    <div className="card"><h3>Latest dated estimate</h3>{asset.estimate?<><p className="figure"><Money minor={asset.estimate.amountMinor*asset.quantity}/></p><p><Money minor={asset.estimate.amountMinor}/> per item · {asset.estimate.asOf} · {estimateBasis(asset.estimate)}</p><Source estimate={asset.estimate}/></>:<p>No value has been recorded.</p>}</div>
+    <h3>Research the current value</h3>
+    <AssetResearch purchased={asset.purchaseDate} purchaseMinor={asset.purchaseMinor} description={searchDescription(asset)} category={asset.category} condition={asset.condition} onEstimate={setResearched}/>
+    {access.canWrite&&researched&&<button className="btn" disabled={action.busy} onClick={()=>void action.run(async()=>{
+      const {asset:updated}=await api<{asset:PhysicalAsset}>(`${base}/estimates`,{method:"POST",body:JSON.stringify({...researched,version:asset.version})});update(updated);setResearched(null);
+    })}>Save researched estimate</button>}
+    {access.canWrite&&<button className="btn" onClick={()=>setValuing(v=>!v)}>{valuing?"Cancel estimate":"Enter value manually"}</button>}
     {valuing&&<form onSubmit={e=>{const form=e.currentTarget;void action.run(async()=>{const result=await api<{asset:PhysicalAsset}>(`${base}/estimates`,{method:"POST",body:JSON.stringify({...estimateForm(new FormData(form),session.currency),version:asset.version})});update(result.asset);setValuing(false);},e);}}><EstimateFields/><button className="btn" disabled={action.busy}>Save estimate</button></form>}
-    {!!asset.estimates.length&&<details><summary>Value history ({asset.estimates.length})</summary>{asset.estimates.map((estimate,i)=><article className="asset-history" key={estimate.id||i}><p><Money minor={estimate.amountMinor}/> per item · {estimate.asOf} · {SOURCE_TYPES[estimate.sourceType]}</p><Source estimate={estimate}/>{estimate.notes&&<p>{estimate.notes}</p>}</article>)}</details>}
+    {!!asset.estimates.length&&<details><summary>Value history ({asset.estimates.length})</summary>{asset.estimates.map((estimate,i)=><article className="asset-history" key={estimate.id||i}><p><Money minor={estimate.amountMinor}/> per item · {estimate.asOf} · {estimateBasis(estimate)}</p><Source estimate={estimate}/>{estimate.notes&&!session.user?.privacyMode&&<p>{estimate.notes}</p>}</article>)}</details>}
     <h3>Photos & documents</h3><p className="muted">Original files are visible only to the person who uploaded them, even when the asset is shared.</p>{asset.documents.map(doc=><div key={doc.id}>{/\.(png|jpe?g|webp)$/i.test(doc.filename)&&<AssetPhoto document={doc}/>}<div className="row"><button className="btn-quiet" disabled={action.busy} onClick={()=>action.run(()=>downloadFile(scoped(session.householdId,`/physical-assets/documents/${doc.id}`),doc.filename))}>{doc.filename}</button>{access.canWrite&&<button className="btn-quiet" disabled={action.busy} onClick={()=>action.run(async()=>{await api(`${base}/files/${doc.id}`,{method:"DELETE"});update({...asset,documents:asset.documents.filter(d=>d.id!==doc.id)});})}>Remove attachment</button>}</div></div>)}
     {access.canWrite&&<form onSubmit={e=>{const form=e.currentTarget;void action.run(async()=>{const data=new FormData(form);const result=await api<{asset:PhysicalAsset}>(`${base}/files`,{method:"POST",body:data});update(result.asset);form.reset();},e);}}><Field label="Attach a photo or document (up to 8 MB)"><input type="file" name="file" accept={ACCEPT} required/></Field><button className="btn-secondary" disabled={action.busy}>Attach file</button></form>}
     {action.error&&<Notice kind="bad">{action.error}</Notice>}{access.canWrite&&<div className="row"><button className="btn-secondary" onClick={()=>edit(asset)}>Edit details</button><button className="btn-quiet" disabled={action.busy} onClick={()=>action.run(async()=>{const result=await api<{asset:PhysicalAsset}>(base,{method:"PUT",body:JSON.stringify({...asset,archived:!asset.archived})});update(result.asset);})}>{asset.archived?"Restore to inventory":"Archive asset"}</button></div>}
@@ -103,7 +150,7 @@ function AssetPhoto({document}:{document:{id:string;filename:string}}) {
   const session=useSession(),[url,setUrl]=useState(""),[error,setError]=useState("");
   useEffect(()=>{
     const controller=new AbortController();let objectUrl="";
-    fetch(scoped(session.householdId,`/physical-assets/documents/${document.id}?preview=image`),{headers:{authorization:`Bearer ${localStorage.getItem("budgetcents.token")||""}`},signal:controller.signal})
+    fetch(scoped(session.householdId,`/physical-assets/documents/${document.id}?preview=image`),{headers:{authorization:`Bearer ${sessionToken()||""}`},signal:controller.signal})
       .then(async r=>{if(!r.ok)throw new Error("Photo preview unavailable. Download the original file below.");return r.blob();})
       .then(blob=>{if(controller.signal.aborted)return;objectUrl=URL.createObjectURL(blob);setUrl(objectUrl);})
       .catch(e=>{if(!controller.signal.aborted)setError(e.message);});
@@ -127,7 +174,7 @@ function AssetImport({categories,close,saved}:{categories:string[];close:()=>voi
       <p>Upload photos, PDFs, Excel workbooks, CSV, TSV, TXT or JSON. Up to 8 MB, 8 PDF pages, or 500 assets per file. Categories are suggested from names; you can edit them.</p>
       <p className="muted">Photos and scans use text recognition. If an object has no readable label, name it in the preview. No value is inferred from the picture.</p>
       <form onSubmit={e=>{const form=e.currentTarget;void action.run(async()=>{const result=await api<ImportPreview>(`${base}/imports`,{method:"POST",body:new FormData(form)});setPreview(result);setRows(result.rows.map(r=>({...r,selected:!r.duplicate,reviewed:false})));setReviewed(false);},e);}}><Field label="Asset file"><input name="file" type="file" accept={ACCEPT} required/></Field><button className="btn-secondary" disabled={action.busy}>{action.busy?"Reading file…":"Read file & preview"}</button></form>
-      <details><summary>File layout & template</summary><p>Spreadsheet columns: Name, Category, Location, Brand, Model, Serial number, Condition, Quantity, Purchase price, Purchase date, Estimated value, Source, Source URL, As of, Tags, Notes. Only Name is required. Dates use YYYY-MM-DD; values are per item in {session.currency}. Each Excel sheet is read.</p><button className="btn-quiet" onClick={()=>{const blob=new Blob(['Name,Category,Location,Brand,Model,Condition,Quantity,Purchase price,Purchase date,Estimated value,Source,Source URL,As of,Tags,Notes\nOffice desk,Furniture,Office,,,good,1,,,,,,,work,\n'],{type:"text/csv"});const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="asset-import-template.csv";a.click();URL.revokeObjectURL(url);}}>Download CSV template</button></details>
+      <details><summary>File layout & template</summary><p>Spreadsheet columns: Name, Category, Location, Brand, Model, Serial number, Condition, Quantity, Purchase price, Purchase date, Estimated value, Source, Source URL, As of, Tags, Notes. Only Name is required. Dates use YYYY-MM-DD; values are per item in {session.currency}. Each Excel sheet is read.</p><button className="btn-quiet" onClick={()=>{saveTextFile('Name,Category,Location,Brand,Model,Condition,Quantity,Purchase price,Purchase date,Estimated value,Source,Source URL,As of,Tags,Notes\nOffice desk,Furniture,Office,,,good,1,,,,,,,work,\n',"asset-import-template.csv","text/csv");}}>Download CSV template</button></details>
       {preview&&<><h3>{preview.filename}</h3><ul>{preview.warnings.map((warning,i)=><li key={i}>{warning}</li>)}</ul><details><summary>Extracted text</summary><pre className="asset-extracted">{preview.text||"No readable text. The original file is attached to the saved asset."}</pre></details>
         <div className="row"><button className="btn-quiet" onClick={()=>setRows(all=>all.map(r=>({...r,selected:!r.duplicate})))}>Select available rows</button><button className="btn-quiet" onClick={()=>setRows(all=>all.map(r=>({...r,selected:false})))}>Clear selection</button><button className="btn-quiet" onClick={()=>setRows(all=>all.map(r=>r.selected&&!r.issues.length?{...r,reviewed:true}:r))}>Mark rows without warnings reviewed</button></div>
         <div className="asset-import-list">{rows.map(row=><article className="card" key={row.key}><div className="row"><label className="row"><input type="checkbox" checked={row.selected} disabled={row.duplicate} onChange={e=>setRow(row.key,{selected:e.target.checked})}/><b>{row.name||"Unnamed asset"}</b></label><span>{row.duplicate?"Already imported":row.reviewed?"Reviewed":"Needs review"}</span></div><p>{row.category} · {row.location||"No location"} · Qty {row.quantity} · {row.estimateMinor===null?"No estimate":<Money minor={row.estimateMinor}/>}</p>{row.issues.length>0&&<p className="muted">{row.issues.join(" ")}</p>}<button className="btn-secondary" disabled={row.duplicate} onClick={()=>setEditing(row)}>Review / edit row</button></article>)}</div>

@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { mobileTabs, suiteGroups } from "./suite-navigation.js";
+import { SuiteIcon } from "./SuiteIcon.js";
+import { api } from "./api.js";
+import { isDeviceSuite, openDeviceMarkets } from "./device-suite.js";
 import { useAccess, useSession } from "./session.js";
 import { DevMail, ResetPassword, VerifyEmail } from "./pages/AccountAccess.js";
 import { Auth } from "./pages/Auth.js";
@@ -27,22 +31,6 @@ interface InstallPrompt extends Event {
   prompt: () => Promise<void>;
 }
 
-const primary = [
-  ["/", "Home"],
-  ["/plan", "Plan"],
-  ["/activity", "Activity"],
-  ["/spending", "Spending report"],
-  ["/accounts", "Accounts"],
-  ["/wealth", "Wealth"],
-  ["/physical-assets", "Physical assets"],
-] as const;
-
-const groups: { title: string; links: [string, string][] }[] = [
-  { title: "Planning", links: [["/forecast", "Forecast"], ["/catch-up","Paycheck catch-up"], ["/receipts", "Receipts"], ["/paychecks", "Paychecks"], ["/calendar", "Calendar"], ["/bills", "Bills"], ["/debts", "Debts"], ["/goals", "Goals"], ["/alerts", "Alerts"]] },
-  { title: "Insight", links: [["/reports", "Reports"], ["/statement-coverage","Statement coverage"], ["/investments", "Investments"], ["/stocks-crypto/", "Stocks & Crypto"], ["/retirement", "Retirement"], ["/assistant", "Assistant"]] },
-  { title: "Household", links: [["/setup", "Setup"], ["/household", "Sharing"], ["/rules", "Rules"], ["/import", "Import"], ["/providers", "Connections"], ["/cases", "Requests"], ["/credit", "Credit"], ["/learn", "Learn"], ["/checklists", "Checklists"], ["/settings", "Settings"]] },
-];
-
 const ROLE_LABEL: Record<string, string> = {
   readonly: "Read-only",
   coach: "Coach",
@@ -54,6 +42,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   const session = useSession();
   const access = useAccess();
   const navigate = useNavigate();
+  const [accountOpen,setAccountOpen]=useState(false);
   const [updateReady, setUpdateReady] = useState(false);
   const [install, setInstall] = useState<InstallPrompt | null>(null);
   const [standalone, setStandalone] = useState(false);
@@ -75,6 +64,26 @@ function Shell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
+  const [marketError,setMarketError]=useState("");
+  useEffect(()=>{
+    if(!isDeviceSuite())return;
+    let opening=false;
+    function marketClick(event:MouseEvent) {
+      const link=event.target instanceof Element?event.target.closest("a[href]"):null;
+      if(!(link instanceof HTMLAnchorElement))return;
+      const url=new URL(link.href);
+      if(url.origin!==location.origin || !/^\/stocks-crypto(?:\/|$)/.test(url.pathname))return;
+      event.preventDefault();event.stopPropagation();
+      if(opening)return;
+      opening=true;setMarketError("");
+      void api("/api/auth/market-session",{method:"POST"},{queue:false})
+        .then(()=>openDeviceMarkets(url.pathname+url.search+url.hash))
+        .catch(()=>setMarketError("Stocks & Crypto could not connect. Try opening Markets again."))
+        .finally(()=>{opening=false;});
+    }
+    document.addEventListener("click",marketClick,true);
+    return ()=>document.removeEventListener("click",marketClick,true);
+  },[]);
   if (!session.ready) return <p className="state">Opening Budget HQ PRO…</p>;
   if (!session.user || !session.householdId) return <Navigate to="/login" replace />;
   const household = session.households.find((item) => item.id === session.householdId);
@@ -84,20 +93,21 @@ function Shell({ children }: { children: React.ReactNode }) {
       <aside className="sidebar">
         <div className="wordmark">Budget <i>HQ</i> PRO</div>
         <nav aria-label="Primary">
-          {primary.map(([to, label]) => <NavLink key={to} to={to} end={to === "/"} className="nav-link">{label}</NavLink>)}
-          {groups.map((group) => (
-            <div key={group.title}>
-              <div className="nav-group">{group.title}</div>
-              {group.links.map(([to, label]) => <NavLink key={to} to={to} reloadDocument={to === "/stocks-crypto/"} className="nav-link">{label}</NavLink>)}
-            </div>
-          ))}
+          {suiteGroups.map(group=><div key={group.name}><div className="nav-group">{group.name}</div>
+            {group.tools.map(([to,label])=><NavLink className="nav-link" key={to} to={to} end={to==="/"} reloadDocument={to==="/stocks-crypto/"}>{label}</NavLink>)}</div>)}
+          <NavLink className="nav-link" to="/more">All tools</NavLink>
         </nav>
       </aside>
       <div className="main">
-        <header className="topbar">
+        <header className="mobile-mast">
+          <NavLink to="/" className="mobile-brand" aria-label="Budget HQ Pro home"><img src="/icon-192.png" width="36" height="36" alt=""/><span><b>Budget HQ Pro</b><small>{household?.name}</small></span></NavLink>
+          <button type="button" className="mobile-account" aria-expanded={accountOpen} aria-controls="budget-account-controls" aria-label="Account and search" onClick={()=>setAccountOpen(!accountOpen)}><SuiteIcon name="Account"/></button>
+        </header>
+        <header id="budget-account-controls" className={`topbar ${accountOpen?"mobile-open":""}`}>
           <form className="row" role="search" onSubmit={(event) => {
             event.preventDefault();
             const data = new FormData(event.currentTarget);
+            setAccountOpen(false);
             navigate(`/activity?q=${encodeURIComponent(String(data.get("q") ?? ""))}`);
           }}>
             <label className="sr" htmlFor="search">Search transactions</label>
@@ -125,13 +135,13 @@ function Shell({ children }: { children: React.ReactNode }) {
             sessionStorage.setItem("budgetcents.reload", "1");
             navigator.serviceWorker.getRegistration().then((registration) => registration?.waiting?.postMessage("skip-waiting"));
           }}>Reload to update</button></div> : null}
-          {!standalone && install ? <div className="banner" role="status">Install Budget HQ PRO on this device. It opens in its own window. The installed copy still needs a completed online load before it can start offline. <button className="btn-secondary" type="button" onClick={() => { void install.prompt(); setInstall(null); }}>Install</button></div> : null}
+          {!isDeviceSuite() && !standalone && install ? <div className="banner" role="status">Install Budget HQ PRO on this device. It opens in its own window. The installed copy still needs a completed online load before it can start offline. <button className="btn-secondary" type="button" onClick={() => { void install.prompt(); setInstall(null); }}>Install</button></div> : null}
+          {marketError && <p className="banner bad" role="alert">{marketError}</p>}
           {children}
         </main>
       </div>
       <nav className="tabbar" aria-label="Mobile">
-        {([["/", "Home"], ["/plan", "Plan"], ["/activity", "Activity"], ["/wealth", "Wealth"]] as const).map(([to, label]) => <NavLink key={to} to={to} end={to === "/"}>{label}</NavLink>)}
-        <NavLink to="/more">More</NavLink>
+        {mobileTabs.map(([to,label])=><NavLink key={to} to={to} end={to==="/"} reloadDocument={to==="/stocks-crypto/"}><SuiteIcon name={label}/><span>{label}</span></NavLink>)}
       </nav>
     </div>
   );

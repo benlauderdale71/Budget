@@ -1,3 +1,4 @@
+import { isDeviceSuite, openDeviceReceipt, sessionToken } from "../device-suite.js";
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -178,9 +179,15 @@ export function Receipts() {
     setAcceptDate(false);
     setReplaceSplits(false);
     setLinkPreview("");
-    const token = localStorage.getItem("budgetcents.token");
+    const token = sessionToken();
     const response = await fetch(scoped(session.householdId, `/attachments/${id}/file`), { headers: token ? { authorization: `Bearer ${token}` } : {} });
     if (!response.ok) throw new Error("The receipt preview could not be opened.");
+    const mime = response.headers.get("content-type") ?? "";
+    if (isDeviceSuite() && mime.includes("pdf")) {
+      await response.body?.cancel();
+      setPreview(current => { if (current?.url) URL.revokeObjectURL(current.url); return {url:"", type:mime}; });
+      return loaded;
+    }
     const blob = await response.blob();
     setPreview((current) => {
       if (current) URL.revokeObjectURL(current.url);
@@ -269,7 +276,7 @@ export function Receipts() {
     setError("");
     const body = new FormData();
     body.set("file", file);
-    const token = localStorage.getItem("budgetcents.token");
+    const token = sessionToken();
     const response = await fetch(scoped(session.householdId, "/attachments"), { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error ?? "The receipt was not stored.");
@@ -332,7 +339,7 @@ export function Receipts() {
         <div className="grid two" style={{ marginTop: 16 }}>
           <article className="card">
             <p className="kicker">{STATUS[detail.draft.status] ?? detail.draft.status}{busy ? ` · ${busy}` : ""}</p>
-            {preview?.type.includes("pdf") ? <iframe className="receipt-preview" title="Receipt preview" src={preview.url} /> : preview ? <img className="receipt-preview" alt="Receipt preview" src={preview.url} /> : <p>Loading the preview…</p>}
+            {preview?.type.includes("pdf") && isDeviceSuite() ? <button className="btn-secondary" onClick={()=>openDeviceReceipt(scoped(session.householdId, `/attachments/${selected}/file`))}>Preview receipt PDF</button> : preview?.type.includes("pdf") ? <iframe className="receipt-preview" title="Receipt preview" src={preview.url} /> : preview ? <img className="receipt-preview" alt="Receipt preview" src={preview.url} /> : <p>Loading the preview…</p>}
             <p className="muted">{detail.draft.engine ? `Read by ${detail.draft.engine}.` : "Not read yet."} {detail.draft.confidence == null ? detail.draft.confidenceNote ?? "No confidence score was reported." : `Mean word confidence ${detail.draft.confidence}. ${detail.draft.confidenceNote ?? ""}`} The confidence score is an engine measurement. It does not prove the total or the category allocation.</p>
             {detail.draft.error ? <Notice kind="bad">{detail.draft.error} You can type the fields below. Missing lines do not block a manual receipt.</Notice> : null}
             {detail.possibleDuplicates.length ? <p>Possible duplicate file: {detail.possibleDuplicates.map((item) => item.attachmentId).join(", ")}. Nothing was merged.</p> : null}

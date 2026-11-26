@@ -1,0 +1,11 @@
+{
+  "storefrontPath": "/api/2026-10/graphql.json",
+  "query": "query AssetListings($term:String!){search(query:$term,first:18,types:[PRODUCT]){nodes{... on Product{title vendor onlineStoreUrl availableForSale variants(first:30){nodes{title availableForSale price{amount currencyCode}}}}}}}",
+  "sources": [
+    {"id":"baggage","name":"Unclaimed Baggage","host":"www.unclaimedbaggage.com","kind":"shopify","categories":["*"]},
+    {"id":"gazelle","name":"Gazelle","host":"buy.gazelle.com","kind":"shopify","categories":["Electronics","Other"]},
+    {"id":"restore","name":"Habitat ReStore, Greater Des Moines","host":"dmrestore.org","kind":"shopify","categories":["Furniture","Appliances","Tools & equipment","Collectibles & art","Other"]},
+    {"id":"pawn","name":"Eddie’s Pawn","host":"eddiespawnshopdaphne.com","kind":"woo","categories":["Electronics","Tools & equipment","Jewelry & watches","Sports & outdoors","Other"]},
+    {"id":"music","name":"Chicago Music Exchange","host":"www.chicagomusicexchange.com","kind":"shopify","categories":["Musical instruments"]}
+  ]
+}

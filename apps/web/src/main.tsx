@@ -1,11 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { connectDevice, isDeviceSuite } from "./device-suite.js";
 import { App } from "./App.js";
 import { SessionProvider } from "./session.js";
 import "./styles.css";
 
-if (import.meta.env.PROD && "serviceWorker" in navigator) {
+if (!isDeviceSuite() && import.meta.env.PROD && "serviceWorker" in navigator) {
   let reloading = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (reloading || sessionStorage.getItem("budgetcents.reload") !== "1") return;
@@ -29,7 +30,7 @@ if (import.meta.env.PROD && "serviceWorker" in navigator) {
   }).catch(() => undefined);
 }
 
-createRoot(document.getElementById("root")!).render(
+void connectDevice().then(()=>createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <BrowserRouter>
       <SessionProvider>
@@ -37,4 +38,4 @@ createRoot(document.getElementById("root")!).render(
       </SessionProvider>
     </BrowserRouter>
   </StrictMode>,
-);
+));

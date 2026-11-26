@@ -37,6 +37,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -100,10 +101,13 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
     val host by activity.navigation
     var tab by rememberSaveable { mutableIntStateOf(tabIndex(start)) }
     var page by rememberSaveable { mutableStateOf(subpage(start)) }
+    var deviceTools by rememberSaveable { mutableStateOf(start !in setOf("home","auth")) }
+    var suiteStart by rememberSaveable { mutableStateOf("/") }
     var seenHost by rememberSaveable { mutableStateOf(start) }
     LaunchedEffect(host) {
         if (host != seenHost) {
             seenHost = host
+            deviceTools = host !in setOf("home","auth")
             tab = tabIndex(host)
             page = subpage(host)
         }
@@ -253,9 +257,11 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                 error = ""
                 inviteToken = store.pendingInvite
                 if (!inviteToken.isNullOrBlank()) {
+                    deviceTools = true
                     page = "invite"
                     openSetup = false
                 } else if (openSetup || opensSetup) {
+                    suiteStart = "/setup"
                     page = "setup"
                     tab = 4
                     openSetup = false
@@ -310,8 +316,16 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
             }
             return@MaterialTheme
         }
-        BackHandler(enabled = page != null) { page = null }
         LaunchedEffect(token) { reload() }
+        if (!deviceTools) {
+            key(store.baseUrl,store.userId,token) {
+                SuiteWorkspace(activity,store,suiteStart,{ deviceTools=true;page=null;tab=4 },{
+                    store.clearSession();refreshWidgets(context);token=null;dash=null;txns=null;page=null;activityIds=null;activityLabel="";suiteStart="/"
+                },{ id->store.householdId=id;store.clearCache();dash=null;txns=null;reload() })
+            }
+            return@MaterialTheme
+        }
+        BackHandler(enabled = page != null) { page = null }
         Scaffold(bottomBar = {
             if (!wide) {
                 NavigationBar {
@@ -330,6 +344,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null, 
                     }
                 }
                 Column(Modifier.weight(1f).padding(16.dp).fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TextButton(onClick={ suiteStart="/";deviceTools=false }) { Text("‹  Full Budget HQ Pro suite") }
                     if (linkNote.isNotBlank()) Text(linkNote)
                 if (error.isNotBlank()) Text(error, color = Color(0xFFB85C50))
                     if (status.isNotBlank()) Text(status)
