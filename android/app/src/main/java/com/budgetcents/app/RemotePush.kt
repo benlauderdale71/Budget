@@ -88,7 +88,7 @@ class RemotePushService : FirebaseMessagingService() {
         if (manager.getNotificationChannel("budgetcents_remote")?.importance == NotificationManager.IMPORTANCE_NONE) return
         val intent = Intent(this, MainActivity::class.java).setAction(Intent.ACTION_VIEW).setData(Uri.parse("budgetcents://alerts"))
         val pending = PendingIntent.getActivity(this, 730, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(this, "budgetcents_remote").setSmallIcon(R.drawable.ic_launcher)
+        val notification = NotificationCompat.Builder(this, "budgetcents_remote").setSmallIcon(R.drawable.ic_mark)
             .setContentTitle("Budget HQ PRO").setContentText("Open Budget HQ PRO to review your notification.")
             .setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build()
         manager.notify(730, notification)

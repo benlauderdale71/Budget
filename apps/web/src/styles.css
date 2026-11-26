@@ -85,6 +85,16 @@ main:focus { outline: none; }
 .auth-points li { border-top: 1px solid rgba(244, 251, 248, 0.18); padding-top: 12px; }
 .auth-panel { display: grid; align-content: center; padding: 32px; background: var(--bg); }
 .wordmark { font-family: var(--serif); font-size: 1.35rem; letter-spacing: -0.03em; }
+.wordmark::before {
+  content: "";
+  display: inline-block;
+  width: 1.6em;
+  height: 1.6em;
+  margin-inline-end: .45em;
+  border-radius: 22%;
+  vertical-align: -.46em;
+  background: #021d2a url("/icon-192.png?v=hq-roof") center / cover no-repeat;
+}
 .wordmark i { font-style: italic; color: #8fd9cc; }
 .auth-panel .wordmark i { color: var(--teal); }
 

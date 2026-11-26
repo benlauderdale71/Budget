@@ -10,19 +10,22 @@ function serviceWorkerPlugin(): Plugin {
     apply: "build",
     async closeBundle() {
       const dist = path.resolve("dist");
-      const assets = await readdir(path.join(dist, "assets"));
+      const assets = (await readdir(path.join(dist, "assets"))).sort();
+      const manifest = JSON.parse(await readFile(path.join(dist, "manifest.webmanifest"), "utf8")) as { icons: { src: string }[] };
       const files = [
         "/",
         "/index.html",
         "/manifest.webmanifest",
-        "/icon.svg",
-        "/icon-192.png",
-        "/icon-512.png",
-        "/icon-maskable-512.png",
+        "/favicon.ico?v=hq-roof",
+        ...manifest.icons.map((icon) => icon.src),
         ...assets.map((name) => `/assets/${name}`),
       ];
       const template = await readFile(path.resolve("public/sw.js"), "utf8");
-      const id = createHash("sha256").update(files.join("\n")).update(template).digest("hex").slice(0, 12);
+      const hash = createHash("sha256").update(files.join("\n")).update(template);
+      for (const url of files.slice(1)) {
+        hash.update(await readFile(path.join(dist, url.split("?")[0])));
+      }
+      const id = hash.digest("hex").slice(0, 12);
       const source = template
         .replace("__CACHE_ID__", id)
         .replace("const PRECACHE = [];", `const PRECACHE = ${JSON.stringify(files)};`);
