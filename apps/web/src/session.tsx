@@ -15,6 +15,7 @@ interface SessionValue {
   currency: string;
   tick: number;
   draftEpoch: number;
+  incomingRevision: number;
   incoming: string;
   offline: boolean;
   queued: number;
@@ -55,6 +56,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [spaceId, setSpaceId] = useState<string | undefined>();
   const [tick, setTick] = useState(0);
   const [draftEpoch, setDraftEpoch] = useState(0);
+  const [incomingRevision, setIncomingRevision] = useState(0);
   const [incoming, setIncoming] = useState("");
   const [offline, setOffline] = useState(!navigator.onLine);
   const [queued, setQueued] = useState(queuedCount());
@@ -185,8 +187,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         seenAlert = data.alertVersion;
         if (roleChanged) await refreshRef.current();
         if (!changed || stop || gen !== sessionGen.current) return;
-        if (holds.current > 0) setIncoming("Someone else saved a change. Your unsaved text is still here. Reload when you want to replace it.");
-        else {
+        if (holds.current > 0) {
+          setIncomingRevision((item) => item + 1);
+          setIncoming("Someone else saved a change. Your unsaved text is still here. Reload when you want to replace it.");
+        } else {
           setIncoming("");
           setTick((item) => item + 1);
         }
@@ -209,7 +213,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const currency = households.find((item) => item.id === householdId)?.currency ?? "USD";
   const value = useMemo<SessionValue>(() => ({
-    ready, user, households, householdId, spaceId, currency, tick, draftEpoch, incoming, offline, queued, syncError,
+    ready, user, households, householdId, spaceId, currency, tick, draftEpoch, incomingRevision, incoming, offline, queued, syncError,
     refresh, bump: () => setTick((item) => item + 1),
     holdDraft: () => {
       holds.current += 1;
@@ -254,7 +258,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setHouseholdId("");
     },
-  }), [ready, user, households, householdId, spaceId, currency, tick, draftEpoch, incoming, offline, queued, syncError]);
+  }), [ready, user, households, householdId, spaceId, currency, tick, draftEpoch, incomingRevision, incoming, offline, queued, syncError]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
