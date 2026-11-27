@@ -56,7 +56,7 @@ describe("BudgetCents API", () => {
     for (const [bucketId, amountMinor] of [[groceries, 6000], [household, 4000]] as const) {
       const assigned = await json(await api.request(`/api/households/${hid}/assignments`, {
         method: "POST", headers: auth(token),
-        body: JSON.stringify({ spaceId, bucketId, periodKey: "2026-11", amountMinor }),
+        body: JSON.stringify({ expectedAmountMinor: 0, spaceId, bucketId, periodKey: "2026-11", amountMinor }),
       }));
       expect(assigned.status).toBe(200);
     }
@@ -213,7 +213,7 @@ describe("authorization, validation, and idempotency", () => {
     }));
     await api.request(`/api/households/${owner.hid}/assignments`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ spaceId: owner.spaceId, bucketId: groceries.id, periodKey: "2026-11", amountMinor: 3000 }),
+      body: JSON.stringify({ expectedAmountMinor: 0, spaceId: owner.spaceId, bucketId: groceries.id, periodKey: "2026-11", amountMinor: 3000 }),
     });
     const expense = await json(await api.request(`/api/households/${owner.hid}/transactions`, {
       method: "POST", headers: auth(owner.token),
@@ -223,7 +223,7 @@ describe("authorization, validation, and idempotency", () => {
     const otherGroceries = other.buckets.find((bucket) => bucket.name === "Groceries")!;
     await api.request(`/api/households/${other.hid}/assignments`, {
       method: "POST", headers: auth(other.token),
-      body: JSON.stringify({ spaceId: other.spaceId, bucketId: otherGroceries.id, periodKey: "2026-11", amountMinor: 4000 }),
+      body: JSON.stringify({ expectedAmountMinor: 0, spaceId: other.spaceId, bucketId: otherGroceries.id, periodKey: "2026-11", amountMinor: 4000 }),
     });
     const cross = await json(await api.request(`/api/households/${owner.hid}/fresh-start`, {
       method: "POST", headers: auth(owner.token),
@@ -243,7 +243,7 @@ describe("authorization, validation, and idempotency", () => {
     }));
     await api.request(`/api/households/${owner.hid}/assignments`, {
       method: "POST", headers: auth(owner.token),
-      body: JSON.stringify({ spaceId: personal.body.id, bucketId: privateBucket.body.id, periodKey: "2026-11", amountMinor: 1200 }),
+      body: JSON.stringify({ expectedAmountMinor: 0, spaceId: personal.body.id, bucketId: privateBucket.body.id, periodKey: "2026-11", amountMinor: 1200 }),
     });
     await markVerified("owner-reset@example.com");
     const invite = await json(await api.request(`/api/households/${owner.hid}/invitations`, {

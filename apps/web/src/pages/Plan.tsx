@@ -12,7 +12,7 @@ export function Plan() {
   const access = useAccess();
   const [view, setView] = useState<View>("zero");
   const [move, setMove] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Bucket | null>(null);
   const [message, setMessage] = useState("");
   const state = useLoad(() => api<Dashboard>(scoped(session.householdId, "/dashboard", session.spaceId)), [session.householdId, session.spaceId, session.tick]);
   if (state.loading && !state.data) return <Loading label="Loading the plan" />;
@@ -24,11 +24,12 @@ export function Plan() {
   });
   const label = dash.household.labelMode === "envelopes" ? "envelope" : "category";
 
-  async function assign(bucketId: string, text: string) {
+  function editCategory(id: string) { setEditing(dash.buckets.find((bucket) => bucket.id === id) ?? null); }
+  async function assign(bucketId: string, text: string, expectedAmountMinor: number) {
     const amountMinor = parseAmount(text, dash.household.currency);
     await api(scoped(session.householdId, "/assignments"), {
       method: "POST",
-      body: JSON.stringify({ spaceId: dash.spaceId, bucketId, periodKey: dash.budget.periodKey, amountMinor }),
+      body: JSON.stringify({ spaceId: dash.spaceId, bucketId, periodKey: dash.budget.periodKey, amountMinor, expectedAmountMinor }),
     });
     session.bump();
   }
@@ -60,9 +61,9 @@ export function Plan() {
             <article key={row.bucketId} className="envelope">
               <span className="kicker">{row.group}</span>
               <strong>{row.name}</strong>
-              <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Edit ${row.name}`} onClick={() => setEditing(row.bucketId)}>Edit</button>
+              <button className="btn-secondary" type="button" disabled={!access.canBudget} aria-label={`Edit ${row.name}`} onClick={() => editCategory(row.bucketId)}>Edit</button>
               <Money minor={row.availableMinor} />
-              <AssignField name={row.name} currency={dash.household.currency} value={row.assignedMinor} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onSave={(text) => assign(row.bucketId, text)} />
+              <AssignField name={row.name} currency={dash.household.currency} value={row.assignedMinor} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onSave={(text, expected) => assign(row.bucketId, text, expected)} />
             </article>
           ))}
         </div>
@@ -71,38 +72,41 @@ export function Plan() {
         ["fixed", "non_monthly", "flexible"].map((role) => (
           <section key={role} style={{ marginTop: 16 }}>
             <h2>{role === "non_monthly" ? "Non-monthly" : role[0].toUpperCase() + role.slice(1)}</h2>
-            <BucketTable rows={rows.filter((row) => dash.buckets.find((bucket) => bucket.id === row.bucketId)?.flexRole === role)} buckets={dash.buckets} currency={dash.household.currency} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onAssign={assign} onEdit={setEditing} />
+            <BucketTable rows={rows.filter((row) => dash.buckets.find((bucket) => bucket.id === row.bucketId)?.flexRole === role)} buckets={dash.buckets} currency={dash.household.currency} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onAssign={assign} onEdit={editCategory} />
           </section>
         ))
       ) : null}
-      {view === "zero" ? <BucketTable rows={rows} buckets={dash.buckets} currency={dash.household.currency} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onAssign={assign} onEdit={setEditing} /> : null}
+      {view === "zero" ? <BucketTable rows={rows} buckets={dash.buckets} currency={dash.household.currency} privacy={!!session.user?.privacyMode} locked={!access.canBudget} onAssign={assign} onEdit={editCategory} /> : null}
       <ArchivedCategories buckets={dash.buckets} />
       <Fills dash={dash} />
-      {editing && dash.buckets.some((bucket) => bucket.id === editing) ? <EditCategory bucket={dash.buckets.find((bucket) => bucket.id === editing) as Bucket} currency={dash.household.currency} periodKey={dash.budget.periodKey} funding={dash.funding} onClose={() => setEditing(null)} /> : null}
+      {editing ? <EditCategory key={`${editing.id}:${editing.version}`} bucket={editing} latest={dash.buckets.find((bucket) => bucket.id === editing.id)} onReload={setEditing} currency={dash.household.currency} periodKey={dash.budget.periodKey} funding={dash.funding} onClose={() => setEditing(null)} /> : null}
       {move ? <MoveMoney buckets={dash.buckets} periodKey={dash.budget.periodKey} spaceId={dash.spaceId} currency={dash.household.currency} onClose={() => setMove(false)} /> : null}
     </Page>
   );
 }
 
-function AssignField({ name, value, currency, privacy, locked, onSave }: { name: string; value: number; currency: string; privacy: boolean; locked: boolean; onSave: (text: string) => Promise<void> }) {
-  const [text, setText] = useState(minorToInput(value, currency));
+function AssignField({ name, value, currency, privacy, locked, onSave }: { name: string; value: number; currency: string; privacy: boolean; locked: boolean; onSave: (text: string, expected: number) => Promise<void> }) {
+  const [draft, setDraft] = useState<{ text: string; base: number } | null>(null);
+  const text = draft?.text ?? minorToInput(value, currency);
+  const changed = draft !== null && draft.base !== value;
   const [error, setError] = useState("");
   const errorId = useId();
   return (
     <label className="field">
       <span>Assigned</span>
-      <input aria-label={`Assigned to ${name}`} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} value={privacy ? "Hidden" : text} disabled={privacy || locked} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
+      <input aria-label={`Assigned to ${name}`} aria-invalid={error ? true : undefined} aria-describedby={error ? errorId : undefined} value={privacy ? "Hidden" : text} disabled={privacy || locked} onChange={(event) => setDraft({ text: event.target.value, base: draft?.base ?? value })} onKeyDown={(event) => {
         if (event.key === "Enter") event.currentTarget.blur();
       }} onBlur={async () => {
-        if (privacy || locked || text === minorToInput(value, currency)) return;
-        try { setError(""); await onSave(text); } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not assign."); }
+        if (privacy || locked || !draft || changed || text === minorToInput(value, currency)) return;
+        try { setError(""); await onSave(text, draft.base); setDraft(null); } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not assign."); }
       }} />
+      {changed ? <span role="status">The saved assignment changed to <Money minor={value} />. Your draft is kept. <button type="button" className="btn-quiet" onClick={() => { setDraft(null); setError(""); }}>Discard draft and load latest</button></span> : null}
       {error ? <span id={errorId} role="alert">{error}</span> : null}
     </label>
   );
 }
 
-function BucketTable({ rows, buckets, currency, privacy, locked, onAssign, onEdit }: { rows: Dashboard["budget"]["buckets"]; buckets: Bucket[]; currency: string; privacy: boolean; locked: boolean; onAssign: (id: string, text: string) => Promise<void>; onEdit: (id: string) => void }) {
+function BucketTable({ rows, buckets, currency, privacy, locked, onAssign, onEdit }: { rows: Dashboard["budget"]["buckets"]; buckets: Bucket[]; currency: string; privacy: boolean; locked: boolean; onAssign: (id: string, text: string, expected: number) => Promise<void>; onEdit: (id: string) => void }) {
   if (!rows.length) return <p className="muted">Nothing in this group.</p>;
   return (
     <div className="card table-wrap">
@@ -116,7 +120,7 @@ function BucketTable({ rows, buckets, currency, privacy, locked, onAssign, onEdi
             return (
               <tr key={row.bucketId}>
                 <td>{row.name}{row.creditOverspendMinor ? " · card overspend" : ""}{rule && rule !== "both" ? ` · rollover ${rule}` : ""} <button className="btn-secondary" type="button" disabled={locked} aria-label={`Edit ${row.name}`} onClick={() => onEdit(row.bucketId)}>Edit</button></td>
-                <td className="num"><AssignField name={row.name} currency={currency} value={row.assignedMinor} privacy={privacy} locked={locked} onSave={(text) => onAssign(row.bucketId, text)} /></td>
+                <td className="num"><AssignField name={row.name} currency={currency} value={row.assignedMinor} privacy={privacy} locked={locked} onSave={(text, expected) => onAssign(row.bucketId, text, expected)} /></td>
                 <td className="num"><Money minor={-row.activityMinor} /></td>
                 <td className="num"><Money minor={row.availableMinor} /></td>
               </tr>
@@ -193,8 +197,10 @@ function MoveMoney({ buckets, periodKey, spaceId, currency, onClose }: { buckets
   );
 }
 
-function EditCategory({ bucket, currency, periodKey, funding, onClose }: { bucket: Bucket; currency: string; periodKey: string; funding: Dashboard["funding"]; onClose: () => void }) {
+function EditCategory({ bucket, latest, onReload, currency, periodKey, funding, onClose }: { bucket: Bucket; latest?: Bucket; onReload: (bucket: Bucket) => void; currency: string; periodKey: string; funding: Dashboard["funding"]; onClose: () => void }) {
   const session = useSession();
+  const access = useAccess();
+  const changed = !latest || latest.version !== bucket.version;
   const form = useFormError();
   const [effect, setEffect] = useState("");
   const progress = funding?.buckets.find((item) => item.bucketId === bucket.id);
@@ -234,7 +240,9 @@ function EditCategory({ bucket, currency, periodKey, funding, onClose }: { bucke
   }
   return (
     <Modal title={`Edit ${bucket.name}`} onClose={onClose}>
+      {changed ? <div className="banner" role="status">This category changed while you were editing. Your draft is kept. {latest ? <button type="button" className="btn-secondary" onClick={() => onReload(latest)}>Discard draft and load latest</button> : "It is no longer available."}</div> : null}
       <form onSubmit={(event) => form.run(event, async () => {
+        if (changed || !access.canBudget) throw new Error("Load the latest category and check your access before saving.");
         const saved = await api<{ effect: string }>(scoped(session.householdId, `/buckets/${bucket.id}`), { method: "PATCH", body: JSON.stringify(await payload(new FormData(event.currentTarget), false)) });
         setEffect(saved.effect);
         session.bump();
@@ -276,7 +284,7 @@ function EditCategory({ bucket, currency, periodKey, funding, onClose }: { bucke
               setEffect(caught instanceof Error ? caught.message : "Could not preview.");
             }
           }}>Preview the rollover change</button>
-          <button className="btn" type="submit">Save category</button>
+          <button className="btn" type="submit" disabled={changed || !access.canBudget}>Save category</button>
         </div>
       </form>
     </Modal>

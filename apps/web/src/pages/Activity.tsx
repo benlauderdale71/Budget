@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { allows } from "@budgetcents/domain/access";
 import { OwnershipFilter, useHouseholdPeople } from "../ownership.js";
+import { TransactionChangeNotice, useTransactionChange } from "../transaction-changes.js";
 import { parseAmount, todayISO } from "../format.js";
 import { scoped, useAccess, useSession } from "../session.js";
 import type { Account, Dashboard, Txn } from "../types.js";
@@ -165,23 +166,27 @@ export function Activity() {
         {offset > 0 ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(Math.max(0, offset - PAGE)); }}>Previous page</button> : null}
         {list.data.nextOffset != null ? <button className="btn-secondary" type="button" onClick={() => { pageChanged.current = true; setOffset(list.data?.nextOffset ?? offset); }}>Next page</button> : null}
       </div>
-      {peopleFor ? <PeopleForm txn={peopleFor} onClose={() => setPeopleFor(null)} /> : null}
+      {peopleFor ? <PeopleForm key={`${peopleFor.id}:${peopleFor.version}`} txn={peopleFor} onReload={setPeopleFor} onClose={() => setPeopleFor(null)} /> : null}
       {commentFor ? <CommentForm txn={commentFor} onClose={() => setCommentFor(null)} onSaved={(message) => { setNoteBad(false); setNote(message); setCommentFor(null); }} /> : null}
-      {open ? <TxnForm accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
+      {open ? <TxnForm key={`${editing?.id}:${editing?.version}`} accounts={dash.data.accounts} buckets={dash.data.buckets} expenses={(purchases.data?.transactions ?? list.data.transactions).filter((txn) => txn.type === "expense")} currency={dash.data.household.currency} spaceId={dash.data.spaceId} existing={editing} onReload={setEditing} onClose={() => { setOpen(false); setEditing(null); }} /> : null}
     </Page>
   );
 }
 
-function PeopleForm({ txn, onClose }: { txn: Txn; onClose: () => void }) {
+function PeopleForm({ txn, onReload, onClose }: { txn: Txn; onReload: (txn: Txn) => void; onClose: () => void }) {
   const session = useSession();
+  const access = useAccess();
+  const change = useTransactionChange(txn);
   const people = useHouseholdPeople();
   const form = useFormError();
   const [kind, setKind] = useState("ownership");
   const [personId, setPersonId] = useState(txn.ownerUserId ?? "");
   const choices = (people.data?.people ?? []).filter((person) => kind === "ownership" || allows(person.role, "review"));
   return <Modal title={`People for ${txn.payee}`} onClose={onClose}>
+    <TransactionChangeNotice change={change} onReload={onReload} />
     <p>Ownership labels filter views. Assigning a reviewer requests a new review. Neither changes money or grants access to private records.</p>
     <form onSubmit={(event) => form.run(event, async () => {
+      if (change.blocked || !access.canWrite) throw new Error("Load the latest record and check your access before saving.");
       await api(scoped(session.householdId, `/transactions/${txn.id}/${kind}`), { method: "POST", body: JSON.stringify({ version: txn.version ?? 1, ...(kind === "ownership" ? { ownerUserId: personId || null } : { reviewerUserId: personId || null }) }) });
       session.bump(); onClose();
     })}>
@@ -189,7 +194,7 @@ function PeopleForm({ txn, onClose }: { txn: Txn; onClose: () => void }) {
       <Field label={kind === "ownership" ? "Owner" : "Assign review to"}><select aria-label={kind === "ownership" ? "Owner" : "Assign review to"} value={personId} onChange={(event) => setPersonId(event.target.value)}><option value="">{kind === "ownership" ? "Ours — shared ownership" : "Unassigned"}</option>{choices.map((person) => <option key={person.id} value={person.id}>{person.displayName}</option>)}</select></Field>
       {people.error ? <Notice kind="bad">{people.error}</Notice> : null}
       {form.error ? <Notice kind="bad">{form.error} Close this dialog and refresh Activity if someone else changed this record.</Notice> : null}
-      <button type="submit" className="btn" disabled={people.loading || !!people.error}>Save {kind === "ownership" ? "ownership" : "reviewer"}</button>
+      <button type="submit" className="btn" disabled={people.loading || !!people.error || change.blocked || !access.canWrite}>Save {kind === "ownership" ? "ownership" : "reviewer"}</button>
     </form>
   </Modal>;
 }
@@ -197,16 +202,12 @@ function PeopleForm({ txn, onClose }: { txn: Txn; onClose: () => void }) {
 function CommentForm({ txn, onClose, onSaved }: { txn: Txn; onClose: () => void; onSaved: (message: string) => void }) {
   const session = useSession();
   const form = useFormError();
-  const [comments, setComments] = useState<{ id: string; body: string; display_name: string }[]>([]);
-  useEffect(() => {
-    api<{ comments: { id: string; body: string; display_name: string }[]; note: string }>(scoped(session.householdId, `/comments?transactionId=${encodeURIComponent(txn.id)}`))
-      .then((result) => setComments(result.comments))
-      .catch((caught: unknown) => form.setError(caught instanceof Error ? caught.message : "Comments could not be loaded."));
-  }, [session.householdId, txn.id]);
+  const comments = useLoad(() => api<{ comments: { id: string; body: string; display_name: string }[] }>(scoped(session.householdId, `/comments?transactionId=${encodeURIComponent(txn.id)}`)), [session.householdId, txn.id]);
   return (
     <Modal title={`Comment on ${txn.payee}`} onClose={onClose}>
       <p>A comment does not change the transaction, category, or balance.</p>
-      <ul>{comments.map((comment) => <li key={comment.id}>{comment.display_name}: {comment.body}</li>)}</ul>
+      {comments.error ? <p role="status">{comments.error}</p> : null}
+      <ul aria-live="polite">{comments.data?.comments.map((comment) => <li key={comment.id}>{comment.display_name}: {comment.body}</li>)}</ul>
       <form onSubmit={(event) => form.run(event, async () => {
         const data = new FormData(event.currentTarget);
         const result = await api<{ note: string }>(scoped(session.householdId, "/comments"), { method: "POST", body: JSON.stringify({ transactionId: txn.id, body: data.get("body") }) });
@@ -220,8 +221,10 @@ function CommentForm({ txn, onClose, onSaved }: { txn: Txn; onClose: () => void;
   );
 }
 
-function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onClose }: { accounts: Account[]; buckets: Dashboard["buckets"]; expenses: Txn[]; currency: string; spaceId: string; existing: Txn | null; onClose: () => void }) {
+function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onReload, onClose }: { accounts: Account[]; buckets: Dashboard["buckets"]; expenses: Txn[]; currency: string; spaceId: string; existing: Txn | null; onReload: (txn: Txn) => void; onClose: () => void }) {
   const session = useSession();
+  const access = useAccess();
+  const change = useTransactionChange(existing);
   const form = useFormError();
   const amountHelp = useId();
   const addSplitRef = useRef<HTMLButtonElement>(null);
@@ -231,7 +234,10 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
   const spendBuckets = buckets.filter((bucket) => !bucket.systemRole && bucket.kind === (type === "income" ? "income" : "expense"));
   return (
     <Modal title={existing ? "Edit transaction" : "New transaction"} onClose={onClose}>
+      <TransactionChangeNotice change={change} onReload={onReload} />
+      {!access.canWrite ? <p role="status">Your access changed. This draft cannot be saved with your current role.</p> : null}
       <form onSubmit={(event) => form.run(event, async () => {
+        if (change.blocked || !access.canWrite) throw new Error("Load the latest record and check your access before saving.");
         const data = new FormData(event.currentTarget);
         const magnitude = Math.abs(parseAmount(String(data.get("amount")), currency));
         const signed = type === "income" || type === "refund" ? magnitude : -magnitude;
@@ -317,7 +323,7 @@ function TxnForm({ accounts, buckets, expenses, currency, spaceId, existing, onC
         <Field label="Receipt (JPEG, PNG, or PDF)"><input name="receipt" type="file" accept="image/jpeg,image/png,application/pdf" /></Field>
         <p className="muted">The receipt is stored with this transaction and does not change it. Open Receipts to read the file. A reconciled transaction is not overwritten.</p>
         {form.error ? <Notice kind="bad">{form.error}</Notice> : null}
-        <button className="btn" type="submit">Save</button>
+        <button className="btn" type="submit" disabled={change.blocked || !access.canWrite}>Save</button>
       </form>
     </Modal>
   );

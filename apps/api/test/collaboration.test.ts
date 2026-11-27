@@ -54,6 +54,73 @@ async function fixture() {
 }
 
 describe("ownership views and reviewer responsibility", () => {
+  it("detects committed changes without disclosing records or changing money", async () => {
+    const f = await fixture();
+    const before = await f.money();
+    const revision = async (token = f.coach.token) => {
+      const result = await f.call(`${f.base}/collaboration/changes`, token);
+      expect(result.status).toBe(200);
+      expect(Object.keys(result.body)).toEqual(["revision"]);
+      expect(result.body.revision).toMatch(/^[a-f0-9]{64}$/);
+      return result.body.revision;
+    };
+    const first = await revision();
+    expect(await revision()).toBe(first);
+    // A private edit must not change another member's snapshot.
+    expect((await f.call(`${f.base}/transactions/${f.privateExpense}`, f.owner.token, { version: 1, notes: "Hidden detail" }, "PATCH")).status).toBe(200);
+    expect(await revision()).toBe(first);
+    expect((await f.call(`${f.base}/comments`, f.editor.token, { transactionId: f.expense, body: "Please review" })).status).toBe(201);
+    const comment = await revision();
+    expect(comment).not.toBe(first);
+    expect(await revision()).toBe(comment);
+    expect((await f.call(`${f.base}/transactions/${f.expense}/review-assignment`, f.owner.token, { reviewerUserId: f.coach.id, version: 1 })).status).toBe(200);
+    const assigned = await revision();
+    expect(assigned).not.toBe(comment);
+    // A write with an older timestamp is still detected; this isn't a clock cursor.
+    await db.query(`UPDATE transactions SET notes = 'Later commit', version = version + 1, updated_at = '2000-01-01' WHERE id = $1`, [f.expense]);
+    expect(await revision()).not.toBe(assigned);
+    expect(await f.money()).toEqual(before);
+    const deletedBefore = await revision();
+    await db.query(`UPDATE transactions SET deleted = 1 WHERE id = $1`, [f.expense]);
+    expect(await revision()).not.toBe(deletedBefore);
+  });
+
+  it("rechecks change-watch access and notices role and account visibility changes", async () => {
+    const f = await fixture();
+    const path = `${f.base}/collaboration/changes`;
+    expect((await f.call(path, "")).status).toBe(401);
+    expect((await f.call("/api/households/another-household/collaboration/changes", f.owner.token)).status).toBe(404);
+    const before = await f.call(path, f.coach.token);
+    expect((await f.call(`${f.base}/members/${f.coach.id}`, f.owner.token, { role: "readonly" }, "PATCH")).status).toBe(200);
+    const downgraded = await f.call(path, f.coach.token);
+    expect(downgraded.body.revision).not.toBe(before.body.revision);
+    const txn = await f.row();
+    await db.query(`UPDATE accounts SET visibility = 'private', owner_user_id = $1 WHERE id = $2`, [f.owner.id, txn.accountId]);
+    expect((await f.call(path, f.coach.token)).body.revision).not.toBe(downgraded.body.revision);
+    expect((await f.call(`${f.base}/members/${f.coach.id}`, f.owner.token, undefined, "DELETE")).status).toBe(200);
+    expect((await f.call(path, f.coach.token)).status).toBe(404);
+  });
+
+  it("rejects competing assignment drafts under the household lock", async () => {
+    const f = await fixture();
+    const dash = (await f.call(`${f.base}/dashboard?asOf=2026-11-20`, f.owner.token)).body;
+    const bucket = dash.buckets.find((b: any) => b.kind === "expense" && !b.systemRole);
+    const body = { spaceId: dash.spaceId, bucketId: bucket.id, periodKey: "2026-11", amountMinor: 100, expectedAmountMinor: 0 };
+    const before = (await f.call(`${f.base}/collaboration/changes`, f.owner.token)).body.revision;
+    const attempts = await Promise.all([
+      f.call(`${f.base}/assignments`, f.owner.token, body),
+      f.call(`${f.base}/assignments`, f.editor.token, { ...body, amountMinor: 200 }),
+    ]);
+    expect(attempts.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect((await f.call(`${f.base}/collaboration/changes`, f.owner.token)).body.revision).not.toBe(before);
+    const rows = await db.query(`SELECT amount_minor FROM assignments WHERE bucket_id = $1`, [bucket.id]);
+    expect(rows).toHaveLength(1);
+    expect([100, 200]).toContain(rows[0].amount_minor);
+    const { expectedAmountMinor, ...legacy } = body;
+    expect((await f.call(`${f.base}/assignments`, f.owner.token, legacy)).status).toBe(400);
+    expect(await db.query(`SELECT amount_minor FROM assignments WHERE bucket_id = $1`, [bucket.id])).toEqual(rows);
+  });
+
   it("filters after authorization, persists filters, and never reallocates the plan", async () => {
     const f = await fixture();
     const before = await f.money();

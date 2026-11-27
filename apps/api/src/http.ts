@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { LESSONS, PROVIDERS } from "./content.js";
 import { saveCategory } from "./categories.js";
+import { collaborationRevision } from "./changes.js";
 import { collaborationPeople, ownershipFilter, ownershipSummary, recordReviewResolution, updateCollaboration } from "./collaboration.js";
 import { deleteFill, fillHistory, fillSchedulerStatus, listFills, previewFill, runDueFills, runFill, saveFillTemplate, setFillPaused, skipFill, type FillTemplateInput } from "./fills.js";
 import { createBill, createIncomeSource, expectedIncomeEvents, mountIncome, paycheckPlan, skipBill } from "./income.js";
@@ -532,6 +533,12 @@ export function createApp(db: Database) {
     });
   });
 
+  app.get("/api/households/:hid/collaboration/changes", async (c) => {
+    const me = await actor(c);
+    c.header("Cache-Control", "no-store");
+    return c.json(await collaborationRevision(db, me.id, c.req.param("hid")));
+  });
+
   app.get("/api/households/:hid/collaboration/people", async (c) => {
     const me = await actor(c);
     return c.json({ people: await collaborationPeople(db, me.id, c.req.param("hid")) });
@@ -946,11 +953,14 @@ export function createApp(db: Database) {
     const me = await actor(c);
     const member = await requireMember(db, me.id, c.req.param("hid"));
     assertBudget(member);
-    const body = z.object({ spaceId: z.string(), bucketId: z.string(), periodKey: z.string(), amountMinor: money }).parse(await c.req.json());
+    const body = z.object({ spaceId: z.string(), bucketId: z.string(), periodKey: z.string(), amountMinor: money, expectedAmountMinor: z.number({ required_error: "Reload the plan before saving an assignment." }).int() }).parse(await c.req.json());
     await assertSpace(me.id, member.householdId, body.spaceId);
     await assertBucket(member.householdId, body.spaceId, body.bucketId);
     await db.tx(async () => {
       await lockHousehold(db, member.householdId);
+      assertBudget(await requireMember(db, me.id, member.householdId));
+      const current = await db.query(`SELECT amount_minor FROM assignments WHERE household_id = $1 AND space_id = $2 AND bucket_id = $3 AND period_key = $4`, [member.householdId, body.spaceId, body.bucketId, body.periodKey]);
+      if (num(current[0]?.amount_minor) !== body.expectedAmountMinor) throw new ApiError(409, "This assignment changed while you were editing. Load the latest amount before saving.");
       await setAssignment(db, member.householdId, body.spaceId, body.bucketId, body.periodKey, body.amountMinor);
       await audit(db, member.householdId, me.id, "assign", "Updated an assignment");
     });

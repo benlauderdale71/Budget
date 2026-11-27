@@ -129,6 +129,7 @@ internal fun SharingScreen(
     onStatus: (String) -> Unit,
     onChanged: () -> Unit,
     onLeft: () -> Unit,
+    liveTick: Int = 0,
 ) {
     var email by remember { mutableStateOf("") }
     var selectedRole by remember { mutableStateOf("coach") }
@@ -145,7 +146,7 @@ internal fun SharingScreen(
             }
         }
     }
-    LaunchedEffect(hid) { load() }
+    LaunchedEffect(hid, liveTick) { load() }
     val data = members
     val canInvite = invitesAllowed(role)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

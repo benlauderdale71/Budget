@@ -22,6 +22,10 @@
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
 }
 
+.live-conflict { position: sticky; top: 0; z-index: 2; background: var(--surface); border: 2px solid var(--warn); box-shadow: var(--shadow); }
+.live-conflict p { margin: 0 0 .6rem; }
+.live-conflict details { margin-bottom: .6rem; }
+
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #10161c;

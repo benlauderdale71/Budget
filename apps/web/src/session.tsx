@@ -2,6 +2,7 @@ import { allows } from "@budgetcents/domain/access";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, api, clearLocalSession, flushQueue, queuedCount, setQueueOwner } from "./api.js";
 import type { HouseholdRow, User } from "./types.js";
+import { watchChanges } from "./live-changes.js";
 
 interface SessionValue {
   ready: boolean;
@@ -11,6 +12,8 @@ interface SessionValue {
   spaceId?: string;
   currency: string;
   tick: number;
+  liveTick: number;
+  liveError: string;
   offline: boolean;
   queued: number;
   syncError: string;
@@ -52,6 +55,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [householdId, setHouseholdId] = useState("");
   const [spaceId, setSpaceId] = useState<string | undefined>();
   const [tick, setTick] = useState(0);
+  const [liveTick, setLiveTick] = useState(0);
+  const [liveError, setLiveError] = useState("");
   const [offline, setOffline] = useState(!navigator.onLine);
   const [queued, setQueued] = useState(queuedCount());
   const [syncError, setSyncError] = useState("");
@@ -142,9 +147,43 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!user?.id || !householdId) return;
+    setLiveError("");
+    const watcher = watchChanges({
+      load: (signal) => api(scoped(householdId, "/collaboration/changes"), { signal, cache: "no-store" }),
+      active: () => navigator.onLine && document.visibilityState !== "hidden",
+      changed: () => { setLiveTick((value) => value + 1); },
+      recovered: () => setLiveError(""),
+      failed: () => setLiveError("Live updates are paused. Your draft stays here. Reconnecting will check for newer changes."),
+    });
+    document.addEventListener("visibilitychange", watcher.wake);
+    window.addEventListener("focus", watcher.wake);
+    window.addEventListener("online", watcher.wake);
+    window.addEventListener("budgetcents-live-retry", watcher.invalidate);
+    return () => {
+      watcher.stop();
+      document.removeEventListener("visibilitychange", watcher.wake);
+      window.removeEventListener("focus", watcher.wake);
+      window.removeEventListener("online", watcher.wake);
+      window.removeEventListener("budgetcents-live-retry", watcher.invalidate);
+    };
+  }, [user?.id, householdId]);
+
+  // Refresh capabilities as well as records. Do not replay queued writes from a
+  // read-only background check, and ignore responses after a household switch.
+  useEffect(() => {
+    if (!user?.id || !householdId || !liveTick) return;
+    let live = true;
+    api<{ households: HouseholdRow[] }>("/api/households").then((data) => {
+      if (live) setHouseholds(data.households);
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [liveTick, user?.id, householdId]);
+
   const currency = households.find((item) => item.id === householdId)?.currency ?? "USD";
   const value = useMemo<SessionValue>(() => ({
-    ready, user, households, householdId, spaceId, currency, tick, offline, queued, syncError,
+    ready, user, households, householdId, spaceId, currency, tick, liveTick, liveError, offline, queued, syncError,
     refresh, bump: () => setTick((item) => item + 1),
     chooseHousehold: (id) => {
       localStorage.setItem("budgetcents.household", id);
@@ -176,7 +215,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setHouseholdId("");
     },
-  }), [ready, user, households, householdId, spaceId, currency, tick, offline, queued, syncError]);
+  }), [ready, user, households, householdId, spaceId, currency, tick, liveTick, liveError, offline, queued, syncError]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

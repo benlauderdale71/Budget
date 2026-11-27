@@ -50,6 +50,8 @@ Home has a household ownership activity view. All shows records you may see, Min
 
 In Activity, open Manage people for a transaction to change its ownership label or reviewer. Changing the reviewer requests a new review, including when you choose Unassigned. Choose Assigned to me to see your unfinished reviews. Mark reviewed records the person and time; Reopen review keeps the audit history. A reviewer needs a role that can review and existing access to that record. A read-only member cannot be assigned a review. If the reviewer leaves, is removed, or becomes read-only, unfinished work returns to Unassigned. Labels and assignments do not reveal private accounts or alter money.
 
+While the web app is visible, it checks for shared changes every five seconds and when you return to it. Saved records and comments update without a page reload. An open transaction, ownership/reviewer, or category editor keeps the draft you started with. If its saved version changes, read the warning and choose **Discard draft and load latest** before editing again. A draft plan assignment also stays in the field when someone else changes that amount; it cannot silently replace their amount. A lost connection pauses updates and keeps your draft. Signing out or switching households closes the old household's editors. Android has the corresponding foreground update and transaction draft controls in source, pending build and device verification.
+
 ## Assistant and connections
 
 The assistant repeats figures the ledger already calculated. If a figure is missing, it says so. Turning it off leaves the plan and the register working.

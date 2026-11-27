@@ -112,6 +112,10 @@ export async function api<T>(path: string, init: RequestInit = {}, options: { qu
   } catch {
     data = null;
   }
+  // An old household watch or signed-out session must not clear a newer login.
+  if (init.signal?.aborted || token !== localStorage.getItem("budgetcents.token")) {
+    throw new ApiError(0, "This request is no longer active.");
+  }
   if (response.status === 401) {
     clearLocalSession();
     window.dispatchEvent(new Event("budgetcents-unauthorized"));

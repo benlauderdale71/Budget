@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { formatMoney } from "./format.js";
 import { useSession } from "./session.js";
+import { ApiError } from "./api.js";
 
 export function Page({ title, lede, actions, children }: { title: string; lede?: string; actions?: ReactNode; children: ReactNode }) {
   return (
@@ -225,15 +226,24 @@ export function SankeyChart({ links }: { links: { source: string; target: string
 }
 
 export function useLoad<T>(loader: () => Promise<T>, deps: unknown[]) {
+  const { liveTick } = useSession();
+  const previous = useRef<unknown[] | null>(null);
   const [state, setState] = useState<{ data?: T; error?: string; loading: boolean }>({ loading: true });
   useEffect(() => {
     let live = true;
-    setState((current) => ({ ...current, loading: true }));
+    const background = previous.current !== null && deps.length === previous.current.length && deps.every((dep, index) => Object.is(dep, previous.current![index]));
+    previous.current = deps;
+    setState((current) => ({ ...current, loading: background && current.data !== undefined ? false : true }));
     loader()
       .then((data) => { if (live) setState({ loading: false, data }); })
-      .catch((error: unknown) => { if (live) setState({ loading: false, error: error instanceof Error ? error.message : "Could not load." }); });
+      .catch((error: unknown) => {
+        if (!live) return;
+        const transient = error instanceof ApiError && (error.status === 0 || error.status >= 500);
+        if (background && transient) window.dispatchEvent(new Event("budgetcents-live-retry"));
+        setState((current) => ({ loading: false, ...(background && transient ? { data: current.data } : {}), error: error instanceof Error ? error.message : "Could not load." }));
+      });
     return () => { live = false; };
-  }, deps);
+  }, [...deps, liveTick]);
   return state;
 }
 

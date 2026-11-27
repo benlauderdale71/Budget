@@ -16,13 +16,20 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.budgetcents.app.BudgetApi
 import com.budgetcents.app.Store
+import com.budgetcents.app.ApiException
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -30,6 +37,37 @@ import java.net.URLEncoder
 
 private fun reviewAllowed(role: String) = writesAllowed(role) || role in listOf("coach", "planner", "accountant")
 private fun peopleRows(array: JSONArray) = (0 until array.length()).map { array.getJSONObject(it) }
+
+@Composable
+internal fun LiveHouseholdChanges(api: BudgetApi, store: Store, onChanged: suspend () -> Unit, onDenied: (Int) -> Unit) {
+    val hid = store.householdId ?: return
+    val token = store.token
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val changed by rememberUpdatedState(onChanged)
+    val denied by rememberUpdatedState(onDenied)
+    var message by remember(hid, token) { mutableStateOf("") }
+    LaunchedEffect(hid, token, lifecycle) {
+        var revision: String? = null
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (isActive) {
+                try {
+                    val next = withContext(Dispatchers.IO) { api.request("GET", "/api/households/$hid/collaboration/changes").getString("revision") }
+                    if (store.token != token || store.householdId != hid) return@repeatOnLifecycle
+                    if (next != revision) { changed(); revision = next }
+                    message = ""
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (caught: Exception) {
+                    if (caught is ApiException && caught.status in listOf(401, 403, 404)) {
+                        denied(caught.status); return@repeatOnLifecycle
+                    }
+                    message = "Live updates are paused. Drafts stay here. Reconnecting will check for changes."
+                }
+                delay(5000)
+            }
+        }
+    }
+    if (message.isNotBlank()) Text(message)
+}
 
 @Composable
 private fun PersonChoice(label: String, value: String, choices: List<Pair<String, String>>, enabled: Boolean = true, onSelect: (String) -> Unit) {
@@ -58,8 +96,11 @@ internal fun OwnershipPanel(api: BudgetApi, store: Store, dash: JSONObject?, pri
     var page by remember(hid, space) { mutableStateOf<JSONObject?>(null) }
     var error by remember(hid) { mutableStateOf("") }
     var retry by remember { mutableIntStateOf(0) }
+    var loadedQuery by remember(hid, space) { mutableStateOf("") }
     LaunchedEffect(hid, space, view, person, queue, offset, reportIds, refreshKey, retry) {
-        summary = null; page = null; error = ""; onRows?.invoke(null)
+        val queryKey = "$view:$person:$queue:$offset:$reportIds"
+        if (loadedQuery != queryKey) { summary = null; page = null; onRows?.invoke(null) }
+        error = ""
         try {
             val result = withContext(Dispatchers.IO) {
                 val roster = api.request("GET", "/api/households/$hid/collaboration/people").getJSONArray("people")
@@ -71,6 +112,7 @@ internal fun OwnershipPanel(api: BudgetApi, store: Store, dash: JSONObject?, pri
                     (if (reportIds == null) "" else "&ids=${URLEncoder.encode(reportIds, "UTF-8")}"))
                 Triple(roster, totals, rows)
             }
+            loadedQuery = queryKey
             people = result.first; summary = result.second; page = result.third; onRows?.invoke(result.third)
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (caught: Exception) { error = caught.message ?: "Could not load ownership activity." }
@@ -100,16 +142,18 @@ internal fun OwnershipPanel(api: BudgetApi, store: Store, dash: JSONObject?, pri
 }
 
 @Composable
-internal fun TransactionPeople(row: JSONObject, api: BudgetApi, store: Store, role: String, onChanged: () -> Unit) {
+internal fun TransactionPeople(row: JSONObject, api: BudgetApi, store: Store, role: String, liveTick: Int, onChanged: () -> Unit) {
     val hid = store.householdId ?: return
     val scope = rememberCoroutineScope()
+    var base by remember(hid, row.optString("id")) { mutableStateOf(row) }
+    val changed = base.optInt("version", 1) != row.optInt("version", 1)
     var people by remember(hid) { mutableStateOf(JSONArray()) }
-    var owner by remember(row.toString()) { mutableStateOf(row.optString("ownerUserId")) }
-    var reviewer by remember(row.toString()) { mutableStateOf(row.optString("reviewerUserId")) }
+    var owner by remember(base) { mutableStateOf(base.optString("ownerUserId")) }
+    var reviewer by remember(base) { mutableStateOf(base.optString("reviewerUserId")) }
     var busy by remember { mutableStateOf(false) }
     var message by remember(row.toString()) { mutableStateOf("") }
     var loaded by remember(hid) { mutableStateOf(false) }
-    LaunchedEffect(hid, row.toString()) {
+    LaunchedEffect(hid, row.toString(), liveTick) {
         loaded = false
         try { people = withContext(Dispatchers.IO) { api.request("GET", "/api/households/$hid/collaboration/people").getJSONArray("people") }; loaded = true }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -118,11 +162,11 @@ internal fun TransactionPeople(row: JSONObject, api: BudgetApi, store: Store, ro
     val roster = peopleRows(people)
     fun name(id: String) = roster.find { it.optString("id") == id }?.optString("displayName") ?: "Former member"
     fun save(path: String, body: JSONObject) {
-        if (busy) return
+        if (busy || changed) return
         busy = true; message = ""
         scope.launch {
             try {
-                withContext(Dispatchers.IO) { api.request("POST", "/api/households/$hid/transactions/${row.optString("id")}/$path", body.put("version", row.optInt("version", 1))) }
+                withContext(Dispatchers.IO) { api.request("POST", "/api/households/$hid/transactions/${row.optString("id")}/$path", body.put("version", base.optInt("version", 1))) }
                 message = "Saved. Money did not change."; onChanged()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (caught: Exception) { message = caught.message ?: "Could not save. Reload Activity before retrying." }
@@ -130,18 +174,22 @@ internal fun TransactionPeople(row: JSONObject, api: BudgetApi, store: Store, ro
         }
     }
     Text("Owner: ${if (row.optString("ownerUserId").isBlank()) "Ours" else name(row.optString("ownerUserId"))}")
+    if (changed) {
+        Text("This transaction changed. Your choices are kept. Load the latest version before saving.")
+        TextButton(onClick = { base = row }) { Text("Discard choices and load latest") }
+    }
     if (row.optString("reviewerUserId").isNotBlank()) Text("Reviewer: ${name(row.optString("reviewerUserId"))}")
     if (row.optString("reviewResolvedAt").isNotBlank()) Text("Resolved by ${name(row.optString("reviewResolvedBy"))} on ${row.optString("reviewResolvedAt").take(10)}")
     if (writesAllowed(role)) {
         Text("Ownership filters views. Assigning a reviewer requests a new review. Neither grants private access.")
         PersonChoice("Owner", owner, listOf("" to "Ours — shared ownership") + roster.map { it.optString("id") to it.optString("displayName") }, loaded && !busy) { owner = it }
-        Button(enabled = loaded && !busy, onClick = { save("ownership", JSONObject().put("ownerUserId", if (owner.isBlank()) JSONObject.NULL else owner)) }) { Text("Save ownership") }
+        Button(enabled = loaded && !busy && !changed, onClick = { save("ownership", JSONObject().put("ownerUserId", if (owner.isBlank()) JSONObject.NULL else owner)) }) { Text("Save ownership") }
         PersonChoice("Reviewer", reviewer, listOf("" to "Unassigned") + roster.filter { reviewAllowed(it.optString("role")) }.map { it.optString("id") to it.optString("displayName") }, loaded && !busy) { reviewer = it }
-        Button(enabled = loaded && !busy, onClick = { save("review-assignment", JSONObject().put("reviewerUserId", if (reviewer.isBlank()) JSONObject.NULL else reviewer)) }) { Text("Save reviewer") }
+        Button(enabled = loaded && !busy && !changed, onClick = { save("review-assignment", JSONObject().put("reviewerUserId", if (reviewer.isBlank()) JSONObject.NULL else reviewer)) }) { Text("Save reviewer") }
     }
     if (reviewAllowed(role) && (writesAllowed(role) || row.optString("reviewerUserId").isBlank() || row.optString("reviewerUserId") == store.userId)) {
         val done = row.optString("reviewStatus") == "reviewed"
-        Button(enabled = !busy, onClick = { save("review", JSONObject().put("reviewStatus", if (done) "needs_review" else "reviewed")) }) { Text(if (done) "Reopen review" else "Mark reviewed") }
+        Button(enabled = !busy && !changed, onClick = { save("review", JSONObject().put("reviewStatus", if (done) "needs_review" else "reviewed")) }) { Text(if (done) "Reopen review" else "Mark reviewed") }
     }
     if (message.isNotBlank()) Text(message)
 }

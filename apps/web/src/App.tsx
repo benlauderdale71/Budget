@@ -116,7 +116,8 @@ function Shell({ children }: { children: React.ReactNode }) {
             navigator.serviceWorker.getRegistration().then((registration) => registration?.waiting?.postMessage("skip-waiting"));
           }}>Reload to update</button></div> : null}
           {!standalone && install ? <div className="banner" role="status">Install BudgetCents on this device. It opens in its own window. The installed copy still needs a completed online load before it can start offline. <button className="btn-secondary" type="button" onClick={() => { void install.prompt(); setInstall(null); }}>Install</button></div> : null}
-          {children}
+          {session.liveError ? <div className="banner" role="status">{session.liveError}</div> : null}
+          <div key={`${session.user.id}:${session.householdId}:${session.spaceId ?? ""}`}>{children}</div>
         </main>
       </div>
       <nav className="tabbar" aria-label="Mobile">

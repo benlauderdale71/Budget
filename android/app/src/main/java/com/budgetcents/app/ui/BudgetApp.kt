@@ -30,6 +30,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +78,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
     var status by remember { mutableStateOf("") }
     var dash by remember { mutableStateOf<JSONObject?>(null) }
     var txns by remember { mutableStateOf<JSONObject?>(null) }
+    var liveTick by remember { mutableIntStateOf(0) }
     var activityIds by remember { mutableStateOf<String?>(null) }
     var activityLabel by remember { mutableStateOf("") }
     var themeName by remember { mutableStateOf(store.theme) }
@@ -218,6 +220,23 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                 Column(Modifier.weight(1f).padding(16.dp).fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (error.isNotBlank()) Text(error, color = Color(0xFFB85C50))
                     if (status.isNotBlank()) Text(status)
+                    LiveHouseholdChanges(api, store, {
+                        val hid = store.householdId ?: return@LiveHouseholdChanges
+                        val sessionToken = store.token
+                        val refreshed = withContext(Dispatchers.IO) {
+                            val loaded = api.dashboard(hid)
+                            val ids = activityIds
+                            val rows = if (ids.isNullOrBlank()) api.transactions(hid) else api.request("GET", "/api/households/$hid/transactions?ids=${java.net.URLEncoder.encode(ids, "UTF-8")}&limit=200")
+                            loaded to rows
+                        }
+                        if (store.householdId == hid && store.token == sessionToken) {
+                            dash = refreshed.first; txns = refreshed.second; liveTick++
+                        }
+                    }, { code ->
+                        dash = null; txns = null
+                        if (code == 401) { store.clearSession(); token = null }
+                        else { store.householdId = null; error = "Household access changed. Choose another household or sign in again." }
+                    })
                     val pending = store.pendingForCurrentUser()
                     if (pending.isNotEmpty()) {
                         Text("${pending.size} saved on this phone. They send when BudgetCents can be reached, and only for this sign-in.")
@@ -251,7 +270,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                         }, { name ->
                             themeName = name
                             store.theme = name
-                        }, activity) { ids, label ->
+                        }, activity, liveTick) { ids, label ->
                             activityIds = ids
                             activityLabel = label
                             page = null
@@ -259,12 +278,12 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                             reload()
                         }
                     } else when (tab) {
-                        0 -> DashboardHome(dash, store.privacy, api, store, LocalConfiguration.current.screenWidthDp)
-                        1 -> PlanTab(dash, store.privacy, plansAllowed(householdRole), { bucketId, amount ->
+                        0 -> DashboardHome(dash, store.privacy, api, store, LocalConfiguration.current.screenWidthDp, liveTick)
+                        1 -> PlanTab(dash, store.privacy, plansAllowed(householdRole), { bucketId, amount, expected ->
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
-                                        api.assign(store.householdId!!, JSONObject().put("spaceId", dash?.optString("spaceId")).put("bucketId", bucketId).put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey")).put("amountMinor", amount))
+                                        api.assign(store.householdId!!, JSONObject().put("spaceId", dash?.optString("spaceId")).put("bucketId", bucketId).put("periodKey", dash?.getJSONObject("budget")?.optString("periodKey")).put("amountMinor", amount).put("expectedAmountMinor", expected))
                                     }
                                 }.onSuccess { reload() }.onFailure { error = it.message ?: "Could not assign." }
                             }
@@ -282,7 +301,7 @@ fun BudgetApp(activity: MainActivity, start: String, linkToken: String? = null) 
                                 }.onSuccess { status = "Moved. No bank transaction was created."; reload() }.onFailure { error = it.message ?: "Could not move money." }
                             }
                         }
-                        2 -> ActivityTab(api, store, householdRole, { reload() }, txns, dash, store.privacy, writesAllowed(householdRole), activityIds != null, activityLabel, {
+                        2 -> ActivityTab(api, store, householdRole, liveTick, { reload() }, txns, dash, store.privacy, writesAllowed(householdRole), activityIds != null, activityLabel, {
                             activityIds = null
                             activityLabel = ""
                             reload()
@@ -519,7 +538,7 @@ private suspend fun sign(api: BudgetApi, store: Store, done: (String?) -> Unit, 
 
 
 @Composable
-private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssign: (String, Long) -> Unit, onMove: (String, String, Long) -> Unit) {
+private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssign: (String, Long, Long) -> Unit, onMove: (String, String, Long) -> Unit) {
     if (dash == null) { Text("Loading the plan…"); return }
     val buckets = dash.getJSONArray("buckets")
     val rows = dash.getJSONObject("budget").getJSONArray("buckets")
@@ -536,12 +555,22 @@ private fun PlanTab(dash: JSONObject?, privacy: Boolean, writes: Boolean, onAssi
         val meta = (0 until buckets.length()).map { buckets.getJSONObject(it) }.find { it.optString("id") == row.optString("bucketId") }
         if (meta?.optString("systemRole").isNullOrBlank().not()) continue
         val bucketId = row.optString("bucketId")
-        var text by remember(bucketId) { mutableStateOf((row.optLong("assignedMinor") / 100.0).let { if (it == 0.0) "" else money(row.optLong("assignedMinor"), false).removePrefix("$") }) }
+        val saved = row.optLong("assignedMinor")
+        var draft by remember(bucketId) { mutableStateOf<Pair<String, Long>?>(null) }
+        LaunchedEffect(bucketId, saved) {
+            if (draft != null && runCatching { parseDollars(draft!!.first) }.getOrNull() == saved) draft = null
+        }
+        val text = draft?.first ?: money(saved, false).removePrefix("$")
+        val changed = draft != null && draft!!.second != saved
         Text("${row.optString("name")} available ${money(row.optLong("availableMinor"), privacy)} · ${meta?.optString("flexRole") ?: "category"}")
         if (writes) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(text, { text = it }, label = { Text("Assigned") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
-                Button(onClick = { onAssign(bucketId, parseDollars(text)) }) { Text("Save") }
+                OutlinedTextField(text, { draft = it to (draft?.second ?: saved) }, label = { Text("Assigned") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+                Button(enabled = !changed, onClick = { onAssign(bucketId, parseDollars(text), draft?.second ?: saved) }) { Text("Save") }
+            }
+            if (changed) {
+                Text("The saved assignment changed to ${money(saved, privacy)}. Your draft is kept.")
+                TextButton(onClick = { draft = null }) { Text("Discard draft and load latest") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = { fromId = bucketId }) { Text(if (fromId == bucketId) "From this" else "From") }
@@ -567,6 +596,7 @@ private fun ActivityTab(
     api: BudgetApi,
     store: Store,
     role: String,
+    liveTick: Int,
     onReload: () -> Unit,
     txns: JSONObject?,
     dash: JSONObject?,
@@ -670,7 +700,7 @@ private fun ActivityTab(
     }
     var collaborationRows by remember(store.householdId) { mutableStateOf<JSONObject?>(null) }
     val reportIds = if (filtered) txns?.optJSONArray("transactions")?.let { array -> (0 until array.length()).joinToString(",") { array.getJSONObject(it).optString("id") } } else null
-    OwnershipPanel(api, store, dash, privacy, txns?.toString() ?: "", reportIds) { collaborationRows = it }
+    OwnershipPanel(api, store, dash, privacy, "${txns?.toString()}:$liveTick", reportIds) { collaborationRows = it }
     val rows = collaborationRows?.optJSONArray("transactions")
     var selected by remember { mutableStateOf("") }
     var matchId by remember { mutableStateOf("") }
@@ -685,16 +715,18 @@ private fun ActivityTab(
     else for (index in 0 until rows.length()) {
         val row = rows.getJSONObject(index)
         val id = row.optString("id")
-        TextButton(onClick = { selected = if (selected == id) "" else id }, modifier = Modifier.fillMaxWidth()) {
-            Text("${row.optString("date")}  ${row.optString("payee")}  ${money(row.optLong("amountMinor"), privacy)}  ${row.optString("reviewStatus").replace('_', ' ')}")
-        }
-        if (selected == id) TransactionPeople(row, api, store, role, onReload)
-        if (selected == id && writes) {
-            TransactionEditor(row, accounts, buckets, onMessage) { patch -> onUpdate(id, patch) }
-            if (writes) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { onDuplicate(id) }) { Text("Duplicate") }
-                TextButton(onClick = { matchId = if (matchId == id) "" else id }) { Text(if (matchId == id) "Selected to match" else "Match") }
-                if (matchId.isNotBlank() && matchId != id) TextButton(onClick = { onMatch(matchId, id); matchId = "" }) { Text("Match with selected") }
+        key(id) {
+            TextButton(onClick = { selected = if (selected == id) "" else id }, modifier = Modifier.fillMaxWidth()) {
+                Text("${row.optString("date")}  ${row.optString("payee")}  ${money(row.optLong("amountMinor"), privacy)}  ${row.optString("reviewStatus").replace('_', ' ')}")
+            }
+            if (selected == id) TransactionPeople(row, api, store, role, liveTick, onReload)
+            if (selected == id && writes) {
+                TransactionEditor(row, accounts, buckets, onMessage) { patch -> onUpdate(id, patch) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { onDuplicate(id) }) { Text("Duplicate") }
+                    TextButton(onClick = { matchId = if (matchId == id) "" else id }) { Text(if (matchId == id) "Selected to match" else "Match") }
+                    if (matchId.isNotBlank() && matchId != id) TextButton(onClick = { onMatch(matchId, id); matchId = "" }) { Text("Match with selected") }
+                }
             }
         }
     }
@@ -702,6 +734,19 @@ private fun ActivityTab(
 
 @Composable
 private fun TransactionEditor(row: JSONObject, accounts: JSONArray, buckets: JSONArray, onMessage: (String) -> Unit, onSave: (JSONObject) -> Unit) {
+    var base by remember(row.optString("id")) { mutableStateOf(row) }
+    val changed = base.optInt("version", 1) != row.optInt("version", 1)
+    if (changed) {
+        Text("This transaction changed while you were editing. Your draft is kept. Load the latest version before saving.")
+        TextButton(onClick = { base = row }) { Text("Discard draft and load latest") }
+    }
+    key(base.optInt("version", 1)) {
+        TransactionEditorDraft(base, accounts, buckets, !changed, onMessage, onSave)
+    }
+}
+
+@Composable
+private fun TransactionEditorDraft(row: JSONObject, accounts: JSONArray, buckets: JSONArray, canSave: Boolean, onMessage: (String) -> Unit, onSave: (JSONObject) -> Unit) {
     val original = row.optLong("amountMinor")
     var payee by remember(row.optString("id")) { mutableStateOf(row.optString("payee")) }
     var amount by remember(row.optString("id")) { mutableStateOf(money(kotlin.math.abs(original), false).removePrefix("$")) }
@@ -781,7 +826,7 @@ private fun TransactionEditor(row: JSONObject, accounts: JSONArray, buckets: JSO
             .put("categoryLocked", drafts.any { it.bucketId.isNotBlank() })
             .put("version", if (row.has("version")) row.optInt("version") else 1)
         onSave(patch)
-    }) { Text("Update") }
+    }, enabled = canSave) { Text("Update") }
 }
 
 @Composable

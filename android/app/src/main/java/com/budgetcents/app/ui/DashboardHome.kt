@@ -125,7 +125,7 @@ private fun dashRows(cards: List<DashCard>, columns: Int): List<List<DashCard>> 
 }
 
 @Composable
-fun DashboardHome(dash: JSONObject?, privacy: Boolean, api: BudgetApi, store: Store, widthDp: Int) {
+fun DashboardHome(dash: JSONObject?, privacy: Boolean, api: BudgetApi, store: Store, widthDp: Int, liveTick: Int = 0) {
     val scope = rememberCoroutineScope()
     val deviceClass = dashDeviceClass(widthDp)
     val compact = widthDp <= 860
@@ -208,7 +208,7 @@ fun DashboardHome(dash: JSONObject?, privacy: Boolean, api: BudgetApi, store: St
         return
     }
     val guidance = dash.getJSONObject("guidance")
-    OwnershipPanel(api, store, dash, privacy, dash.toString())
+    OwnershipPanel(api, store, dash, privacy, "${dash}:$liveTick")
     val budget = dash.getJSONObject("budget")
     if (budget.optLong("identityDifferenceMinor") != 0L) {
         Text("The plan does not match cash. Review it before assigning more.")

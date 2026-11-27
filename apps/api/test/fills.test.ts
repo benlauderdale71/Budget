@@ -127,7 +127,7 @@ describe("category editing", () => {
     await api.request(`/api/households/${home.hid}/assignments`, {
       method: "POST",
       headers: auth(home.token),
-      body: JSON.stringify({ spaceId: home.spaceId, bucketId: groceries.id, periodKey: "2026-10", amountMinor: 4000 }),
+      body: JSON.stringify({ expectedAmountMinor: 0, spaceId: home.spaceId, bucketId: groceries.id, periodKey: "2026-10", amountMinor: 4000 }),
     });
     const preview = await json(await api.request(`/api/households/${home.hid}/buckets/${groceries.id}`, {
       method: "PATCH",
@@ -180,7 +180,7 @@ describe("scheduled fills", () => {
       const assigned = await json(await api.request(`/api/households/${home.hid}/assignments`, {
         method: "POST",
         headers: auth(home.token),
-        body: JSON.stringify({ spaceId: home.spaceId, bucketId, periodKey: "2026-11", amountMinor }),
+        body: JSON.stringify({ expectedAmountMinor: 0, spaceId: home.spaceId, bucketId, periodKey: "2026-11", amountMinor }),
       }));
       expect(assigned.status).toBe(200);
     }

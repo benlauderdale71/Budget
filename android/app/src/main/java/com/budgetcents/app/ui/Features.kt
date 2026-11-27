@@ -51,6 +51,7 @@ fun FeatureScreen(
     onSignedOut: () -> Unit,
     onTheme: (String) -> Unit,
     activity: com.budgetcents.app.MainActivity? = null,
+    liveTick: Int = 0,
     onOpenTransactions: (String, String) -> Unit = { _, _ -> },
 ) {
     val hid = store.householdId ?: return
@@ -202,7 +203,7 @@ fun FeatureScreen(
                 }
             }
         }
-        "household" -> SharingScreen(api, store, hid, dash?.optJSONObject("household")?.optString("role") ?: "", onError, onStatus, onChanged, onSignedOut)
+        "household" -> SharingScreen(api, store, hid, dash?.optJSONObject("household")?.optString("role") ?: "", onError, onStatus, onChanged, onSignedOut, liveTick)
         "connections" -> RemoteScreen("connections", { api.request("GET", "/api/providers") }) { data ->
             Text("These services are not live. A stored request is not a completed cancellation, score, or transfer.")
             val providers = data.optJSONArray("providers") ?: JSONArray()

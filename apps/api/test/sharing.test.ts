@@ -315,7 +315,7 @@ describe("invitation acceptance and access", () => {
       expect(denied.status).toBe(403);
       const plan = await json(await api.request(`/api/households/${owner.hid}/assignments`, {
         method: "POST", headers: auth(guest.token),
-        body: JSON.stringify({ spaceId: owner.spaceId, bucketId: "missing", periodKey: "2026-11", amountMinor: 100 }),
+        body: JSON.stringify({ expectedAmountMinor: 0, spaceId: owner.spaceId, bucketId: "missing", periodKey: "2026-11", amountMinor: 100 }),
       }));
       expect(plan.status).toBe(403);
       const sync = await json(await api.request(`/api/households/${owner.hid}/sync`, {
